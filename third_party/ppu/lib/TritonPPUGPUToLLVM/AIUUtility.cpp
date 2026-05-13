@@ -331,14 +331,14 @@ DenseMap<unsigned, Value> getPPUAIUV2SwizzledSharedPtrs(
     perPhase = 2;
     maxPhase = 4;
   }
-  unsigned outVec = 8; // the outVec size for AIU load should always be 8
+  unsigned outVec = 128 / srcTy.getElementTypeBitWidth();
   unsigned minVec = std::min(outVec, inVec);
   unsigned swizzledElems = swizzledBytes / elemBytes;
 
   // When cubeC is smaller than swizzledElems(i.e. channel bytes < swizzled
   // bytes), we use aiuFactor to skip invalid data in shared memory
   unsigned aiuFactor = swizzledElems / cubeC;
-  assert((cubeC == 16 && aiuFactor == 2) || (cubeC != 16 && aiuFactor == 1));
+  assert(cubeC * elemBytes * aiuFactor == swizzledBytes);
 
   unsigned elemsPerCube = cubeC * cubeW * aiuFactor;
   unsigned elemsPerCopy = elemsPerCube * aiuWarpCopyC * aiuWarpCopyW;

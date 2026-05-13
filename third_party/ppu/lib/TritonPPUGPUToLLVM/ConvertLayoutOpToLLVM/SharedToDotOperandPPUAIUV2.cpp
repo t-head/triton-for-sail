@@ -47,6 +47,12 @@ loadX4(ConversionPatternRewriter &rewriter, Location loc, Value smemBase,
   auto resTy = cast<LLVM::LLVMStructType>(matTy);
   Type elemTy = cast<LLVM::LLVMStructType>(matTy).getBody()[0];
 
+  int elemBits;
+  if (auto gepOp = smemBase.getDefiningOp<LLVM::GEPOp>()) {
+    Type elemType = gepOp.getElemType();
+    elemBits = elemType.getIntOrFloatBitWidth();
+  }
+
   // For some reasons, LLVM backend inserts unnecessary (?) integer
   // instructions to pack & unpack b.sub-word integers. A workaround is to
   // store the results of ldmatrix in i32
@@ -80,6 +86,10 @@ loadX4(ConversionPatternRewriter &rewriter, Location loc, Value smemBase,
   auto ldmatrix = builder.create("ppu.ldmatrix.swzl.sync.bulk.tensor.m8n8.x4")
                       ->o("trans", needTrans /*predicate*/)
                       .o("b16");
+
+  // will be lowering to tsm.ld.swzl.b32x4.trans_b32
+  if(elemBits == 32 && needTrans)
+    ldmatrix = *builder.create("ppu.ldmatrix.swzl.sync.bulk.tensor.m8n8.x2.trans.b32");
 
   ldmatrix(resArgs, sbase, lboOpnd, sboOpnd, swzlModeOpnd);
 
@@ -177,9 +187,7 @@ std::function<void(int, int, int)> getLoadMatrixFn(
     unsigned replicaMN = a >> 1;
     unsigned replicaK = b >> 1;
     unsigned replicaMNElements = shapePerWarpM * warpsPerTile;
-    unsigned replicaKElements = 16;
-    if(elemBytes == 1)
-      replicaKElements = 32;
+    unsigned replicaKElements = 32 / elemBytes;
     unsigned replicaMNOff = replicaMNElements * replicaMN;
     unsigned replicaKOff = replicaKElements * replicaK;
 
@@ -322,6 +330,12 @@ std::function<void(int, int, int)> getLoadMatrixFn(
       lbo = builder.i32_val(1);
       sbo = builder.i32_val(swizzledBytes / 2);
     }
+    if(elemBytes == 4 && needTrans) {
+      if(swizzledBytes == 128) {
+        lbo = builder.i32_val(512);
+        sbo = builder.i32_val(32);
+      }
+    }
 
     // actually load from shared memory
     auto [ha0, ha1, ha2, ha3] = loadX4(rewriter, loc, smemBase, lbo, sbo,
@@ -336,6 +350,13 @@ std::function<void(int, int, int)> getLoadMatrixFn(
       vals[{batch, a, b}] = ha0;
       vals[{batch, a + 1, b}] = ha1;
       vals[{batch, a, b + 1}] = ha2;
+      vals[{batch, a + 1, b + 1}] = ha3;
+    }
+
+    if(elemBytes == 4 && needTrans) {
+      vals[{batch, a, b}] = ha0;
+      vals[{batch, a, b + 1}] = ha2;
+      vals[{batch, a + 1, b}] = ha1;
       vals[{batch, a + 1, b + 1}] = ha3;
     }
   };
