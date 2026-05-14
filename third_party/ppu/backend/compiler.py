@@ -319,7 +319,7 @@ class PPUBackend(BaseBackend):
         ppu.passes.ttppugpuir.add_aiu_lowering(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_reduce_data_duplication(pm)
-        passes.ttgpuir.add_reorder_instructions(pm)
+        ppu.passes.ttgpuir.add_ppu_reorder_instructions(pm)
         passes.ttir.add_loop_aware_cse(pm)
         passes.common.add_symbol_dce(pm)
         passes.common.add_sccp(pm)

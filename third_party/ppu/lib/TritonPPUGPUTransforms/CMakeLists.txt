@@ -1,6 +1,7 @@
 add_triton_library(TritonPPUGPUTransforms
   AcceleratePPUMatmul.cpp
   AIULowering.cpp
+  PPUReorderInstructions.cpp
 
   DEPENDS
   TritonPPUGPUTransformsIncGen

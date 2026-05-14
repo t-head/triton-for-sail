@@ -51,4 +51,16 @@ def TritonPPUAIULoweringPass : Pass<"tritonppu-aiu-lowering", "mlir::ModuleOp"> 
                            "mlir::triton::TritonDialect"];
 }
 
+def TritonPPUGPUReorderInstructions: Pass<"tritonppugpu-reorder-instructions", "mlir::ModuleOp"> {
+  let summary = "Reorder instructions";
+
+  let description = "This pass reorder instructions so as to (1) decrease register pressure (e.g., by moving "
+                    "conversions from shared memory before their first use) and (2) be more friendly to LLVM "
+                    "instruction scheduler.";
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect",
+                           "mlir::triton::TritonDialect"];
+}
+
 #endif
