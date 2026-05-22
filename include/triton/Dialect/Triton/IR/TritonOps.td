@@ -1016,7 +1016,8 @@ def TT_MakeTensorPtrOp : TT_Op<"make_tensor_ptr",
     Variadic<I64>:$shape,
     Variadic<I64>:$strides,
     Variadic<I32>:$offsets,
-    DenseI32ArrayAttr:$order
+    DenseI32ArrayAttr:$order,
+    BoolAttr:$isAIU
   );
 
   let results = (outs TT_TensorPtr:$result);
@@ -1033,6 +1034,15 @@ def TT_MakeTensorPtrOp : TT_Op<"make_tensor_ptr",
         "ValueRange":$offsets,
         "ArrayRef<int32_t>":$tensorShape,
         "ArrayRef<int32_t>":$order
+    )>,
+    OpBuilder<(ins
+        "Value":$base,
+        "ValueRange":$shape,
+        "ValueRange":$strides,
+        "ValueRange":$offsets,
+        "ArrayRef<int32_t>":$tensorShape,
+        "ArrayRef<int32_t>":$order,
+        "bool":$isAIU
     )>
   ];
 }

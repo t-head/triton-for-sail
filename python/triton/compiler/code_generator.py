@@ -301,6 +301,7 @@ class CodeGenerator(ast.NodeVisitor):
         self.module = self.builder.create_module() if module is None else module
         self.function_ret_types = {} if function_types is None else function_types
         self.prototype = prototype
+        self.negative_loop_make_block_ptr = set()
 
         self.return_vals: List[base_value | None] = []
         self.return_ips: List[Tuple[ir.InsertPoint, ir.Loc]] = []
@@ -1162,6 +1163,35 @@ class CodeGenerator(ast.NodeVisitor):
         IteratorClass = self.visit(node.iter.func)
         iter_args = [self.visit(arg) for arg in node.iter.args]
         iter_kwargs = dict(self.visit(keyword) for keyword in node.iter.keywords)
+
+        # For make_block_ptr auto promotion aiu
+        # Check if base ptr depends on loop variable
+        loop_var = node.target.id if isinstance(node.target, ast.Name) else None
+        if loop_var is not None:
+            def addr_depends_on_loop_var(addr_node, loop_var):
+                for n in ast.walk(addr_node):
+                    if isinstance(n, ast.Name) and n.id == loop_var:
+                        return True
+                return False
+
+            for stmt in node.body:
+                for inner_node in ast.walk(stmt):
+                    if not isinstance(inner_node, ast.Call):
+                        continue
+                    if not isinstance(inner_node.func, ast.Attribute):
+                        continue
+                    if inner_node.func.attr != 'make_block_ptr':
+                        continue
+                    if not inner_node.args:
+                        continue
+
+                    load_base_ptr = inner_node.args[0]
+
+                    if addr_depends_on_loop_var(load_base_ptr, loop_var):
+                        self.negative_loop_make_block_ptr.add(
+                            (inner_node.col_offset, inner_node.end_col_offset)
+                        )
+
         if IteratorClass == language.static_range:
             iterator = IteratorClass(*iter_args, **iter_kwargs)
             static_range = range(iterator.start.value, iterator.end.value, iterator.step.value)
@@ -1371,6 +1401,11 @@ class CodeGenerator(ast.NodeVisitor):
         if (hasattr(fn, '__self__') and _is_triton_value(fn.__self__)) or language.core.is_builtin(fn) or isinstance(
                 fn, ConstexprFunction):
             extra_kwargs = dict()
+
+            if language.core.is_builtin(fn) and getattr(fn, '__name__', '') == 'make_block_ptr':
+                key = (node.col_offset, node.end_col_offset)
+                if key in self.negative_loop_make_block_ptr:
+                    extra_kwargs['_base_ptr_changed'] = True
 
             sig = getattr(fn, "signature", None)
             if isinstance(fn, ConstexprFunction):

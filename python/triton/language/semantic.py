@@ -1917,7 +1917,14 @@ class TritonSemantic(Generic[TensorTy]):
             return [self._convert_elem_to_ir_value(elem, require_i64) for elem in list_like]
         return [self._convert_elem_to_ir_value(list_like, require_i64)]
 
-    def make_block_ptr(self, base: TensorTy, shape, strides, offsets, block_shape, order) -> TensorTy:
+    def make_block_ptr(self, base: TensorTy, shape, strides, offsets, block_shape, order, base_ptr_changed=False) -> TensorTy:
+        if hasattr(strides, "__iter__"):
+            sdlist = [tl._unwrap_if_constexpr(elem) for elem in strides]
+        else:
+            sdlist = [tl._unwrap_if_constexpr(strides)]
+
+        origin_shape = shape
+
         # Convert dynamic arguments to IR values
         # NOTES(Chenggang): current `shape/strides` are `int64_t`, while `offsets/block_shape` are `int32_t`
         shape = self._convert_to_ir_values(shape)
@@ -1949,10 +1956,49 @@ class TritonSemantic(Generic[TensorTy]):
         assert all(len(block_shape) == len(list_like) for list_like in [shape, strides, offsets, order]), \
             "Expected shape/strides/offsets/block_shape to have the same length"
 
+        promote_use_aiu = self.builder.options.backend_name == "ppu"
+        # AIU only support 2D
+        if len(strides) != 2:
+            promote_use_aiu = False
+        else:
+            # stirde const and 1
+            stride_contig = sdlist[order[0]]
+            if not isinstance(stride_contig, int) or stride_contig != 1:
+                promote_use_aiu = False
+            else:
+                elem_size = base.dtype.element_ty.primitive_bitwidth // 8
+                contig_dim_size = tl._unwrap_if_constexpr(block_shape[order[0]])
+                # AIU only support B16
+                if elem_size != 2:
+                    promote_use_aiu = False
+                # contig dimension should be at least 32Byte
+                if contig_dim_size * elem_size < 32:
+                    promote_use_aiu = False
+                tileW = tl._unwrap_if_constexpr(block_shape[order[1]])
+                if tileW % 16 != 0:
+                    promote_use_aiu = False
+
+                if not hasattr(origin_shape, "__iter__"):
+                    origin_shape = [origin_shape]
+                origin_shape = [elem.value if isinstance(elem, tl.constexpr) else elem for elem in origin_shape]
+                contig_shape = tl._unwrap_if_constexpr(origin_shape[order[0]])
+                non_contig_shape = tl._unwrap_if_constexpr(origin_shape[order[1]])
+                # BM must be continuous
+                if not isinstance(contig_shape, int) or not isinstance(sdlist[order[1]], int) \
+                                                    or contig_shape != sdlist[order[1]]:
+                    promote_use_aiu = False
+
+                # base_ptr must be remain unchanged
+                if base_ptr_changed:
+                    promote_use_aiu = False
+
+        if os.getenv("PPU_DISABLE_AIU_PROMOTION", "").upper() in ["ON", "1", "YES", "TRUE", "Y"]:
+            promote_use_aiu = False
+
         # Build value, the type is:
         #   `pointer_type<blocked<shape, element_type>>` in Python
         #   `tt.ptr<tensor<shape, element_type>>` in MLIR
-        handle = self.builder.create_make_block_ptr(base.handle, shape, strides, offsets, block_shape, order)
+        handle = self.builder.create_make_block_ptr(base.handle, shape, strides, offsets, block_shape, order, promote_use_aiu)
         return self.tensor(handle, tl.pointer_type(tl.block_type(base.type.element_ty, block_shape)))
 
     def advance(self, base: TensorTy, offsets) -> TensorTy:

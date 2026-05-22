@@ -106,13 +106,41 @@ public:
         LDBG("Load " << *loadOp << " is too small for pipelining");
         return false;
       }
+      if (!canHaveSharedEncoding(cast<tt::LoadOp>(op))) {
+        LDBG("Load " << *op << " cannot have shared encoding");
+        return false;
+      }
     }
-    if (isa<tt::DescriptorLoadOp, tt::DescriptorGatherOp, tt::AIULoadOp>(op))
+    if (isa<tt::DescriptorLoadOp, tt::DescriptorGatherOp>(op))
       return true;
-    if (!canHaveSharedEncoding(cast<tt::LoadOp>(op))) {
-      LDBG("Load " << *op << " cannot have shared encoding");
-      return false;
+
+    if (auto aiuloadOp = dyn_cast<tt::AIULoadOp>(op)) {
+      auto forOp = op->getParentOfType<scf::ForOp>();
+      if (!forOp)
+          return false;
+
+      Value iv = forOp.getInductionVar();
+      Value addr = aiuloadOp.getSrcPtr();
+      SmallVector<Value> worklist = {addr};
+      DenseSet<Value> visited;
+
+      while (!worklist.empty()) {
+        Value cur = worklist.pop_back_val();
+        if (!visited.insert(cur).second)
+          continue;
+
+        if (cur == iv)
+          return false;
+
+        if (Operation *defOp = cur.getDefiningOp()) {
+          for (Value operand : defOp->getOperands())
+              worklist.push_back(operand);
+        }
+      }
     }
+
+    if (isa<tt::AIULoadOp>(op))
+      return true;
 
     // This patch is enabled by default for PPU, which brings better performance
     // for FA-bwd kernel.

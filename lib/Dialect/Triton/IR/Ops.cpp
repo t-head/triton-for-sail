@@ -1043,7 +1043,26 @@ void MakeTensorPtrOp::build(OpBuilder &builder, OperationState &state,
   auto result = PointerType::get(tensorType, pointerType.getAddressSpace());
 
   return build(builder, state, result, base, shape, strides, offsets,
-               builder.getDenseI32ArrayAttr(order));
+               builder.getDenseI32ArrayAttr(order), false);
+}
+
+//-- MakeTensorPtrOp --
+void MakeTensorPtrOp::build(OpBuilder &builder, OperationState &state,
+                            Value base, ValueRange shape, ValueRange strides,
+                            ValueRange offsets, ArrayRef<int32_t> tensorShape,
+                            ArrayRef<int32_t> order, bool isAIU) {
+  // Get pointer type from `base`
+  auto pointerType = cast<PointerType>(base.getType());
+  assert(pointerType != nullptr);
+
+  // Build type `tt.ptr<tensor<tensorShape, base.pointeeType>>`
+  auto tensorType = RankedTensorType::get(
+      SmallVector<int64_t>(tensorShape.begin(), tensorShape.end()),
+      pointerType.getPointeeType());
+  auto result = PointerType::get(tensorType, pointerType.getAddressSpace());
+
+  return build(builder, state, result, base, shape, strides, offsets,
+               builder.getDenseI32ArrayAttr(order), isAIU);
 }
 
 //-- AddPtrOp --

@@ -1873,9 +1873,9 @@ void init_triton_ir(py::module &&m) {
            [](TritonOpBuilder &self, Value &base, std::vector<Value> &shape,
               std::vector<Value> &strides, std::vector<Value> &offsets,
               std::vector<int32_t> &tensorShape,
-              std::vector<int32_t> &order) -> Value {
+              std::vector<int32_t> &order, bool isAIU) -> Value {
              return self.create<MakeTensorPtrOp>(base, shape, strides, offsets,
-                                                 tensorShape, order);
+                                                 tensorShape, order, isAIU);
            })
       // Advance a block pointer
       .def("create_advance",

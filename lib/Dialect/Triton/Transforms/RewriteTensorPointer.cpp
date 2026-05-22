@@ -26,6 +26,7 @@ private:
   SmallVector<Value> offsets;
   ArrayRef<int64_t> tensorShape;
   ArrayRef<int32_t> order;
+  bool isAIU;
 
   // A cache to avoid generating the same offset with range
   DenseMap<unsigned, Value> cachedOffsetWithRange;
@@ -43,7 +44,19 @@ public:
                const ArrayRef<int64_t> &tensorShape,
                ArrayRef<int32_t> order)
       : base(base), shape(shape), strides(strides), offsets(offsets),
-        tensorShape(tensorShape), order(order) {
+        tensorShape(tensorShape), order(order), isAIU(false) {
+    assert(shape.size() == strides.size() && shape.size() == offsets.size() &&
+           shape.size() == tensorShape.size());
+  }
+
+  RewritedInfo(Value base, const SmallVector<Value> &shape,
+              const SmallVector<Value> &strides,
+              const SmallVector<Value> &offsets,
+              const ArrayRef<int64_t> &tensorShape,
+              ArrayRef<int32_t> order,
+              bool isAIU)
+    : base(base), shape(shape), strides(strides), offsets(offsets),
+      tensorShape(tensorShape), order(order), isAIU(isAIU) {
     assert(shape.size() == strides.size() && shape.size() == offsets.size() &&
            shape.size() == tensorShape.size());
   }
@@ -59,6 +72,8 @@ public:
   SmallVector<Value> getOffsets() { return offsets; }
 
   ArrayRef<int32_t> getOrder() { return order; }
+
+  bool getIsAIU() { return isAIU; }
 
   void setOffset(unsigned i, Value newOffset) {
     offsets[i] = newOffset;
@@ -253,7 +268,7 @@ public:
     // Save information
     rewritedInfo[op.getResult()] =
         RewritedInfo(op.getBase(), op.getShape(), op.getStrides(), i64Offsets,
-                     tensorType.getShape(), op.getOrder());
+                     tensorType.getShape(), op.getOrder(), op.getIsAIU());
 
     // Erase the original operation
     eraser.push(op);
@@ -312,23 +327,100 @@ public:
       boundaryCheck = storeOp.getBoundaryCheck();
     }
 
-    // Generate new `ptr`, `mask` and `other`
-    auto newPtr = info.generatePtr(builder, op->getLoc());
-    auto newMask = info.generateMask(builder, op->getLoc(), boundaryCheck);
-    Value newOther;
-    if (auto loadOp = dyn_cast<triton::LoadOp>(op))
-      newOther = info.generateOther(builder, op->getLoc(), loadOp.getPadding());
+    bool canUseAIU = false;
+    auto loadOp = dyn_cast<triton::LoadOp>(op);
+    if(info.getIsAIU() && loadOp) {
+      // AIU_load must be in loop.
+      auto ptr = op->getOperand(0);
+      if (!triton::isTensorPointerType(ptr.getType())) {
+        assert(false && "Expected TensorPointerType");
+      }
+      auto getParentLoop = [](Operation *op) -> scf::ForOp {
+        Operation *parent = op->getParentOp();
+        while (parent != nullptr) {
+          if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
+            return forOp;
+          }
+          parent = parent->getParentOp();
+        }
+        return nullptr;
+      };
+      auto forOp = getParentLoop(op);
+      bool loadInLoop = (forOp != nullptr);
+      // dotOp must be in loop.
+      if(loadInLoop) {
+        bool seenDot = false;
+        for (Operation &bodyOp : forOp.getBody()->without_terminator()) {
+          if (isa<mlir::triton::DotOpInterface>(bodyOp)) {
+            seenDot = true;
+            break;
+          }
+        }
+        if(seenDot)
+          canUseAIU = true;
+      }
+    }
+    if(canUseAIU) {
+      auto loadOp = dyn_cast<triton::LoadOp>(op);
+      auto basePtr = info.getBasePtr();
+      auto shape = info.getShape();
+      auto offsets = info.getOffsets();
+      auto order = info.getOrder();
+      // Cast I64 offsets into I32
+      SmallVector<Value> i32Offsets;
+      for (auto offset : offsets) {
+        auto i32Offset = arith::TruncIOp::create(
+            builder, loadOp.getLoc(), builder.getI32Type(), offset);
+        i32Offsets.push_back(i32Offset);
+      }
 
-    // Create a new operation
-    if (auto loadOp = dyn_cast<triton::LoadOp>(op)) {
-      auto newResult = triton::LoadOp::create(
-          builder, loadOp.getLoc(), newPtr, newMask, newOther,
-          loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
+      // check pattern: load -> {dot, trans + dot}
+      Value loadResult = op->getResult(0);
+      triton::TransOp transOp = nullptr;
+      bool hasDotUser = false;
+      for (auto &use : loadResult.getUses()) {
+        if (dyn_cast<triton::DotOp>(use.getOwner()))
+          hasDotUser = true;
+        if (auto t = dyn_cast<triton::TransOp>(use.getOwner()))
+          transOp = t;
+      }
+
+      if (hasDotUser && transOp &&
+          transOp.getResult().hasOneUse() &&
+          dyn_cast<triton::DotOp>(transOp.getResult().use_begin()->getOwner())) {
+        auto transResult = triton::AIULoadOp::create(
+            builder, loadOp.getLoc(), transOp.getResult().getType(), basePtr,
+            llvm::to_vector(llvm::reverse(i32Offsets)),
+            llvm::to_vector(llvm::reverse(shape)),
+            llvm::to_vector(llvm::reverse(order)), loadOp.getCache(),
+            loadOp.getEvict());
+        transOp.replaceAllUsesWith(transResult.getResult());
+        eraser.push(transOp);
+      }
+
+      auto newResult = triton::AIULoadOp::create(
+          builder, loadOp.getLoc(), loadOp.getResult().getType(), basePtr,
+          i32Offsets, shape, order, loadOp.getCache(), loadOp.getEvict());
       op->getResult(0).replaceAllUsesWith(newResult);
-    } else if (auto storeOp = dyn_cast<triton::StoreOp>(op)) {
-      triton::StoreOp::create(builder, storeOp.getLoc(), newPtr,
-                              storeOp.getValue(), newMask, storeOp.getCache(),
-                              storeOp.getEvict());
+    } else {
+      // Generate new `ptr`, `mask` and `other`
+      auto newPtr = info.generatePtr(builder, op->getLoc());
+      auto newMask = info.generateMask(builder, op->getLoc(), boundaryCheck);
+      Value newOther;
+      if (auto loadOp = dyn_cast<triton::LoadOp>(op))
+        newOther = info.generateOther(builder, op->getLoc(), loadOp.getPadding());
+
+      // Create a new operation
+      if (auto loadOp = dyn_cast<triton::LoadOp>(op)) {
+        auto newResult = triton::LoadOp::create(
+            builder, loadOp.getLoc(), newPtr, newMask, newOther,
+            loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
+        op->getResult(0).replaceAllUsesWith(newResult);
+      } else if (auto storeOp = dyn_cast<triton::StoreOp>(op)) {
+        triton::StoreOp::create(builder, storeOp.getLoc(), newPtr,
+                                storeOp.getValue(), newMask, storeOp.getCache(),
+                                storeOp.getEvict());
+      }
     }
 
     // Erase the original operation
