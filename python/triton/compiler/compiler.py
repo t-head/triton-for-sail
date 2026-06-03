@@ -17,6 +17,7 @@ import os
 import shutil
 import time
 import copy
+import uuid
 
 # - ^\s*tt\.func\s+ : match the start of the string, any leading whitespace, the keyword func,
 #    and any following whitespace
@@ -349,9 +350,9 @@ def compile(src, target=None, options=None, _env_vars=None):
             if ext == "hgbin":
                 hgbin_path = metadata_group[ir_filename]
                 cubin_path = hgbin_path[:-len(".hgbin")] + ".cubin"
-                if os.path.lexists(cubin_path):
-                    os.remove(cubin_path)
-                os.symlink(os.path.basename(hgbin_path), cubin_path)
+                tmp_link = f"{cubin_path}.tmp.{os.getpid()}.{uuid.uuid4().hex}"
+                os.symlink(os.path.basename(hgbin_path), tmp_link)
+                os.replace(tmp_link, cubin_path)
         if fn_dump_manager is not None:
             fn_dump_manager.put(next_module, ir_filename)
             if ext == "cubin":
