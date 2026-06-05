@@ -110,7 +110,8 @@ Attribute getExpandedEncoding(Attribute encoding) {
     auto expandedInstrShape = insertValue<unsigned>(instrShape, 0, 1);
     auto expandedMmaEncoding = PPUMmaEncodingAttr::get(
         ctx, mmaEncoding.getVersionMajor(), mmaEncoding.getVersionMinor(),
-        expandedWarpsPerCTA, mmaEncoding.getCGALayout(), expandedInstrShape, 2);
+        expandedWarpsPerCTA, mmaEncoding.getCGALayout(), expandedInstrShape,
+        2);
     return expandedMmaEncoding;
   } else if (auto dotOperandEncoding =
                  mlir::dyn_cast<DotOperandEncodingAttr>(encoding)) {

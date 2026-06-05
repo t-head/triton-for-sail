@@ -454,7 +454,9 @@ bool matchMmaV1AndDotOperandLayout(RankedTensorType srcTy,
   }
   int elementTypeSize = srcTy.getElementType().getIntOrFloatBitWidth();
 
-  auto ans = mmaLayout.getVersionMajor() == 1 &&
+  auto instrShape = mmaLayout.getInstrShape();
+  bool isM8MMA = instrShape.size() >= 2 && instrShape[instrShape.size() - 2] == 8;
+  auto ans = mmaLayout.getVersionMajor() == 1 && !isM8MMA &&
              dotOperandLayout.getOpIdx() == 0 &&
              mmaLayout.getWarpsPerCTA()[1] == 1 &&
              mmaLayout.getVecSize() == 1 && !srcTy.getElementType().isF32() &&

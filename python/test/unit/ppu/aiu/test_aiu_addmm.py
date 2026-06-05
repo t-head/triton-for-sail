@@ -68,7 +68,13 @@ def addmm_kernel_aiu(
     ],
 )
 @pytest.mark.parametrize("scalar", [0.001, -0.999, 100.001, -111.999])
-def test_aiu_addmm(num_stages, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, num_warps, scalar):
+@pytest.mark.parametrize("m8_mma", [0, 1])
+def test_aiu_addmm(monkeypatch, num_stages, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, num_warps, scalar, m8_mma):
+    monkeypatch.setenv("FORCE_USE_M8MMA", str(m8_mma))
+    capability = torch.cuda.get_device_capability()
+    if m8_mma == 1 and not (capability[0] == 8 and capability[1] == 0):
+        pytest.skip("m8 mma only support on ppu1.0")
+
     device = "cuda"
     torch.manual_seed(42)
     A = torch.randn((M, K), dtype=torch.float16, device=device)

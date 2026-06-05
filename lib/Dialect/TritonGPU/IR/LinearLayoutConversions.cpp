@@ -645,12 +645,142 @@ LinearLayout chooseDotLdMatrixLayoutPPUMmaV2(DotOperandEncodingAttr dot,
   return combineCtaCgaWithShape(layout, getCGALayout(dot), shape);
 }
 
+// M8MMA: m8n16k16 - different from V1 in ldmatrix instruction selection
+LinearLayout chooseDotLdMatrixLayoutPPUMmaV1m8(DotOperandEncodingAttr dot,
+                                               ArrayRef<int64_t> shape,
+                                               bool needTrans,
+                                               int32_t elemBitWidth,
+                                               bool Opb8bLdmatrix) {
+  auto ctx = dot.getContext();
+  auto mma = cast<PPUMmaEncodingAttr>(dot.getParent());
+  auto rank = shape.size();
+  auto opIdx = dot.getOpIdx();
+  int kDim = (opIdx == 0) ? rank - 1 : rank - 2;
+  int nonKDim = (opIdx == 0) ? rank - 2 : rank - 1;
+
+  StringAttr kReg = S("register");
+  StringAttr kLane = S("lane");
+  StringAttr kWarp = S("warp");
+  StringAttr kBlock = S("block");
+  StringAttr kInner = opIdx == 0 ? (needTrans ? S("dim0") : S("dim1"))
+                                 : (needTrans ? S("dim1") : S("dim0"));
+  StringAttr kOuter = opIdx == 0 ? (needTrans ? S("dim1") : S("dim0"))
+                                 : (needTrans ? S("dim0") : S("dim1"));
+
+  std::vector<std::vector<int>> basesReg;
+  std::vector<std::vector<int>> basesLane = {
+      {1, 0}, {2, 0}, {4, 0}, {0, 0}, {0, 0}};
+  bool kX2 = shape[kDim] > 8 * 16 / elemBitWidth;
+  bool nonKX2 = shape[nonKDim] > 8;
+  bool kX4 = shape[kDim] > 16 * 16 / elemBitWidth;
+  // Construct a tile consisting of 4 8x8x16bits sub-tiles to use ldmatrix
+  // efficiently. opIdx=0 and opIdx=1 are handled differently.
+
+  // The matrix elements of thread 0 are distributed in the following pattern
+  // (fp16):
+  //
+  //           col0       col8
+  //   row0  reg[0-1]   reg[4-5]
+  //   row8  reg[2-3]   reg[6-7]
+  if (opIdx == 0) {
+    // vecBits = 64, using ppu.ldmatrix.x2
+    auto vecBits = 64;
+    if (kX4) {
+      // vecBits = 128, using ppu.ldmatrix.x4 to load 8X32
+      vecBits = 128;
+    }
+    for (int logReg = 0; logReg < llvm::Log2_32(vecBits / elemBitWidth);
+         logReg++) {
+      auto reg = 1 << logReg;
+      basesReg.push_back({0, reg});
+    }
+    if (needTrans) {
+      if (kX4) {
+        // use m16n16.x1.trans
+        basesLane[3] = {16 * 16 / elemBitWidth, 0};
+        basesLane[4] = {8 * 16 / elemBitWidth, 0};
+      } else {
+        // ldmatrix.x2 with KOrder matX2
+        basesLane[0] = {0, 4 * 16 / elemBitWidth};
+        basesLane[1] = {1, 0};
+        basesLane[2] = {2, 0};
+        basesLane[3] = {4, 0};
+        basesLane[4] = {8, 0};
+      }
+    } else {
+      if (kX4) {
+        basesLane[3] = {0, 8 * 16 / elemBitWidth};
+        basesLane[4] = {0, 16 * 16 / elemBitWidth};
+      } else {
+        // ldmatrix.x2 with KOrder matX2
+        basesLane[0] = {0, 4 * 16 / elemBitWidth};
+        basesLane[1] = {1, 0};
+        basesLane[2] = {2, 0};
+        basesLane[3] = {4, 0};
+        basesLane[4] = {0, 8 * 16 / elemBitWidth};
+      }
+    }
+  } else {
+    // vecBits = 128, using ppu.ldmatrix.x4
+    for (int logReg = 0; logReg < llvm::Log2_32(8 * 16 / elemBitWidth);
+         logReg++) {
+      auto reg = 1 << logReg;
+      basesReg.push_back({0, reg});
+    }
+    // Construct a tile consisting of 4 8x8x16bits sub-tiles to use ldmatrix
+    // efficiently. opIdx=0 and opIdx=1 are handled differently.
+
+    // The matrix elements of thread 0 are distributed in the following pattern
+    // (fp16):
+    //
+    //           col0       col8
+    //   row0  reg[0-1]   reg[4-5]
+    //   row8  reg[2-3]   reg[6-7]
+    if (needTrans) {
+      assert(elemBitWidth <= 16 && "Only elements smaller than 16 bits are "
+                                   "supported in the transposed mode");
+      // use m16n16.x1.trans
+      basesLane[3] = {0, 8 * 16 / elemBitWidth};
+      basesLane[4] = {8, 0};
+    } else {
+      // ldmatrix.x4
+      basesLane[3] = {0, 8 * 16 / elemBitWidth};
+      basesLane[4] = {8, 0};
+    }
+  }
+
+  int numTileCols =
+      (8 * 16 / elemBitWidth)
+      << (static_cast<int>(kX2) + static_cast<int>(kX4 && opIdx == 0));
+
+  // Expand the `register` dimension so the size of columns matches `K`.
+  auto layout =
+      LinearLayout({{kReg, basesReg}, {kLane, basesLane}, {kWarp, {}}},
+                   {kOuter, kInner}) *
+      LinearLayout::identity1D(shape[kDim] / numTileCols, kReg,
+                               S("dim" + std::to_string(kDim)));
+  // Expand the `warp` dimension according to warpsPerCTA.
+  auto warpsPerCTA = mma.getWarpsPerCTA();
+  auto warpOrder = getMatrixOrder(rank, /*rowMajor*/ true);
+  layout *=
+      broadcastedDotOperandLayout(ctx, warpsPerCTA, warpOrder, kDim, kWarp)
+          .transposeOuts(llvm::to_vector(layout.getOutDimNames()));
+  return combineCtaCgaWithShape(layout, getCGALayout(dot), shape);
+}
+
 LinearLayout choosePPULdMatrixLayout(Attribute enc, ArrayRef<int64_t> shape,
                                      bool needTrans, int32_t elemBitWidth,
                                      bool Opb8bLdmatrix) {
   auto dot = cast<DotOperandEncodingAttr>(enc);
   auto mmaEnc = cast<PPUMmaEncodingAttr>(dot.getParent());
   if (mmaEnc.getVersionMajor() == 1) {
+    auto instrShape = mmaEnc.getInstrShape();
+    bool useM8MMA = instrShape.size() >= 2 &&
+                    instrShape[instrShape.size() - 2] == 8;
+    if (useM8MMA) {
+      return chooseDotLdMatrixLayoutPPUMmaV1m8(dot, shape, needTrans, elemBitWidth,
+                                               Opb8bLdmatrix);
+    }
     return chooseDotLdMatrixLayoutPPUMmaV1(dot, shape, needTrans, elemBitWidth,
                                            Opb8bLdmatrix);
   } else if (mmaEnc.getVersionMajor() == 2) {
@@ -1206,7 +1336,7 @@ PPUMmaEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
   if (getVersionMajor() == 1 || getVersionMajor() == 2) {
     tileShape = SmallVector<unsigned>(getInstrShape());
   } else {
-    assert(false && "Unsupported PPU vresion");
+    assert(false && "Unsupported PPU version");
   }
   // mma layout always assumes kWidth = 2
   constexpr auto kWidth = 2;
@@ -1261,14 +1391,15 @@ LinearLayout PPUDotToLinearLayout(ArrayRef<int64_t> shape,
   bool isA = dot.getOpIdx() == 0;
   MLIRContext *ctx = mma.getContext();
 
+  auto instrShape = mma.getInstrShape();
   SmallVector<unsigned> tileShape(rank, 1);
   if (isA) {
-    tileShape[rank - 2] = 16;
+    tileShape[rank - 2] = instrShape[rank - 2];
     tileShape[rank - 1] = kWidth * 8;
   } else {
     assert(mma.getVersionMajor() == 1 || mma.getVersionMajor() == 2);
     tileShape[rank - 2] = kWidth * 8;
-    tileShape[rank - 1] = 16;
+    tileShape[rank - 1] = instrShape[rank - 1];
   }
   auto order = getOrderForDotOperand(dot.getOpIdx(), rank, /*kContig*/ true);
 

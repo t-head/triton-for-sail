@@ -36,6 +36,11 @@ LogicalResult convertPPUMmaV1(triton::DotOp op, triton::DotOp::Adaptor adaptor,
                               const LLVMTypeConverter *typeConverter,
                               ConversionPatternRewriter &rewriter);
 
+LogicalResult convertPPUMmaV1m8(triton::DotOp op,
+                                triton::DotOp::Adaptor adaptor,
+                                const LLVMTypeConverter *typeConverter,
+                                ConversionPatternRewriter &rewriter);
+
 LogicalResult convertPPUMmaV2(triton::DotOp op, triton::DotOp::Adaptor adaptor,
                               const LLVMTypeConverter *typeConverter,
                               ConversionPatternRewriter &rewriter);
@@ -95,6 +100,10 @@ struct DotOpConversion : public ConvertOpToLLVMPattern<triton::DotOp> {
         cast<RankedTensorType>(D.getType()).getEncoding());
     if (mmaLayout) {
       if (mmaLayout.getVersionMajor() == 1) {
+        auto instrShape = mmaLayout.getInstrShape();
+        if (instrShape.size() >= 2 && instrShape[instrShape.size() - 2] == 8) {
+          return convertPPUMmaV1m8(op, adaptor, getTypeConverter(), rewriter);
+        }
         return convertPPUMmaV1(op, adaptor, getTypeConverter(), rewriter);
       } else if (mmaLayout.getVersionMajor() == 2) {
         return convertPPUMmaV2(op, adaptor, getTypeConverter(), rewriter);

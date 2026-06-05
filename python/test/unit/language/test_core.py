@@ -3263,7 +3263,8 @@ def get_test_small_dots_cases():
     get_test_dot_softmax() + \
     get_test_small_dots_cases())
 @pytest.mark.parametrize("num_ctas", num_ctas_list)
-def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dtype, out_dtype, kpack, mma_nonk_size,
+@pytest.mark.parametrize("m8_mma", [0, 1])
+def test_dot(monkeypatch, M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dtype, out_dtype, kpack, mma_nonk_size, m8_mma,
              num_ctas, device):
     if is_interpreter():
         if in_dtype == 'bfloat16':
@@ -3293,6 +3294,8 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
                 pytest.skip("float8e4nv not supported on sm <= 80")
             if in_dtype == 'float64' and input_precision != 'ieee':
                 pytest.skip("Only IEEE precision is supported for float64 dot")
+            if m8_mma == 1 and not (capability[0] == 8 and capability[1] == 0):
+                pytest.skip("m8 mma only support on ppu1.0")
 
         if is_hip():
             if in_dtype in ("float8e5", "float8e4nv") and not (is_hip_gfx1250() or is_hip_cdna4() or is_hip_rdna4()):

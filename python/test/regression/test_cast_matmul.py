@@ -84,7 +84,14 @@ def matmul_kernel(A, B, C, M, N, K,  #
                           for w in input_dtypes
                           for x in input_dtypes  #
                           for o in out_dtypes])
-def test_cast_matmul(M, K, N, BLOCK_K, BLOCK_M, BLOCK_N, w_dtype, x_dtype, out_dtype, device):
+@pytest.mark.parametrize("m8_mma", [0, 1])
+def test_cast_matmul(monkeypatch, M, K, N, BLOCK_K, BLOCK_M, BLOCK_N, w_dtype, x_dtype, out_dtype,
+                     m8_mma, device):
+    monkeypatch.setenv("FORCE_USE_M8MMA", str(m8_mma))
+    capability = torch.cuda.get_device_capability()
+    if m8_mma == 1 and not (capability[0] == 8 and capability[1] == 0):
+        pytest.skip("m8 mma only support on ppu1.0")
+
     if is_hip() and (BLOCK_K, BLOCK_M, BLOCK_N) in ((64, 64, 128), (64, 16, 128)):
         pytest.skip("skip as they run out of shared memory")
     if x_dtype == w_dtype:

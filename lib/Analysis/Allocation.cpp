@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <queue>
 
 #include "mlir/Analysis/Liveness.h"
 #include "mlir/Support/LLVM.h"
@@ -178,6 +179,85 @@ private:
           unsigned swizzledElems = swizzledBytes / elemByteSize;
           unsigned aiuFactor = swizzledElems / cubeC;
           bytes *= aiuFactor;
+        }
+      }
+    }
+
+    // for ppu.ldmatrix.sync.aligned.m8n8.x2.swzl.trans
+    // Use x4 instead of x2, need to increase the size of shared memory allocation
+    // for PPU0010 M8MMA operand B
+    {
+      // Find the uses of alloc local objects through BFS
+      // Some are used directly, some are converted by view,
+      // and some are used by branches
+      Value allocResult = op->getResult(0);
+      std::queue<Value> queue;
+      queue.push(allocResult);
+      llvm::SmallPtrSet<mlir::Block *, 20> visitedBlocks;
+      while (!queue.empty()) {
+        Value currentValue = queue.front();
+        queue.pop();
+
+        for (auto &use : currentValue.getUses()) {
+          Operation *user = use.getOwner();
+
+          if (llvm::isa<triton::gpu::LocalLoadOp>(user)) {
+            auto localLoadOp = dyn_cast<triton::gpu::LocalLoadOp>(user);
+            auto dstTy = localLoadOp.getType();
+            Attribute dstLayout = dstTy.getEncoding();
+            if (isa<triton::gpu::DotOperandEncodingAttr>(dstLayout) &&
+                isa<triton::gpu::PPUMmaEncodingAttr>(
+                    cast<gpu::DotOperandEncodingAttr>(dstLayout).getParent())) {
+              triton::gpu::MemDescType srcTy = localLoadOp.getSrc().getType();
+              Attribute srcLayout = srcTy.getEncoding();
+              auto sharedEnc =
+                  dyn_cast<triton::gpu::PPUAIUSharedEncodingAttr>(srcLayout);
+              auto dotEnc = cast<gpu::DotOperandEncodingAttr>(dstTy.getEncoding());
+              auto mmaEncoding =
+                  dyn_cast<triton::gpu::PPUMmaEncodingAttr>(dotEnc.getParent());
+              if (sharedEnc && mmaEncoding &&
+                  mmaEncoding.getInstrShape().size() >= 2 &&
+                  mmaEncoding.getInstrShape()[mmaEncoding.getInstrShape().size() - 2] == 8 &&
+                  dotEnc.getOpIdx() == 1) {
+                // m8n8*2 -> m8n8x4, b16
+                bytes += (16 * 8 * 16 / 8);
+              }
+            }
+          } else if (llvm::isa<triton::gpu::MemDescIndexOp>(user)) {
+            queue.push(user->getResult(0));
+          } else if (auto branchOp =
+                         llvm::dyn_cast<mlir::BranchOpInterface>(user)) {
+            auto parentBlock = user->getBlock();
+            for (auto *successorBlock : parentBlock->getSuccessors()) {
+              if (!visitedBlocks.insert(successorBlock).second) {
+                continue;
+              }
+              for (auto blockArg : successorBlock->getArguments()) {
+                for (auto *predecessorBlock :
+                     successorBlock->getPredecessors()) {
+                  auto *terminator = predecessorBlock->getTerminator();
+                  if (auto predBranchOp =
+                          llvm::dyn_cast<mlir::BranchOpInterface>(terminator)) {
+                    auto operands = predBranchOp->getOperands();
+                    unsigned blockArgIndex = blockArg.getArgNumber();
+                    if (blockArgIndex < operands.size()) {
+                      auto operand = operands[blockArgIndex];
+                      if (operand == currentValue) {
+                        queue.push(blockArg);
+                      } else if (auto definingOp = operand.getDefiningOp()) {
+                        if (llvm::isa<triton::gpu::LocalAllocOp>(definingOp)) {
+                          queue.push(blockArg);
+                        } else if (llvm::isa<triton::gpu::MemDescIndexOp>(
+                                       definingOp)) {
+                          queue.push(definingOp->getOperand(0));
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
       }
     }

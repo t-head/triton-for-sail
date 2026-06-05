@@ -41,6 +41,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/DecomposeScaledBlocked.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/LayoutUtils.h"
+#include "triton/Tools/Sys/GetEnv.hpp"
 #include "triton/Tools/StrUtil.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
@@ -52,6 +53,47 @@ namespace gpu {
 
 namespace {
 
+// M8MMA selection: determine whether to use m8n16k16 (M8MMA) attribute
+// Defined before PPUMmaVersionToInstrShape so it can be called internally.
+static bool shouldUseM8MMA(const ArrayRef<int64_t> shape, int numWarps,
+                           int versionMajor) {
+  // Only use M8MMA in majorVersion == 1
+  if (versionMajor != 1)
+    return false;
+  // default to use m16n16k16
+  bool useM8MMA = false;
+  SmallVector<unsigned> warp(2, 1);
+  unsigned M = 16;
+  unsigned N = 16;
+
+  do {
+    if (warp[0] * warp[1] >= numWarps)
+      break;
+    if (shape[0] / M / warp[0] >=
+        shape[1] / N / warp[1]) {
+      if (warp[0] < shape[0] / M) {
+        warp[0] *= 2;
+      } else
+        warp[1] *= 2;
+    } else {
+      warp[1] *= 2;
+    }
+  } while (true);
+
+  // Use M8MMA when shape cannot be fully covered by m16mma tiles
+  if ((shape[0] < M * warp[0]) || (shape[1] < N * warp[1])) {
+    useM8MMA = true;
+  }
+
+  if (mlir::triton::tools::getBoolEnv("FORCE_USE_M16MMA")) {
+    useM8MMA = false;
+  } else if (mlir::triton::tools::getBoolEnv("FORCE_USE_M8MMA")) {
+    useM8MMA = true;
+  }
+
+  return useM8MMA;
+}
+
 SmallVector<unsigned, 3>
 PPUMmaVersionToInstrShape(int version, const ArrayRef<int64_t> &shape,
                           Type eltType, int numWarps) {
@@ -59,7 +101,12 @@ PPUMmaVersionToInstrShape(int version, const ArrayRef<int64_t> &shape,
     auto rank = shape.size();
     SmallVector<unsigned, 3> ret(rank, 1);
     ret[rank - 1] = 16;
-    ret[rank - 2] = 16;
+    // Decide M dimension: use M8MMA when shape cannot be fully covered by m16mma tiles
+    if (version == 1 && shouldUseM8MMA(shape, numWarps, 1)) {
+      ret[rank - 2] = 8;
+    } else {
+      ret[rank - 2] = 16;
+    }
     return ret;
   } else {
     assert(false && "version not supported");
@@ -93,6 +140,7 @@ static bool supportPPUMMA(triton::DotOp op, int version) {
 }
 
 // Get the highest version supported for the hardware and the dot.
+// Returns versionMajor (1 or 2). useM8MMA is determined internally by instrShape.
 static int getMMAVersionSafe(int computeCapability, DotOp op) {
   // List supported mma version in order of preference.
   SmallVector<int> versionsSupported;
@@ -164,6 +212,68 @@ SmallVector<unsigned, 2> warpsPerTileMmaV1(DotOpInterface dotOp,
       warps[0] *= 2;
       // Too many warps for this mma (repM == repN == 1).
       // We allocate the remaining warps to the left (arbitrary choice)
+      if (reps[0] != 1) {
+        reps[0] /= 2;
+      }
+    } else {
+      warps[1] *= 2;
+      reps[1] /= 2;
+    }
+  }
+  return {(unsigned)warps[0], (unsigned)warps[1]};
+}
+
+// PPUv1 M8MMA (m8n16k16) warp tile computation
+SmallVector<unsigned, 2> warpsPerTileMmaV1m8(DotOpInterface dotOp,
+                                              const ArrayRef<int64_t> shape,
+                                              int numWarps) {
+  auto rank = shape.size();
+  // Early exit for batched matmul
+  if (rank == 3)
+    return {(unsigned)numWarps, 1, 1};
+
+  auto filter = [&dotOp](Operation *op) {
+    return op->getParentRegion() == dotOp->getParentRegion() &&
+           !isa<TransOp>(op);
+  };
+  auto slices = mlir::getSlice(dotOp, {filter}, {filter});
+  bool hasChainedDot = false;
+  for (Operation *op : slices) {
+    if (isa<DotOp>(op) && (op != dotOp)) {
+      auto chainedDot = cast<DotOp>(op);
+      auto resTy = chainedDot.getResult().getType();
+      if (resTy.getRank() != rank) {
+        continue;
+      }
+      if (auto mmaEncoding =
+              dyn_cast<PPUMmaEncodingAttr>(resTy.getEncoding())) {
+        return to_vector(mmaEncoding.getWarpsPerCTA());
+      }
+      hasChainedDot = true;
+    }
+  }
+  if (hasChainedDot) {
+    int64_t MaxWarpM = 8 * numWarps;
+    if (MaxWarpM <= shape[0]) {
+      return {(unsigned)numWarps, 1};
+    }
+  }
+
+  assert(rank == 2);
+  SmallVector<int64_t> shapePerWarp = {8, 16};
+  SmallVector<int64_t> warps = {1, 1};
+  // Compute repM and repN
+  SmallVector<int64_t> reps = {ceil(shape[0], shapePerWarp[0]),
+                               ceil(shape[1], shapePerWarp[1])};
+  // The formula for the number of registers given the reps is
+  // repM * 2 * repK + repN * 2 * repK + regsC
+  // where regsC = repM * repN * 2, which does not depend on the warp shape
+  //
+  // As such, to minimize the register pressure, we need to balance
+  // repM and repN.
+  while (product(warps) < numWarps) {
+    if (reps[0] >= reps[1]) {
+      warps[0] *= 2;
       if (reps[0] != 1) {
         reps[0] /= 2;
       }
@@ -265,8 +375,15 @@ getWarpsPerTile(DotOpInterface dotOp, const ArrayRef<int64_t> shape,
                 int version, int numWarps,
                 const SmallVector<unsigned, 3> &instrShape) {
   switch (version) {
-  case 1:
+  case 1: {
+    // Check if using M8MMA (m8n16k16) based on instrShape
+    auto rank = shape.size();
+    bool useM8MMA = instrShape.size() >= 2 &&
+                    instrShape[instrShape.size() - 2] == 8;
+    if (useM8MMA)
+      return warpsPerTileMmaV1m8(dotOp, shape, numWarps);
     return warpsPerTileMmaV1(dotOp, shape, numWarps);
+  }
   case 2:
     return warpsPerTileMmaV2(dotOp, shape, numWarps);
   default:
@@ -387,8 +504,22 @@ static MMAEncodingResult createMMAEncodingForDot(DotOpInterface dotOp,
 static Value convertDotOperandForMMA(Value v, int opIdx, int bitwidth,
                                      RankedTensorType newRetType,
                                      PatternRewriter &rewriter) {
-  auto minType = bitwidth > 0 ? rewriter.getIntegerType(bitwidth) : v.getType();
   auto vType = cast<RankedTensorType>(v.getType());
+  auto mmaEnc = mlir::dyn_cast<PPUMmaEncodingAttr>(newRetType.getEncoding());
+  if (mmaEnc) {
+    auto instrShape = mmaEnc.getInstrShape();
+    bool useM8MMA = instrShape.size() >= 2 &&
+                    instrShape[instrShape.size() - 2] == 8;
+    if (useM8MMA) {
+      auto eltTy = vType.getElementType();
+      auto newVEncoding = DotOperandEncodingAttr::get(
+          v.getContext(), opIdx, newRetType.getEncoding(), eltTy);
+      auto newVType = vType.cloneWithEncoding(newVEncoding);
+      return ConvertLayoutOp::create(rewriter, v.getLoc(), newVType, v);
+    }
+  }
+
+  auto minType = bitwidth > 0 ? rewriter.getIntegerType(bitwidth) : v.getType();
   auto newVEncoding = DotOperandEncodingAttr::get(
       v.getContext(), opIdx, newRetType.getEncoding(), minType);
   auto newVType = vType.cloneWithEncoding(newVEncoding);
