@@ -5,11 +5,13 @@ from triton._C.libtriton import ir as triton_ir
 from triton._C.libtriton import proton as triton_proton
 from triton._C.libtriton import amd as triton_amd
 from triton._C.libtriton import nvidia as triton_nvidia
+from triton._C.libtriton import ppu as triton_ppu
 from triton._C.libtriton import passes as triton_passes
 from triton._C.libproton import proton as libproton
 from triton.compiler import LazyDict
 from triton.runtime._allocation import set_profile_allocator, NullAllocator
 from triton.backends import backends
+from triton._utils import is_ppu_device
 
 from .hook import Hook
 from ..flags import flags
@@ -120,7 +122,7 @@ def _interpret_mode(mode_obj: Union[str, mode.InstrumentationMode]) -> mode.Inst
 def _get_backend_name() -> str:
     backend = triton.runtime.driver.active.get_current_target().backend
     if backend == "cuda":
-        return "nvidia"
+        return "ppu" if is_ppu_device() else "nvidia"
     elif backend == "hip":
         return "amd"
     else:
@@ -178,6 +180,8 @@ class InstrumentationHook(Hook):
         def to_llvm_passes(pm):
             if backend_name == "nvidia":
                 triton_proton.add_convert_proton_nvidia_gpu_to_llvm(pm)
+            elif backend_name == "ppu":
+                triton_proton.add_convert_proton_ppu_gpu_to_llvm(pm)
             elif backend_name == "amd":
                 arch = triton.runtime.driver.active.utils.get_device_properties(device)["arch"].split(":")[0]
                 triton_proton.add_convert_proton_amd_gpu_to_llvm(pm, arch)
@@ -236,6 +240,8 @@ class InstrumentationHook(Hook):
             backend_name = _get_backend_name()
             if backend_name == "nvidia":
                 triton_nvidia.load_dialects(context)
+            elif backend_name == "ppu":
+                triton_ppu.load_dialects(context)
             elif backend_name == "amd":
                 triton_amd.load_dialects(context)
             triton_proton.load_dialects(context)

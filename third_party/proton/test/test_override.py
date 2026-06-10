@@ -4,7 +4,7 @@ import pathlib
 import json
 import pytest
 
-from triton._internal_testing import is_cuda, is_hip, is_hip_cdna2
+from triton._internal_testing import is_cuda, is_hip, is_hip_cdna2, is_ppu
 
 pytestmark = pytest.mark.skipif(is_hip_cdna2(), reason="old AMD GPUs are not supported")
 
@@ -46,6 +46,11 @@ def test_override(tmp_path: pathlib.Path):
         assert len(gcn_files) == 1
         os.remove(gcn_files[0])
         os.remove(hsaco_files[0])
+
+    if is_ppu():
+        hgbin_files = list(tmp_path.rglob("*.hgbin"))
+        assert len(hgbin_files) == 1
+        os.remove(hgbin_files[0])
 
     filename = str(list(tmp_path.rglob("*.ttgir"))[0])
 

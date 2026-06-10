@@ -39,6 +39,7 @@
 #include "triton/Analysis/Allocation.h"
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Analysis/Membar.h"
+#include "triton/Conversion/TritonGPUToLLVM/Passes.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -204,6 +205,12 @@ struct ConvertTritonGPUToLLVMPPU
                  targetInfo));
     ModuleMembarAnalysis membarPass(&allocation);
     membarPass.run();
+    bool hasGlobalScratchAlloc = false;
+    mod.walk([&](triton::gpu::GlobalScratchAllocOp) {
+      hasGlobalScratchAlloc = true;
+    });
+    if (hasGlobalScratchAlloc)
+      mlir::triton::gpu::runGlobalScratchMemoryAllocation(mod);
 
     mlir::LowerToLLVMOptions option(context);
     option.overrideIndexBitwidth(32);

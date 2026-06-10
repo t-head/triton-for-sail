@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from typing import cast, Any, Callable, Generator, Generic, Optional, Protocol, Type, TypeVar, TypedDict, TYPE_CHECKING, Union
 
 from triton._C.libtriton import getenv, getenv_bool  # type: ignore
+from ._utils import is_ppu_device
 
 if TYPE_CHECKING:
     from .runtime.cache import CacheManager, RemoteCacheBackend
@@ -559,11 +560,16 @@ class amd_knobs(base_knobs):
     swap_mir_enable_misched: env_bool = env_bool("TRITON_SWAP_MIR_ENABLE_MISCHED", False)
 
 
+def _default_cupti_lib_dir():
+    if is_ppu_device():
+        ppu_sdk = os.environ.get("PPU_SDK", "/usr/local/PPU_SDK")
+        return os.path.join(ppu_sdk, "CUDA_SDK", "lib64")
+    return str(pathlib.Path(__file__).parent.absolute() / "backends" / "nvidia" / "lib" / "cupti")
+
+
 class proton_knobs(base_knobs):
     disable: env_bool = env_bool("TRITON_PROTON_DISABLE", False)
-    cupti_lib_dir: env_str = env_str(
-        "TRITON_CUPTI_LIB_PATH",
-        str(pathlib.Path(__file__).parent.absolute() / "backends" / "nvidia" / "lib" / "cupti"))
+    cupti_lib_dir: env_str = env_str("TRITON_CUPTI_LIB_PATH", _default_cupti_lib_dir())
     cupti_lib_blackwell_dir: env_str = env_str(
         "TRITON_CUPTI_LIB_BLACKWELL_PATH",
         str(pathlib.Path(__file__).parent.absolute() / "backends" / "nvidia" / "lib" / "cupti-blackwell"))
