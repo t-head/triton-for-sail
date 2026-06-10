@@ -237,52 +237,51 @@ SmallVector<unsigned, 2> warpsPerTileMmaV1m8(DotOpInterface dotOp,
            !isa<TransOp>(op);
   };
   auto slices = mlir::getSlice(dotOp, {filter}, {filter});
-  bool hasChainedDot = false;
-  for (Operation *op : slices) {
-    if (isa<DotOp>(op) && (op != dotOp)) {
-      auto chainedDot = cast<DotOp>(op);
-      auto resTy = chainedDot.getResult().getType();
-      if (resTy.getRank() != rank) {
-        continue;
-      }
-      if (auto mmaEncoding =
-              dyn_cast<PPUMmaEncodingAttr>(resTy.getEncoding())) {
-        return to_vector(mmaEncoding.getWarpsPerCTA());
-      }
-      hasChainedDot = true;
-    }
-  }
-  if (hasChainedDot) {
-    int64_t MaxWarpM = 8 * numWarps;
-    if (MaxWarpM <= shape[0]) {
-      return {(unsigned)numWarps, 1};
-    }
-  }
+  // bool hasChainedDot = false;
+  // for (Operation *op : slices) {
+  //   if (isa<DotOp>(op) && (op != dotOp)) {
+  //     auto chainedDot = cast<DotOp>(op);
+  //     auto resTy = chainedDot.getResult().getType();
+  //     if (resTy.getRank() != rank) {
+  //       continue;
+  //     }
+  //     if (auto mmaEncoding =
+  //             dyn_cast<PPUMmaEncodingAttr>(resTy.getEncoding())) {
+  //       return to_vector(mmaEncoding.getWarpsPerCTA());
+  //     }
+  //     hasChainedDot = true;
+  //   }
+  // }
+  // if (hasChainedDot) {
+  //   int64_t MaxWarpM = 8 * numWarps;
+  //   if (MaxWarpM <= shape[0]) {
+  //     return {(unsigned)numWarps, 1};
+  //   }
+  // }
 
-  assert(rank == 2);
-  SmallVector<int64_t> shapePerWarp = {8, 16};
-  SmallVector<int64_t> warps = {1, 1};
-  // Compute repM and repN
-  SmallVector<int64_t> reps = {ceil(shape[0], shapePerWarp[0]),
-                               ceil(shape[1], shapePerWarp[1])};
-  // The formula for the number of registers given the reps is
-  // repM * 2 * repK + repN * 2 * repK + regsC
-  // where regsC = repM * repN * 2, which does not depend on the warp shape
-  //
-  // As such, to minimize the register pressure, we need to balance
-  // repM and repN.
-  while (product(warps) < numWarps) {
-    if (reps[0] >= reps[1]) {
-      warps[0] *= 2;
-      if (reps[0] != 1) {
-        reps[0] /= 2;
-      }
+  SmallVector<unsigned> ret(rank, 1);
+  SmallVector<int64_t> shapePerWarp(rank, 1);
+  shapePerWarp[rank - 1] = 16;
+  shapePerWarp[rank - 2] = 8;
+
+  // TODO (@daadaada): double-check.
+  // original logic in
+  // https://github.com/triton-lang/triton/blob/master/lib/codegen/analysis/layout.cc#L252
+  // seems buggy for shape = [32, 16] ?
+  do {
+    if (ret[0] * ret[1] >= numWarps)
+      break;
+    if (shape[0] / (shapePerWarp[0] *2) / ret[0] >=
+        shape[1] / shapePerWarp[1] / ret[1]) {
+      if (ret[0] < shape[0] / shapePerWarp[0]) {
+        ret[0] *= 2;
+      } else
+        ret[1] *= 2;
     } else {
-      warps[1] *= 2;
-      reps[1] /= 2;
+      ret[1] *= 2;
     }
-  }
-  return {(unsigned)warps[0], (unsigned)warps[1]};
+  } while (true);
+  return ret;
 }
 
 SmallVector<unsigned> warpsPerTileMmaV2(DotOpInterface dotOp,
