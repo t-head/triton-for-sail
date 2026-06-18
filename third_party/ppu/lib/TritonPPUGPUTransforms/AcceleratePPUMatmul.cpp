@@ -504,20 +504,6 @@ static Value convertDotOperandForMMA(Value v, int opIdx, int bitwidth,
                                      RankedTensorType newRetType,
                                      PatternRewriter &rewriter) {
   auto vType = cast<RankedTensorType>(v.getType());
-  auto mmaEnc = mlir::dyn_cast<PPUMmaEncodingAttr>(newRetType.getEncoding());
-  if (mmaEnc) {
-    auto instrShape = mmaEnc.getInstrShape();
-    bool useM8MMA = instrShape.size() >= 2 &&
-                    instrShape[instrShape.size() - 2] == 8;
-    if (useM8MMA) {
-      auto eltTy = vType.getElementType();
-      auto newVEncoding = DotOperandEncodingAttr::get(
-          v.getContext(), opIdx, newRetType.getEncoding(), eltTy);
-      auto newVType = vType.cloneWithEncoding(newVEncoding);
-      return ConvertLayoutOp::create(rewriter, v.getLoc(), newVType, v);
-    }
-  }
-
   auto minType = bitwidth > 0 ? rewriter.getIntegerType(bitwidth) : v.getType();
   auto newVEncoding = DotOperandEncodingAttr::get(
       v.getContext(), opIdx, newRetType.getEncoding(), minType);
