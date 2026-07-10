@@ -202,3 +202,18 @@ std::optional<ConstantIntRanges> tt::getBoundFromCmpOp(arith::CmpIOp cmpOp,
   }
   return {};
 }
+
+bool tt::hasSubtractionInChain(Value v, int depth) {
+  if (depth > 10)
+    return false;
+  auto *defOp = v.getDefiningOp();
+  if (!defOp)
+    return false; // block arg (e.g. function param), not from subtraction
+  if (isa<arith::SubIOp>(defOp))
+    return true;
+  for (auto operand : defOp->getOperands()) {
+    if (hasSubtractionInChain(operand, depth + 1))
+      return true;
+  }
+  return false;
+}

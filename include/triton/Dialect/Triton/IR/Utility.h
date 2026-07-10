@@ -208,6 +208,12 @@ unsigned getBitwidth(RankedTensorType ty);
 std::optional<ConstantIntRanges> getBoundFromCmpOp(arith::CmpIOp cmpOp,
                                                    Value anchor);
 
+// Check if the defining-op chain of `v` contains a subtraction
+// (arith::SubIOp). Used to detect descending-order loop indices like
+// (N - 1 - k) * BLOCK_K, which can produce negative offsets and violate
+// hardware constraints (e.g. PPU AIU requires start_c >= 0).
+bool hasSubtractionInChain(Value v, int depth = 0);
+
 } // namespace triton
 } // namespace mlir
 

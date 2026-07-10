@@ -4,6 +4,7 @@
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
+#include "triton/Dialect/Triton/IR/Utility.h"
 
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
@@ -338,14 +339,16 @@ struct RewriteLoadPattern : OpConversionPattern<triton::DescriptorLoadOp> {
     auto desc = unpackDescriptor(descTy, adaptor.getDesc());
     auto offsets = castToI64(rewriter, op.getIndices());
     auto other = generateOther(rewriter, loc, descTy, desc.paddingOption);
+    Value result;
+    Operation *fusedTransOp = nullptr;
 
-    if (isAIU) {
-      // promote to use AIU to load
+    bool hasDescendingIndex =
+        isAIU && hasSubtractionInChain(op.getIndices().back());
+    if (isAIU && !hasDescendingIndex) {
       assert(blockShape.size() == desc.shape.size());
       assert(blockShape.size() == offsets.size());
       SmallVector<int> order = {1, 0};
 
-      // Cast I32 offsets into I64
       SmallVector<Value> i32Offsets;
       for (auto offset : offsets) {
         auto i32Offset = arith::TruncIOp::create(
@@ -354,38 +357,37 @@ struct RewriteLoadPattern : OpConversionPattern<triton::DescriptorLoadOp> {
       }
 
       Value loadRes = op.getResult();
-      if (loadRes.hasOneUse() &&
-          dyn_cast<triton::TransOp>(loadRes.use_begin()->getOwner())) {
-        auto TransOp =
-            dyn_cast<triton::TransOp>(loadRes.use_begin()->getOwner());
-
-        auto newLoad = rewriter.replaceOpWithNewOp<triton::AIULoadOp>(
-            op, TransOp.getResult().getType(), desc.base,
+      triton::TransOp transOp = nullptr;
+      if (loadRes.hasOneUse())
+        transOp = dyn_cast<triton::TransOp>(loadRes.use_begin()->getOwner());
+      if (transOp) {
+        auto newLoad = triton::AIULoadOp::create(
+            rewriter, loc, transOp.getResult().getType(), desc.base,
             llvm::to_vector(llvm::reverse(i32Offsets)),
             llvm::to_vector(llvm::reverse(desc.shape)),
             llvm::to_vector(llvm::reverse(order)), triton::CacheModifier::NONE,
             triton::EvictionPolicy::NORMAL);
         newLoad->setAttrs(filterSegmentSizes(op->getAttrs()));
-
-        TransOp.replaceAllUsesWith(newLoad.getResult());
+        result = newLoad.getResult();
+        fusedTransOp = transOp.getOperation();
       } else {
-        auto newLoad = rewriter.replaceOpWithNewOp<triton::AIULoadOp>(
-            op, op.getResult().getType(), desc.base, i32Offsets, desc.shape,
-            order, triton::CacheModifier::NONE, triton::EvictionPolicy::NORMAL);
+        auto newLoad = triton::AIULoadOp::create(
+            rewriter, loc, op.getResult().getType(), desc.base, i32Offsets,
+            desc.shape, order, triton::CacheModifier::NONE,
+            triton::EvictionPolicy::NORMAL);
         newLoad->setAttrs(filterSegmentSizes(op->getAttrs()));
+        result = newLoad.getResult();
       }
-      return llvm::success();
+    } else {
+      auto newLoad = triton::LoadOp::create(
+          rewriter, loc, generatePtr(rewriter, loc, blockShape, desc, offsets),
+          generateMask(rewriter, loc, blockShape, desc, offsets), other,
+          triton::CacheModifier::NONE, triton::EvictionPolicy::NORMAL, false);
+      newLoad->setAttrs(filterSegmentSizes(op->getAttrs()));
+      result = newLoad.getResult();
     }
 
-    auto newLoad = triton::LoadOp::create(
-        rewriter, loc, generatePtr(rewriter, loc, blockShape, desc, offsets),
-        generateMask(rewriter, loc, blockShape, desc, offsets), other,
-        triton::CacheModifier::NONE, triton::EvictionPolicy::NORMAL, false);
-    newLoad->setAttrs(filterSegmentSizes(op->getAttrs()));
-
-    Value result = newLoad.getResult();
     if (descTy.getBlockType().getElementType().isF32()) {
-
       auto ifOp = scf::IfOp::create(rewriter, loc, result.getType(),
                                     desc.roundF32ToTF32, /*withElse=*/true);
       OpBuilder::InsertionGuard guard(rewriter);
@@ -398,7 +400,12 @@ struct RewriteLoadPattern : OpConversionPattern<triton::DescriptorLoadOp> {
       result = ifOp.getResult(0);
     }
 
-    rewriter.replaceOp(op, result);
+    if (fusedTransOp) {
+      rewriter.replaceOp(fusedTransOp, result);
+      rewriter.eraseOp(op);
+    } else {
+      rewriter.replaceOp(op, result);
+    }
     return llvm::success();
   }
 };

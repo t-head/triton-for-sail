@@ -360,6 +360,12 @@ public:
           canUseAIU = true;
       }
     }
+    if (canUseAIU) {
+      bool hasDescendingIndex = hasSubtractionInChain(info.getOffsets().back());
+      if (hasDescendingIndex) {
+        canUseAIU = false;
+      }
+    }
     if(canUseAIU) {
       auto loadOp = dyn_cast<triton::LoadOp>(op);
       auto basePtr = info.getBasePtr();
