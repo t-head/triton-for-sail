@@ -7,7 +7,7 @@ import os
 import torch
 import triton
 import triton.language as tl
-from triton._internal_testing import is_cuda, is_hip
+from triton._internal_testing import is_cuda, is_ppu, is_hip
 
 
 def test_metadata() -> None:
@@ -158,6 +158,9 @@ def test_launch_with_options(options) -> None:
         if is_cuda():
             libdir = current_dir.parent.parent.parent.parent / 'third_party/nvidia/backend/lib'
             options["extern_libs"] = {"libdevice": str(libdir / 'libdevice.10.bc')}
+        elif is_ppu():
+            libdir = current_dir.parent.parent.parent.parent / 'third_party/ppu/backend/lib'
+            options["extern_libs"] = {"libdevice": str(libdir / 'libdevice.ppu.bc')}
         elif is_hip():
             libdir = current_dir.parent.parent.parent.parent / 'third_party/amd/backend/lib'
             options["extern_libs"] = {"ocml": str(libdir / 'ocml.bc'), "ockl": str(libdir / 'ockl.bc')}

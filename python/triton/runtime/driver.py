@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+import functools
+import shutil
+
 from ..backends import backends, DriverBase
+
+
+@functools.lru_cache(maxsize=1)
+def _is_ppu_device() -> bool:
+    return shutil.which("ppu-smi") is not None
 
 
 def _create_driver() -> DriverBase:
     active_drivers = [x.driver for x in backends.values() if x.driver.is_active()]
+    if len(active_drivers) > 1 and _is_ppu_device():
+        active_drivers = [backends["ppu"].driver]
     if len(active_drivers) != 1:
         raise RuntimeError(f"{len(active_drivers)} active drivers ({active_drivers}). There should only be one.")
     return active_drivers[0]()

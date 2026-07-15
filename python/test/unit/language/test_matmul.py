@@ -5,7 +5,7 @@ import triton
 import triton.language as tl
 from test_mxfp import MXFP4Tensor, MXScaleTensor
 import re
-from triton._internal_testing import is_cuda, is_hip, is_hip_cdna3, is_hip_cdna4, is_hip_cdna
+from triton._internal_testing import is_cuda, is_ppu, is_hip, is_hip_cdna3, is_hip_cdna4, is_hip_cdna
 
 
 def f8_to_f16(x, dtype):
@@ -98,7 +98,7 @@ def get_src_element_ty_size(dtype_str):
 @pytest.mark.parametrize("LAYOUT_16x256", [True, False])
 def test_simple_matmul(dtype_src_str, dtype_dst_str, BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES, NUM_WARPS, NUM_CTAS, device,
                        EPILOGUE_SUBTILE, LAYOUT_16x256, monkeypatch):
-    if NUM_CTAS > 1 and (not is_cuda() or torch.cuda.get_device_capability()[0] < 9):
+    if NUM_CTAS > 1 and (not (is_cuda() or is_ppu()) or torch.cuda.get_device_capability()[0] < 9):
         pytest.skip("Clusters requires nvidia compute capability >= 9")
     shared_mem_accum = (BLOCK_K * BLOCK_M + BLOCK_K * BLOCK_N) * NUM_STAGES * get_src_element_ty_size(dtype_src_str)
     shared_mem_avail = triton.runtime.driver.active.utils.get_device_properties(0)["max_shared_mem"]
@@ -120,7 +120,7 @@ def test_simple_matmul(dtype_src_str, dtype_dst_str, BLOCK_M, BLOCK_N, BLOCK_K, 
         pytest.skip("multi-CTAs is broken for mmav2")
     if EPILOGUE_SUBTILE and (is_hip() or NUM_CTAS > 1 or BLOCK_N >= 512):
         pytest.skip("creates convert layout too big to fit in smem")
-    if LAYOUT_16x256 and (not is_cuda() or torch.cuda.get_device_capability()[0] < 10):
+    if LAYOUT_16x256 and (not (is_cuda() or is_ppu()) or torch.cuda.get_device_capability()[0] < 10):
         pytest.skip("skip forcing tmem layout on non blackwell targets.")
     M, N, K = 1024, 512, 256
     torch.manual_seed(42)
@@ -354,7 +354,7 @@ def test_mxfp(BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES, nonKDim, NUM_WARPS, device)
     K = 2048
     if K % BLOCK_K != 0:
         pytest.skip("Kernel requires shapes aligned by K dimension")
-    if is_cuda() and torch.cuda.get_device_capability()[0] < 10:
+    if (is_cuda() or is_ppu()) and torch.cuda.get_device_capability()[0] < 10:
         pytest.skip("Requires compute capability >= 10")
     elif is_hip():
         if not is_hip_cdna4():
@@ -617,6 +617,7 @@ def _gemm_kernel_preshuffled_scales_cdna4(a_ptr, b_ptr, c_ptr, a_scales_ptr, b_s
 @pytest.mark.parametrize("mfma_nonkdim", [16, 32])
 @pytest.mark.parametrize("preshuffle", [True, False])
 @pytest.mark.skipif(is_cuda() and torch.cuda.get_device_capability()[0] == 10, reason="Compilation bug for GB200.")
+@pytest.mark.skipif(is_ppu() and torch.cuda.get_device_capability() == (8, 9), reason="Incompatible test case for PPU0015.")
 @pytest.mark.skipif(is_hip() and not is_hip_cdna4(), reason="Scaled dot is not emulated on other archs yet.")
 def test_preshuffle_scale_mxfp_cdna4(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, DTYPE_A, DTYPE_B, FAST_MATH, mfma_nonkdim,
                                      preshuffle, device):
@@ -627,7 +628,7 @@ def test_preshuffle_scale_mxfp_cdna4(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, DTYPE_A
     if not (DTYPE_A.startswith("mx") or DTYPE_B.startswith("mx")):
         pytest.skip("Requires at least 1 microscaling operand")
 
-    if is_cuda() and (DTYPE_A == "mxfp8e4" or DTYPE_B == "mxfp8e4"):
+    if (is_cuda() or is_ppu()) and (DTYPE_A == "mxfp8e4" or DTYPE_B == "mxfp8e4"):
         pytest.skip("Skip fp8e4 on NV backend")
 
     def shuffle_scales_cdna4(scales: torch.Tensor):
@@ -971,22 +972,56 @@ def block_scale_fp4_matmul(  #
     c_mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
     tl.store(output_ptrs, accumulator, mask=c_mask)
 
+def uint8_padding(scale_uint8: torch.Tensor) -> torch.Tensor:
+    scale_uint8 = scale_uint8.cpu()
 
-@pytest.mark.parametrize("M, N, K", [(1024, 512, 256)])
+    if scale_uint8.dtype != torch.uint8:
+        scale_uint8 = scale_uint8.to(torch.uint8)
+
+    batch_size, orig_width = scale_uint8.shape
+
+    padding_value = 0
+    # check padding
+    remainder = orig_width % 8
+    if remainder != 0:
+        pad_size = 8 - remainder
+
+        # do padding
+        padding_tensor = torch.full((batch_size, pad_size), padding_value, dtype=torch.uint8, device="cpu")
+        scale_uint8 = torch.cat([scale_uint8, padding_tensor], dim=1)
+
+    return scale_uint8
+
+@pytest.mark.parametrize("M, N, K", [(2048, 2048, 512), (1024, 512, 256), (512, 512, 512),
+                                     (128, 128, 256), (128, 128, 128), (16, 16, 64), (64, 64, 64)])
 @pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K", [(128, 128, 128), (256, 128, 128), (128, 256, 128),
-                                                       (128, 256, 256), (128, 128, 64), (128, 64, 128)])
+                                                       (128, 256, 256), (128, 128, 64), (128, 64, 128),
+                                                       (16, 16, 64), (64, 64, 64)])
 @pytest.mark.parametrize("with_a_scale", [True, False])
 @pytest.mark.parametrize("with_b_scale", [True, False])
 @pytest.mark.parametrize("pack_along_k", [True, False])
 @pytest.mark.parametrize(("scale_type", "VEC_SIZE"), [("float8_e8m0fnu", 32), ("float8_e4m3fn", 16)],
                          ids=["mxfp4", "nvfp4"])
 @pytest.mark.parametrize("nonKDim", ([0, 16, 32] if is_hip_cdna() else [0]))
+@pytest.mark.parametrize("warps", ([1, 2, 4, 8]))
+@pytest.mark.parametrize("compare_cutlass", ([False]))
 def test_block_scale_fp4(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, VEC_SIZE, with_a_scale, with_b_scale, pack_along_k,
-                         scale_type, nonKDim, device):
+                         scale_type, nonKDim, warps, compare_cutlass, device):
+    if  M < BLOCK_M or N < BLOCK_N or K < BLOCK_K:
+        pytest.skip("Invalid BLOCK_M/BLOCK_N/BLOCK_K config")
     assert M % BLOCK_M == 0
     assert N % BLOCK_N == 0
     assert K % BLOCK_K == 0
-    if is_cuda():
+    if is_ppu():
+        if scale_type == "float8_e4m3fn":
+            pytest.skip("nvfp4 is not supported for ppu0015")
+        if not pack_along_k:
+            pytest.skip("Packing along M/N not implemented yet on ppu0015.")
+        if torch.cuda.get_device_capability() == (8, 0):
+            pytest.skip("Requires compute capability > 80")
+        if not (with_a_scale and with_b_scale):
+            pytest.skip("None aScale/bScale is only tested on AMD backend for now")
+    elif is_cuda():
         if scale_type == "float8_e4m3fn" and not pack_along_k:
             pytest.skip("Packing along K is required for float8_e4m3fn")
         if torch.cuda.get_device_capability()[0] != 10 and torch.cuda.get_device_capability()[0] != 12:
@@ -1010,7 +1045,7 @@ def test_block_scale_fp4(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, VEC_SIZE, with_a_sc
     a = a_mxfp4.to_packed_tensor(dim=packing_dim)
     # Generate b with k-major layout, pack two e2m1 along k or n, then logical transpose to K, N
     b_mxfp4 = MXFP4Tensor(size=(N, K), device=device).random()
-    b = b_mxfp4.to_packed_tensor(dim=packing_dim).T
+    b = b_mxfp4.to_packed_tensor(dim=packing_dim)
     # No need to pack along K since we convert each e2m1 to f32 directly for the reference matmul
     b_ref = b_mxfp4.to(torch.float32).T
 
@@ -1038,18 +1073,65 @@ def test_block_scale_fp4(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, VEC_SIZE, with_a_sc
     if not with_b_scale:
         b_scale = None
         b_scale_ref = 1.0
-    ref_out = torch.matmul(a_mxfp4.to(torch.float32) * a_scale_ref, b_ref * b_scale_ref)
+
+    atol, rtol = 1e-2, 2e-2
+    if compare_cutlass:
+        # compare with CUTLASS mxfp4, need to pre-compile pybind and CUTLASS
+        # reference: https://alidocs.dingtalk.com/i/nodes/ndMj49yWjXnXREO6TMjMQrOLJ3pmz5aA?utm_scene=team_space&iframeQuery=anchorId%3Duu_mhk6mfxxq1n5ifpcwtp
+        # Set both rtol and atol to zero to ensure bit-wise alignment with CUTLASS results.
+        atol, rtol = 0, 0
+        # import gemm_fp4.so
+        gemm_fp4 = pytest.importorskip("gemm_fp4")
+
+        a_tensor = a.clone()
+        b_tensor = b.clone()
+        a_scale_tensor = a_scale.clone()
+        b_scale_tensor = b_scale.clone()
+
+        a_scale_tensor = uint8_padding(a_scale_tensor)
+        b_scale_tensor = uint8_padding(b_scale_tensor)
+
+        if a_tensor.dtype != torch.uint8:
+            raise ValueError(f"tensor A must in uint8 but with: {a_tensor.dtype}")
+        if b_tensor.dtype != torch.uint8:
+            raise ValueError(f"tensor B must in uint8 but with: {b_tensor.dtype}")
+
+        if len(a_tensor.shape) != 2 or len(b_tensor.shape) != 2:
+            raise ValueError("A and B must in 2D dimension")
+
+        M_cutlass, K_a = a_tensor.shape
+        N_cutlass, K_b = b_tensor.shape
+
+        if K_a != K_b:
+            raise ValueError(f"invalid k: A's K={K_a}, B's K={K_b}")
+
+        K_cutlass = K_a
+
+        a_tensor = a_tensor.to(device).contiguous()
+        b_tensor = b_tensor.to(device).contiguous()
+        a_scale_tensor = a_scale_tensor.to(device).contiguous()
+        b_scale_tensor = b_scale_tensor.to(device).contiguous()
+
+        c = torch.zeros(M, N, dtype=torch.float32, device=device)
+        ref_out = torch.zeros(M, N, dtype=torch.float32, device=device)
+
+        success = gemm_fp4.gemm_fp4_run(
+            a_tensor, a_scale_tensor, b_tensor, b_scale_tensor, c, ref_out, 1.0, 0.0, M_cutlass, N_cutlass, K_cutlass
+        )
+    else:
+        ref_out = torch.matmul(a_mxfp4.to(torch.float32) * a_scale_ref, b_ref * b_scale_ref)
 
     output = a.new_empty((M, N), dtype=torch.float32)
     grid = (triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N), 1)
     kernel_kwargs = {}
     if is_hip():
         kernel_kwargs["matrix_instr_nonkdim"] = nonKDim
+    b = b.T
     k = block_scale_fp4_matmul[grid](a, b, output, a_scale, b_scale, M, N, K, stride_scale, a.stride(0), a.stride(1),
                                      b.stride(0), b.stride(1), output.stride(0), output.stride(1), VEC_SIZE, BLOCK_M,
-                                     BLOCK_N, BLOCK_K, NUM_STAGES=NUM_STAGES, PACK_ALONG_K=pack_along_k,
+                                     BLOCK_N, BLOCK_K, NUM_STAGES=NUM_STAGES, PACK_ALONG_K=pack_along_k, num_warps=warps,
                                      **kernel_kwargs)
-    torch.testing.assert_close(ref_out, output, atol=1e-2, rtol=1e-2)
+    torch.testing.assert_close(ref_out, output, atol=atol, rtol=rtol)
     if is_cuda():
         ptx = k.asm["ptx"]
         if pack_along_k:
@@ -1142,7 +1224,7 @@ def mxfp8_mxfp4_matmul(  #
 @pytest.mark.parametrize("nonKDim", ([0, 16, 32] if is_hip_cdna() else [0]))
 def test_mxfp8_mxfp4_matmul(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES, B_TRANS, PACK_B_ALONG_K, CONST_SCALE,
                             A_DATA_TYPE, B_DATA_TYPE, WITH_A_SCALE, WITH_B_SCALE, nonKDim, device):
-    if is_cuda():
+    if is_cuda() or is_ppu():
         if torch.cuda.get_device_capability()[0] != 10:
             pytest.skip("Requires compute capability == 10")
         if not (WITH_A_SCALE and WITH_B_SCALE):
@@ -1229,7 +1311,7 @@ def test_mxfp8_mxfp4_matmul(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES, B_TR
                                    b.stride(0), b.stride(1), output.stride(0), output.stride(1), not CONST_SCALE,
                                    dtype_converter[A_DATA_TYPE], dtype_converter[B_DATA_TYPE], BLOCK_M, BLOCK_N,
                                    BLOCK_K, PACK_B_ALONG_K=PACK_B_ALONG_K, NUM_STAGES=NUM_STAGES, **kernel_kwargs)
-    if is_cuda():
+    if is_cuda() or is_ppu():
         ttgir = out.asm["ttgir"]
         assert "fp4Padded = true" in ttgir
 

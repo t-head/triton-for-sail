@@ -34,6 +34,7 @@ from .core import (
     make_tensor_descriptor,
     tensor_descriptor,
     tensor_descriptor_type,
+    aiu_load,
     add,
     advance,
     arange,

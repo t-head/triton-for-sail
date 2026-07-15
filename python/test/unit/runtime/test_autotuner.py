@@ -6,7 +6,7 @@ import pytest
 
 import pathlib
 import uuid
-from triton._internal_testing import is_cuda
+from triton._internal_testing import is_cuda, is_ppu
 
 
 def do_bench(kernel_call, quantiles, use_cuda_graph=False):
@@ -121,7 +121,7 @@ def test_hooks(device):
     # shared memory bytes = N_STAGES * BLOCK_SIZE * sizeof(float)
     # On AMD GPUs:
     # `num_stages` is a fixed value of 2, so it won't cause out of resources
-    if triton.runtime.driver.active.get_current_target().backend == "cuda":
+    if triton.runtime.driver.active.get_current_target().backend in ["cuda", "ppu"]:
         assert values["has_exception"] is True
     else:
         assert values["has_exception"] is False
@@ -173,7 +173,7 @@ def test_prune_configs(with_perf_model: bool, device: str):
         assert records['capture_named_args']
 
 
-@pytest.mark.skipif(not is_cuda() or torch.cuda.get_device_capability()[0] < 9,
+@pytest.mark.skipif(not (is_cuda() or is_ppu()) or torch.cuda.get_device_capability()[0] < 9,
                     reason="Requires compute capability >= 9 for NV")
 def test_override_ttir(device):
     N = 1024
@@ -222,7 +222,7 @@ module {
     torch.testing.assert_close(src * 10, dst)
 
 
-@pytest.mark.skipif(not is_cuda() or torch.cuda.get_device_capability()[0] < 9,
+@pytest.mark.skipif(not (is_cuda() or is_ppu()) or torch.cuda.get_device_capability()[0] < 9,
                     reason="Requires compute capability >= 9 for NV")
 def test_override_ttgir(device):
     N = 1024
@@ -272,7 +272,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
     torch.testing.assert_close(src * 10, dst)
 
 
-@pytest.mark.skipif(not is_cuda() or torch.cuda.get_device_capability()[0] != 9,
+@pytest.mark.skipif(not (is_cuda() or is_ppu()) or torch.cuda.get_device_capability()[0] != 9,
                     reason="PTX file in this unit test is only for SM90")
 def test_override_ptx(device):
     N = 1024

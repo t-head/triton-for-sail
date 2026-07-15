@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import functools
 import os
+import shutil
 import time
 import copy
 
@@ -258,6 +259,12 @@ def compile(src, target=None, options=None, _env_vars=None):
     # A PID string can be 5-character long. A UUID string has typically 36 characters. Let's truncate
     # the file name to 150 characters to be safe.
     file_name = src.name[:150]
+
+    # dump python ASTSOURCE if needed
+    if os.getenv("TRITON_DUMP_ASTSOURCE", "").upper() in ["ON", "1", "YES", "TRUE", "Y"]:
+        if not ir_source:
+            fn_cache_manager.put(src.fn.src, f"{file_name}.ast")
+
     metadata_filename = f"{file_name}.json"
     metadata_group = fn_cache_manager.get_group(metadata_filename) or {}
     metadata_path = metadata_group.get(metadata_filename)
@@ -283,6 +290,8 @@ def compile(src, target=None, options=None, _env_vars=None):
         **env_vars,
     }
     metadata["triton_version"] = __version__
+    metadata["cache_dir"] = fn_cache_manager.cache_dir
+    metadata["cache_file_name"] = file_name
     # run compilation pipeline  and populate metadata
     stages = dict()
     backend.add_stages(stages, options, src.language)
@@ -331,9 +340,15 @@ def compile(src, target=None, options=None, _env_vars=None):
         elif full_name := fn_override_manager.get_file(ir_filename):
             print(f"\nOverriding kernel with file {full_name}")
             next_module = parse(full_name, ext, context)
-        # If TRITON_STORE_BINARY_ONLY is 1, only store cubin/hsaco/json
-        if (not store_only_binary) or (ext in ("cubin", "hsaco", "json")):
+        # If TRITON_STORE_BINARY_ONLY is 1, only store cubin/hsaco/json/hgbin
+        if (not store_only_binary) or (ext in ("cubin", "hsaco", "json", "hgbin")):
             metadata_group[ir_filename] = fn_cache_manager.put(next_module, ir_filename)
+            if ext == "hgbin":
+                hgbin_path = metadata_group[ir_filename]
+                cubin_path = hgbin_path[:-len(".hgbin")] + ".cubin"
+                if os.path.lexists(cubin_path):
+                    os.remove(cubin_path)
+                os.symlink(os.path.basename(hgbin_path), cubin_path)
         if fn_dump_manager is not None:
             fn_dump_manager.put(next_module, ir_filename)
             if ext == "cubin":
@@ -360,8 +375,15 @@ def compile(src, target=None, options=None, _env_vars=None):
     return CompiledKernel(src, metadata_group, hash)
 
 
+@functools.lru_cache(maxsize=1)
+def _is_ppu_device() -> bool:
+    return shutil.which("ppu-smi") is not None
+
+
 def make_backend(target: GPUTarget) -> BaseBackend:
     actives = [x.compiler for x in backends.values() if x.compiler.supports_target(target)]
+    if len(actives) > 1 and _is_ppu_device():
+        actives = [backends["ppu"].compiler]
     if len(actives) != 1:
         raise RuntimeError(
             f"{len(actives)} compatible backends for target ({target.backend}) ({actives}). There should only be one.")
@@ -424,6 +446,8 @@ class CompiledKernel:
             file.suffix[1:]: file.read_bytes() if file.suffix[1:] == binary_ext else file.read_text()
             for file in asm_files
         })
+        if "hgbin" in self.asm:
+            self.asm["cubin"] = self.asm["hgbin"]
         self.metadata_group = metadata_group
         self.kernel = self.asm[binary_ext]
         # binaries are lazily initialized

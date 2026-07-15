@@ -7,7 +7,7 @@ import pytest
 import triton
 import triton.language as tl
 
-from triton._internal_testing import is_cuda, is_hip, is_hip_cdna2, is_hip_cdna3, is_hip_cdna4, is_hip_gfx12
+from triton._internal_testing import is_cuda, is_ppu, is_hip, is_hip_cdna2, is_hip_cdna3, is_hip_cdna4, is_hip_gfx12
 
 
 def matching_int(dtype):
@@ -275,7 +275,7 @@ def test_typeconvert_upcast(src_dtype, dst_dtype, device):
 
     # On HIP, fp8e4nv upcasting to fp32 is only supported on CDNA4, and
     # fp8e4nv upcasting to bf16 and fp16 is only supported on CDNA3 and CDNA4.
-    if is_cuda():
+    if is_cuda() or is_ppu():
         if ((src_dtype == 'float8e4nv' and torch.cuda.get_device_capability(0) < (8, 9))
             or src_dtype in ('float8e4b8', 'float8e5b16')):
             # If the dtype should error out in the given device, we assert that and return
@@ -332,7 +332,7 @@ def test_typeconvert_upcast(src_dtype, dst_dtype, device):
 ])
 def test_typeconvert_downcast(src_dtype, dst_dtype, rounding, max_repr, device):
 
-    if is_cuda():
+    if is_cuda() or is_ppu():
         if src_dtype != 'float32' and torch.cuda.get_device_capability(0) < (9, 0):
             pytest.skip("non-float32 downcast tests only supported on NVGPU with compute capability 9.0+")
 
@@ -366,7 +366,7 @@ def test_typeconvert_downcast(src_dtype, dst_dtype, rounding, max_repr, device):
 @pytest.mark.parametrize("dst_dtype", ["float8e4nv", "float8e5"])
 @pytest.mark.parametrize("src_dtype", ["float32", "float16", "bfloat16"])
 def test_typeconvert_downcast_clamping(src_dtype, dst_dtype, mode, device, rounding="rtne"):
-    if is_cuda():
+    if is_cuda() or is_ppu():
         if src_dtype != 'float32' and torch.cuda.get_device_capability(0) < (9, 0):
             pytest.skip("non-float32 downcast tests only supported on NVGPU with compute capability 9.0+")
 

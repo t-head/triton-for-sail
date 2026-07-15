@@ -196,7 +196,8 @@ class env_nvidia_tool(env_base[str, NvidiaTool]):
         binary += sysconfig.get_config_var("EXE")
         self.binary = binary
         self.default_path = os.path.join(os.path.dirname(__file__), "backends", "nvidia", "bin", binary)
-        super().__init__(f"TRITON_{binary.upper()}_PATH")
+        # Convert ptxas-blackwell to PTXAS_BLACKWELL, not PTXAS-BLACKWELL
+        super().__init__(f"TRITON_{binary.upper().replace('-', '_')}_PATH")
 
     def get(self) -> NvidiaTool:
         return self.transform(getenv(self.key))
@@ -500,6 +501,13 @@ class nvidia_knobs(base_knobs):
     libcuda_path: env_opt_str = env_opt_str("TRITON_LIBCUDA_PATH")
 
 
+class ppu_knobs(base_knobs):
+    disable_ppu_llc_opt: env_bool = env_bool("DISABLE_PPU_LLC_OPT")
+    ppu_llc_options: env_opt_str = env_opt_str("PPU_LLC_OPTIONS")
+    dump_compile_log: env_bool = env_bool("TRITON_DUMP_COMPILE_LOG")
+    libdevice_path: env_opt_str = env_opt_str("TRITON_LIBDEVICE_PATH")
+
+
 class amd_knobs(base_knobs):
     use_buffer_ops: env_bool = env_bool("AMDGCN_USE_BUFFER_OPS", True)
     # Note: This requires use_buffer_ops be true to have any effect
@@ -533,6 +541,7 @@ autotuning = autotuning_knobs()
 runtime = runtime_knobs()
 language = language_knobs()
 nvidia = nvidia_knobs()
+ppu = ppu_knobs()
 amd = amd_knobs()
 proton = proton_knobs()
 

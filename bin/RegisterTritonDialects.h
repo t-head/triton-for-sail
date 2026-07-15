@@ -45,6 +45,13 @@
 #include "mlir/Conversion/NVVMToLLVM/NVVMToLLVM.h"
 #include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
 
+// PPU passes
+#include "ppu/include/Dialect/PPUGPU/IR/Dialect.h"
+#include "ppu/include/Dialect/TritonPPUGPU/IR/Dialect.h"
+#include "ppu/include/PPUGPUToLLVM/Passes.h"
+#include "ppu/include/TritonPPUGPUToLLVM/Passes.h"
+#include "ppu/include/TritonPPUGPUTransforms/Passes.h"
+
 namespace mlir {
 namespace test {
 void registerTestAliasPass();
@@ -126,6 +133,9 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   // NVGPU transform passes
   mlir::registerNVHopperTransformsPasses();
 
+  // TritonPPUGPUTransforms passes
+  mlir::registerTritonPPUGPUAccelerateMatmul();
+
   // Proton passes
   mlir::test::proton::registerTestScopeIdAllocationPass();
   mlir::triton::proton::registerConvertProtonToProtonGPU();
@@ -139,6 +149,7 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   registry.insert<
       mlir::triton::TritonDialect, mlir::cf::ControlFlowDialect,
       mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect,
+      mlir::triton::ppu_gpu::TritonPPUGPUDialect,
       mlir::triton::gpu::TritonGPUDialect,
       mlir::triton::instrument::TritonInstrumentDialect,
       mlir::math::MathDialect, mlir::arith::ArithDialect, mlir::scf::SCFDialect,

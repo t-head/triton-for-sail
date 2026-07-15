@@ -7,7 +7,7 @@ import triton.language as tl
 from triton._internal_testing import is_hopper, is_sm12x, is_interpreter, numpy_random, to_triton, unwrap_tensor, tma_dtypes, to_numpy
 from triton.tools.mxfp import MXFP4Tensor, MXScaleTensor
 from typing import Optional
-from triton._internal_testing import is_cuda, is_hip, is_hip_cdna3
+from triton._internal_testing import is_cuda, is_ppu, is_hip, is_hip_cdna3
 from triton.tools.tensor_descriptor import TensorDescriptor
 from triton import CompilationError
 
@@ -17,7 +17,7 @@ from triton import CompilationError
 @pytest.mark.parametrize("num_ctas", [1, 2])
 @pytest.mark.parametrize("M_BLOCK,N_BLOCK", [(2, 16), (8, 16), (8, 32), (8, 128), (512, 32), (1, 1024)])
 def test_tensor_descriptor_load(dtype_str, num_ctas, M_BLOCK, N_BLOCK, device):
-    if num_ctas == 2 and (not is_cuda() or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
+    if num_ctas == 2 and (not (is_cuda() or is_ppu()) or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
         pytest.skip("CTAs is unsupported for these cards")
 
     @triton.jit
@@ -61,7 +61,7 @@ def test_tensor_descriptor_load(dtype_str, num_ctas, M_BLOCK, N_BLOCK, device):
 @pytest.mark.parametrize("num_ctas", [1, 2])
 @pytest.mark.parametrize("M_BLOCK,N_BLOCK", [(2, 16), (8, 16), (8, 32), (8, 128), (512, 32), (1, 1024)])
 def test_tensor_descriptor_store(dtype_str, num_ctas, M_BLOCK, N_BLOCK, device):
-    if num_ctas == 2 and (not is_cuda() or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
+    if num_ctas == 2 and (not (is_cuda() or is_ppu()) or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
         pytest.skip("CTAs is unsupported for these cards")
 
     @triton.jit
@@ -258,7 +258,7 @@ def test_tensor_descriptor_store3d(dtype_str, K_BLOCK, device):
 @pytest.mark.parametrize("ndim", [1, 2, 3, 4, 5])
 @pytest.mark.parametrize("INNER_BLOCK", [16, 32, 64, 128])
 def test_tensor_descriptor_load_nd(dtype_str, num_ctas, ndim, INNER_BLOCK, device):
-    if num_ctas == 2 and (not is_cuda() or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
+    if num_ctas == 2 and (not (is_cuda() or is_ppu()) or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
         pytest.skip("CTAs is unsupported for these cards")
 
     @triton.jit
@@ -323,7 +323,7 @@ def test_tensor_descriptor_load_nd(dtype_str, num_ctas, ndim, INNER_BLOCK, devic
 @pytest.mark.parametrize("ndim", [1, 2, 3, 4, 5])
 @pytest.mark.parametrize("INNER_BLOCK", [16, 32, 64, 128])
 def test_tensor_descriptor_store_nd(dtype_str, num_ctas, ndim, INNER_BLOCK, device):
-    if num_ctas == 2 and (not is_cuda() or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
+    if num_ctas == 2 and (not (is_cuda() or is_ppu()) or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
         pytest.skip("CTAs is unsupported for these cards")
 
     @triton.jit
@@ -504,6 +504,7 @@ def tensor_descriptor_return_helper(ptr, M, N, M_BLOCK: tl.constexpr, N_BLOCK: t
 
 @pytest.mark.interpreter
 @pytest.mark.skipif(is_hip(), reason="HIP devices don't correctly handle function calls with pointer arguments")
+@pytest.mark.skipif(is_ppu(), reason="PPU devices don't correctly handle function calls with pointer arguments")
 def test_tensor_descriptor_return_value(device):
 
     @triton.jit
@@ -620,7 +621,7 @@ def matmul_kernel_make_tensor_descriptor(a_ptr, b_ptr, c_ptr,  #
     (256, 128, 32, 4),
 ])
 def test_make_tensor_descriptor_matmul(num_stages, num_ctas, BLOCK_M, BLOCK_N, BLOCK_K, device):
-    if num_ctas == 2 and (not is_cuda() or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
+    if num_ctas == 2 and (not (is_cuda() or is_ppu()) or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
         pytest.skip("CTAs is unsupported for these cards")
     if is_hip() and (BLOCK_M, BLOCK_N, BLOCK_K, num_stages) == (256, 128, 32, 4):
         pytest.skip("Insufficient shared memory on HIP devices")
@@ -850,7 +851,7 @@ def test_tensor_descriptor_batched_gemm_2d_tma(device):
         BLOCK_M, BLOCK_N, BLOCK_K,  #
         NUM_SMS,  #
         num_stages=num_stages, num_warps=8)
-    if is_cuda():
+    if is_cuda() or is_ppu():
         torch.cuda.synchronize()
 
     torch.testing.assert_close(c, expect, rtol=1e-3, atol=1e-3)
@@ -956,7 +957,7 @@ def test_tensor_descriptor_batched_gemm_3d_tma(device):
         num_stages=num_stages, num_warps=8)
     torch.cuda.synchronize()
 
-    if is_cuda() and (capability := torch.cuda.get_device_capability(0)[0]) in (9, 10):
+    if (is_cuda() or is_ppu()) and (capability := torch.cuda.get_device_capability(0)[0]) in (9, 10):
         dot_op = {9: "warp_group_dot", 10: "tc_gen5_mma"}
         assert dot_op[capability] in h.asm["ttgir"]
 
@@ -1318,7 +1319,7 @@ def test_mxfp8_mxfp4_matmul_tma(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES, 
     if BLOCK_N == 256 and BLOCK_K == 256:
         NUM_STAGES = min(NUM_STAGES, 2)
 
-    if BLOCK_K < K and is_cuda() and torch.cuda.get_device_capability(0)[0] != 10:
+    if BLOCK_K < K and (is_cuda() or is_ppu()) and torch.cuda.get_device_capability(0)[0] != 10:
         pytest.skip("Currently broken on hopper")
 
     a = torch.randint(20, 40, (M, K), dtype=torch.uint8).view(torch.float8_e5m2).to(device)
@@ -1442,7 +1443,7 @@ def test_tma_gather_dot_pipeline(BLOCK_M, BLOCK_N, BLOCK_K, K, device):
     c = a @ b
 
     output = torch.zeros((BLOCK_M, BLOCK_N), dtype=torch.float32, device=device)
-    is_native_gather = is_cuda() and torch.cuda.get_device_capability()[0] >= 10
+    is_native_gather = (is_cuda() or is_ppu()) and torch.cuda.get_device_capability()[0] >= 10
     if is_native_gather:
         kernel = tma_gather_dot_pipeline.warmup(a, b, output, a.stride(0), a.stride(1), b.stride(0), b.stride(1),
                                                 output.stride(0), output.stride(1), K, BLOCK_M, BLOCK_N, BLOCK_K,
@@ -1550,7 +1551,7 @@ REDUCE_SKIP_HIP_CDNA3 = [
 @pytest.mark.parametrize("descriptor", ["host", "device"])
 @pytest.mark.parametrize("M_BLOCK,N_BLOCK", [(2, 16), (8, 16), (8, 32), (8, 128), (512, 32), (1, 1024)])
 def test_tensor_descriptor_reduce(kind, descriptor, dtype_str, num_ctas, M_BLOCK, N_BLOCK, device):
-    is_native = is_cuda() and torch.cuda.get_device_capability()[0] >= 9
+    is_native = (is_cuda() or is_ppu()) and torch.cuda.get_device_capability()[0] >= 9
     if not is_native:
         if num_ctas != 1:
             pytest.skip("Multi-CTA not supported")
@@ -1637,7 +1638,7 @@ def test_tensor_descriptor_reduce(kind, descriptor, dtype_str, num_ctas, M_BLOCK
 @pytest.mark.parametrize("num_ctas", [1, 2])
 @pytest.mark.parametrize("M_BLOCK,N_BLOCK", [(2, 16), (8, 16), (8, 32), (8, 128)])
 def test_host_tensor_descriptor_load(dtype_str, num_ctas, M_BLOCK, N_BLOCK, device):
-    if num_ctas == 2 and (not is_cuda() or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
+    if num_ctas == 2 and (not (is_cuda() or is_ppu()) or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
         pytest.skip("CTAs is unsupported for these cards")
 
     @triton.jit(debug=True)
@@ -1697,7 +1698,7 @@ def matmul_kernel_host_tensor_descriptor(a_desc, b_desc, c_desc):
     (256, 128, 32, 4),
 ])
 def test_host_tensor_descriptor_matmul(num_stages, num_ctas, BLOCK_M, BLOCK_N, BLOCK_K, device):
-    if num_ctas == 2 and (not is_cuda() or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
+    if num_ctas == 2 and (not (is_cuda() or is_ppu()) or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
         pytest.skip("CTAs is unsupported for these cards")
 
     if is_hip() and (BLOCK_M, BLOCK_N, BLOCK_K, num_stages) == (256, 128, 32, 4):

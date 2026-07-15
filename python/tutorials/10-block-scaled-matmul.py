@@ -125,11 +125,11 @@ import triton.language as tl
 import triton.profiler as proton
 from triton.tools.tensor_descriptor import TensorDescriptor
 from triton.tools.mxfp import MXFP4Tensor, MXScaleTensor
+from triton._internal_testing import is_ppu
 
 
 def is_cuda():
     return triton.runtime.driver.active.get_current_target().backend == "cuda"
-
 
 def is_hip_cdna4():
     target = triton.runtime.driver.active.get_current_target()
@@ -137,7 +137,11 @@ def is_hip_cdna4():
 
 
 def supports_block_scaling():
-    return (is_cuda() and torch.cuda.get_device_capability()[0] == 10) or is_hip_cdna4()
+    return (
+        (is_cuda() and torch.cuda.get_device_capability()[0] == 10)
+        or is_hip_cdna4()
+        or (is_ppu() and torch.cuda.get_device_capability() == (8, 9))
+    )
 
 
 def _matmul_launch_metadata(grid, kernel, args):
@@ -630,7 +634,7 @@ if __name__ == "__main__":
 
         torch.manual_seed(42)
 
-        if is_cuda():
+        if is_cuda() or is_ppu():
             validate_block_scaled(8192, 8192, 8192, block_scale_type=args.format)
         elif is_hip_cdna4():
             assert args.format == "mxfp4", "AMD tutorial only supports mxpf4 format currently"
@@ -641,7 +645,7 @@ if __name__ == "__main__":
             proton.start("block_scaled_matmul", hook="triton")
             proton.deactivate(0)  # Skip argument creation
             for K in range(args.K_range[0], args.K_range[1] + 1, args.K_step):
-                if is_cuda():
+                if is_cuda() or is_ppu():
                     bench_block_scaled(K, reps=10000, block_scale_type=args.format)
                 elif is_hip_cdna4():
                     bench_block_scaled_amd(K, reps=10000, block_scale_type=args.format, mfma_nonkdim=16)

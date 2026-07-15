@@ -1,6 +1,7 @@
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "third_party/ppu/include/Dialect/TritonPPUGPU/IR/Dialect.h"
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Analysis/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -272,6 +273,61 @@ void createTMAAsyncGather(scf::ForOp forOp, tt::DescriptorGatherOp gatherOp,
                             });
 }
 
+void createAIUAsyncCopy(scf::ForOp forOp, tt::AIULoadOp loadOp, Value alloc,
+                        Value insertIdx, Value extractIdx,
+                        CoarseSchedule &schedule) {
+  OpBuilderForStage builder(loadOp.getLoc(), forOp, schedule);
+  Value zero = arith::ConstantIntOp::create(builder, forOp.getLoc(), 0, 32);
+
+  Operation *firstUse = getFirstUseOfPipelinedOp({loadOp}, forOp, schedule);
+  assert(firstUse && "AIULoadOp has no users");
+  // Replace the load with async copy, wait and loal_load.
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPoint(loadOp);
+  builder.setStageCluster(schedule[loadOp]);
+  Value src = loadOp.getSrcPtr();
+  ttg::MemDescType allocTy = cast<ttg::MemDescType>(alloc.getType());
+
+  // Create async copy
+  Value view = createSingleBufferView(builder, alloc, insertIdx);
+  Operation *copy = triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp::create(
+      builder, src, loadOp.getIndices(), loadOp.getShape(), view);
+  Operation *commit =
+      ttg::AsyncCommitGroupOp::create(builder, copy->getResult(0));
+
+  // Create wait and local load
+  builder.setStageCluster(schedule[firstUse]);
+  auto wait = ttg::AsyncWaitOp::create(builder, commit->getResult(0), 0);
+  auto viewLoad = createSingleBufferView(builder, alloc, extractIdx);
+
+  // Remove redundant local_load -> local_alloc, but only if
+  // we are not using the other value. AsyncAIUCopyGlobalToLocalOp does not
+  // support the masking.
+  SmallVector<ttg::LocalAllocOp> allocsToErase;
+  for (Operation *user : loadOp->getUsers()) {
+    if (auto userAlloc = dyn_cast<ttg::LocalAllocOp>(user)) {
+      if (allocTy.getEncoding() == userAlloc.getType().getEncoding()) {
+        tt::replaceUsesAndPropagateType(builder, userAlloc, viewLoad);
+        allocsToErase.push_back(userAlloc);
+      }
+    }
+  }
+  for (auto alloc : allocsToErase) {
+    alloc.erase();
+  }
+
+  // If there are some uses that were not local_allocs, we need to create a
+  // local_load for them.
+  if (loadOp->use_begin() != loadOp->use_end()) {
+    auto sharedLoad = ttg::LocalLoadOp::create(builder, loadOp.getType(),
+                                               viewLoad, wait.getResult());
+    auto result = sharedLoad->getResults();
+    loadOp->replaceAllUsesWith(result);
+  }
+  schedule.erase(loadOp);
+  loadOp->erase();
+}
+
 struct AsyncLoad {
   int stageDiff;
   int contiguity = 1;
@@ -451,7 +507,7 @@ scf::ForOp lowerLoads(scf::ForOp forOp, CoarseSchedule &schedule,
   // Only visit the top level ops, we do not support pipelining conditional
   // loads for now
   for (auto &op : forOp.getBody()->without_terminator()) {
-    if (isa<tt::LoadOp, tt::DescriptorLoadOp, tt::DescriptorGatherOp>(op)) {
+    if (isa<tt::LoadOp, tt::DescriptorLoadOp, tt::DescriptorGatherOp, tt::AIULoadOp>(op)) {
       int stageDiff = getDefUseStageDiff(&op, forOp, schedule);
       if (stageDiff == 0) {
         // Don't care about non-pipelined loads. Scalar loads will be converted
@@ -461,36 +517,43 @@ scf::ForOp lowerLoads(scf::ForOp forOp, CoarseSchedule &schedule,
       SharedEncodingTrait sharedEncoding;
       bool canUseAsyncCp = false;
       int contiguity = 1;
-      if (!isa<RankedTensorType>(op.getResultTypes()[0])) {
-        canUseAsyncCp = op.getResultTypes()[0].getIntOrFloatBitWidth() >= 32;
-        sharedEncoding = ttg::SwizzledSharedEncodingAttr::get(
-            forOp.getContext(), 1, 1, 1, {0},
-            ttg::CTAEncodingAttr::getDefault(forOp.getContext(), 1));
-        if (canUseAsyncCp) {
-          scalarLoads.push_back(&op);
-        }
-      } else {
-        sharedEncoding = getSharedEncoding(&op);
-        // Do not create async loads for small loads (cp.async requires at least
-        // 4 bytes)
-        canUseAsyncCp =
-            isa<tt::LoadOp>(op) &&
-            canBeConvertedToAsyncLoad(cast<tt::LoadOp>(op), axisInfoAnalysis);
-        int copyVecBytes = getCopyVecBytes(
-            cast<RankedTensorType>(op.getResultTypes()[0]), sharedEncoding);
 
-        canUseAsyncCp &= copyVecBytes >= 4;
-        if (canUseAsyncCp) {
-          auto loadOp = cast<tt::LoadOp>(op);
-          auto ptr = loadOp.getPtr();
-          unsigned vec = axisInfoAnalysis.getContiguity(ptr);
-          if (auto mask = loadOp.getMask())
-            vec = std::min<unsigned>(vec,
-                                     axisInfoAnalysis.getMaskAlignment(mask));
-          contiguity = vec;
+      if (isAIULoad(&op)) {
+        canUseAsyncCp = true;
+        sharedEncoding = getSharedEncoding(&op);
+      } else {
+        if (!isa<RankedTensorType>(op.getResultTypes()[0])) {
+          canUseAsyncCp = op.getResultTypes()[0].getIntOrFloatBitWidth() >= 32;
+          sharedEncoding = ttg::SwizzledSharedEncodingAttr::get(
+              forOp.getContext(), 1, 1, 1, {0},
+              ttg::CTAEncodingAttr::getDefault(forOp.getContext(), 1));
+          if (canUseAsyncCp) {
+            scalarLoads.push_back(&op);
+          }
+        } else {
+          sharedEncoding = getSharedEncoding(&op);
+          // Do not create async loads for small loads (cp.async requires at least
+          // 4 bytes)
+          canUseAsyncCp =
+              isa<tt::LoadOp>(op) &&
+              canBeConvertedToAsyncLoad(cast<tt::LoadOp>(op), axisInfoAnalysis);
+          int copyVecBytes = getCopyVecBytes(
+              cast<RankedTensorType>(op.getResultTypes()[0]), sharedEncoding);
+
+          canUseAsyncCp &= copyVecBytes >= 4;
+          if (canUseAsyncCp) {
+            auto loadOp = cast<tt::LoadOp>(op);
+            auto ptr = loadOp.getPtr();
+            unsigned vec = axisInfoAnalysis.getContiguity(ptr);
+            if (auto mask = loadOp.getMask())
+              vec = std::min<unsigned>(vec,
+                                      axisInfoAnalysis.getMaskAlignment(mask));
+            contiguity = vec;
+          }
         }
       }
-      if (canUseAsyncCp || isTMALoad(&op)) {
+
+      if (canUseAsyncCp || isTMALoad(&op) || isAIULoad(&op)) {
         if (loadRequiresAdditionalBuffer(&op)) {
           // Allocate additional buffer required by the wgmma pipelining.
           stageDiff += 1;
@@ -602,6 +665,10 @@ scf::ForOp lowerLoads(scf::ForOp forOp, CoarseSchedule &schedule,
     if (auto loadOp = dyn_cast<tt::LoadOp>(op)) {
       createAsyncCopy(forOp, loadOp, asyncLoad.alloc, insertIdx, extractIdx,
                       asyncLoad.contiguity, schedule);
+      hasAsyncLoads = true;
+    } else if (auto loadOp = dyn_cast<tt::AIULoadOp>(op)) {
+      createAIUAsyncCopy(forOp, loadOp, asyncLoad.alloc, insertIdx, extractIdx,
+                      schedule);
       hasAsyncLoads = true;
     } else if (auto loadOp = dyn_cast<tt::DescriptorLoadOp>(op)) {
       createTMAAsyncLoad(forOp, loadOp, asyncLoad.alloc, insertIdx, extractIdx,

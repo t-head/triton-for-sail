@@ -8,7 +8,7 @@ from triton.tools.tensor_descriptor import TensorDescriptor
 
 from triton.tools.triton_to_gluon_translater.translator import convert_triton_to_gluon
 from triton.tools.triton_to_gluon_translater.translator_helpers import convert_host_descriptor
-from triton._internal_testing import is_blackwell, is_hopper_or_newer, is_cuda
+from triton._internal_testing import is_blackwell, is_hopper_or_newer, is_cuda, is_ppu
 
 
 def convert_kernel(kernel, kernel_name, tmp_path):
@@ -36,7 +36,7 @@ def add_kernel(x_ptr, y_ptr, out_ptr, n_elements, BLOCK: tl.constexpr):
     tl.store(out_ptr + offsets, x + y)
 
 
-@pytest.mark.skipif(not is_cuda(), reason="Requires CUDA")
+@pytest.mark.skipif(not (is_cuda() or is_ppu()), reason="Requires CUDA")
 def test_simple_kernel(tmp_path):
     kernel = convert_kernel(add_kernel, "add_kernel", tmp_path)
 
@@ -226,7 +226,7 @@ def reshape_trans_kernel(x_ptr, y_ptr, out_ptr, n_elements, BLOCK: tl.constexpr,
 
 
 @pytest.mark.parametrize("TRANS_KIND", ["trans_method", "tl_trans_separate", "tl_trans_tuple", "tl_trans"])
-@pytest.mark.skipif(not is_cuda(), reason="Requires CUDA")
+@pytest.mark.skipif(not (is_cuda() or is_ppu()), reason="Requires CUDA")
 def test_triton_reshape_trans(tmp_path, TRANS_KIND):
     kernel = convert_kernel(reshape_trans_kernel, "reshape_trans_kernel", tmp_path)
 
@@ -257,7 +257,7 @@ def split_kernel(x_ptr, out_ptr):
     tl.store(p, a)
 
 
-@pytest.mark.skipif(not is_cuda(), reason="Requires CUDA")
+@pytest.mark.skipif(not (is_cuda() or is_ppu()), reason="Requires CUDA")
 def test_split(tmp_path):
     kernel = convert_kernel(split_kernel, "split_kernel", tmp_path)
 
@@ -279,7 +279,7 @@ def reduce_to_scalar_kernel(out_ptr):
     tl.store(out_ptr, x)
 
 
-@pytest.mark.skipif(not is_cuda(), reason="Requires CUDA")
+@pytest.mark.skipif(not (is_cuda() or is_ppu()), reason="Requires CUDA")
 def test_reduce_to_scalar(tmp_path):
     kernel = convert_kernel(reduce_to_scalar_kernel, "reduce_to_scalar_kernel", tmp_path)
     grid = (1, )
@@ -298,7 +298,7 @@ def num_threads_kernel(out_ptr):
     tl.store(out_ptr + offs, 1)
 
 
-@pytest.mark.skipif(not is_cuda(), reason="Requires CUDA")
+@pytest.mark.skipif(not (is_cuda() or is_ppu()), reason="Requires CUDA")
 def test_num_threads(tmp_path):
     kernel = convert_kernel(num_threads_kernel, "num_threads_kernel", tmp_path)
 

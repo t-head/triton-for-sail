@@ -6,6 +6,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
+#include "third_party/ppu/include/Dialect/TritonPPUGPU/IR/Dialect.h"
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
@@ -90,11 +91,9 @@ bool isLoadFromTensorPtr(triton::LoadOp op) {
   return mlir::triton::isTensorPointerType(op.getPtr().getType());
 }
 
-SmallVector<unsigned, 4>
-getOrderFromContiguity(const SmallVector<int64_t> &arr) {
+SmallVector<unsigned, 4> argSort(const SmallVector<int64_t> &arr) {
   SmallVector<unsigned, 4> ret(arr.size());
   std::iota(ret.begin(), ret.end(), 0);
-  std::reverse(ret.begin(), ret.end());
   std::stable_sort(ret.begin(), ret.end(),
                    [&](unsigned x, unsigned y) { return arr[x] > arr[y]; });
   return ret;
@@ -103,11 +102,15 @@ getOrderFromContiguity(const SmallVector<int64_t> &arr) {
 Value getMemAccessPtr(Operation *op) {
   if (auto ld = dyn_cast<triton::LoadOp>(op))
     return ld.getPtr();
+  if (auto ld = dyn_cast<triton::AIULoadOp>(op))
+    return ld.getSrcPtr();
   if (auto atomic = dyn_cast<triton::AtomicRMWOp>(op))
     return atomic.getPtr();
   if (auto atomic = dyn_cast<triton::AtomicCASOp>(op))
     return atomic.getPtr();
   if (auto copy = dyn_cast<triton::gpu::AsyncCopyGlobalToLocalOp>(op))
+    return copy.getSrc();
+  if (auto copy = dyn_cast<triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp>(op))
     return copy.getSrc();
   if (auto store = dyn_cast<triton::StoreOp>(op))
     return store.getPtr();
@@ -630,7 +633,7 @@ bool canFoldIntoConversion(Operation *op, Attribute targetEncoding) {
     return !triton::gpu::isExpensiveCat(cast<triton::CatOp>(op),
                                         targetEncoding);
   if (auto convert = dyn_cast<triton::gpu::ConvertLayoutOp>(op)) {
-    if (mlir::isa<triton::gpu::NvidiaMmaEncodingAttr>(targetEncoding)) {
+    if (mlir::isa<triton::gpu::NvidiaMmaEncodingAttr, triton::gpu::PPUMmaEncodingAttr>(targetEncoding)) {
       auto srcEncoding = convert.getSrc().getType().getEncoding();
       if (targetEncoding != srcEncoding)
         return false;
@@ -1057,6 +1060,24 @@ int getNVIDIAComputeCapability(Operation *module) {
          "expected target attribute to be prefixed with \"cuda:\"");
 
   StringRef capabilityStr = ref.drop_front(5); // drop the "cuda:"
+  int computeCapability;
+  bool parseError = capabilityStr.getAsInteger(10, computeCapability);
+  assert(!parseError &&
+         "invalid compute capability string in target attribute");
+
+  return computeCapability;
+}
+
+int getPPUComputeCapability(Operation *module) {
+  StringAttr targetAttr =
+      module->getAttrOfType<StringAttr>(triton::gpu::AttrTargetName);
+  assert(targetAttr && "Expected a target attribute on the module operation");
+
+  StringRef ref = targetAttr.strref();
+  assert(ref.starts_with("ppu:") &&
+         "expected target attribute to be prefixed with \"ppu:\"");
+
+  StringRef capabilityStr = ref.drop_front(4); // drop the "ppu:"
   int computeCapability;
   bool parseError = capabilityStr.getAsInteger(10, computeCapability);
   assert(!parseError &&

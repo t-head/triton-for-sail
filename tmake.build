@@ -1,0 +1,37 @@
+#!/bin/bash
+
+target triton
+
+build_command '
+export BUILD_PLATFORM=${build_platform}
+
+DIR=${PPU_HOME}/triton
+cd $DIR
+BUILD_CMD="python setup.py bdist_wheel"
+
+echo $BUILD_CMD
+eval $BUILD_CMD || eval $BUILD_CMD || exit 1
+
+cd dist
+pip uninstall -y triton
+pip install `ls | grep -E "triton.*whl"`
+'
+
+clean_command '
+DIR=${PPU_HOME}/triton
+cd $DIR
+rm -rf build
+rm -rf python/build
+
+cd dist
+rm -f `ls | grep -E "triton.*whl"`
+'
+
+install_command '
+mkdir -p ${OUTPUT_DIR}/triton
+DIR=${PPU_HOME}/triton
+cp $DIR/dist/*.whl ${OUTPUT_DIR}/triton
+'
+
+option 'name=build_platform' 'value=ubuntu' 'choices=(ubuntu alios)'
+option 'name=ppu' 'value=1' 'choices=(0 1)'

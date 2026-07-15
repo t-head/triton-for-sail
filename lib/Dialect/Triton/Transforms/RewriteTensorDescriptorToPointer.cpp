@@ -281,14 +281,57 @@ struct RewriteLoadPattern : OpConversionPattern<triton::DescriptorLoadOp> {
     auto loc = op.getLoc();
     const auto blockShape = op.getDesc().getType().getBlockType().getShape();
     auto descTy = op.getDesc().getType();
+    bool isAIU = false;
+    if (auto defOp = op.getDesc().getDefiningOp()) {
+      if (auto descOp = dyn_cast<triton::MakeTensorDescOp>(defOp))
+        isAIU = descOp.getIsAIU();
+    }
     auto desc = unpackDescriptor(descTy, adaptor.getDesc());
     auto offsets = castToI64(rewriter, op.getIndices());
     auto other = generateOther(rewriter, loc, descTy, desc.paddingOption);
-    auto newLoad = rewriter.replaceOpWithNewOp<triton::LoadOp>(
-        op, generatePtr(rewriter, loc, blockShape, desc, offsets),
-        generateMask(rewriter, loc, blockShape, desc, offsets), other,
-        triton::CacheModifier::NONE, triton::EvictionPolicy::NORMAL, false);
-    newLoad->setAttrs(filterSegmentSizes(op->getAttrs()));
+
+    if (isAIU) {
+      // promote to use AIU to load
+      assert(blockShape.size() == desc.shape.size());
+      assert(blockShape.size() == offsets.size());
+      SmallVector<int> order = {1, 0};
+
+      // Cast I32 offsets into I64
+      SmallVector<Value> i32Offsets;
+      for (auto offset : offsets) {
+        auto i32Offset = rewriter.create<arith::TruncIOp>(
+            op.getLoc(), rewriter.getI32Type(), offset);
+        i32Offsets.push_back(i32Offset);
+      }
+
+      Value loadRes = op.getResult();
+      if (loadRes.hasOneUse() &&
+          dyn_cast<triton::TransOp>(loadRes.use_begin()->getOwner())) {
+        auto TransOp =
+            dyn_cast<triton::TransOp>(loadRes.use_begin()->getOwner());
+
+        auto newLoad = rewriter.replaceOpWithNewOp<triton::AIULoadOp>(
+            op, TransOp.getResult().getType(), desc.base,
+            llvm::to_vector(llvm::reverse(i32Offsets)),
+            llvm::to_vector(llvm::reverse(desc.shape)),
+            llvm::to_vector(llvm::reverse(order)), triton::CacheModifier::NONE,
+            triton::EvictionPolicy::NORMAL);
+        newLoad->setAttrs(filterSegmentSizes(op->getAttrs()));
+
+        TransOp.replaceAllUsesWith(newLoad.getResult());
+      } else {
+        auto newLoad = rewriter.replaceOpWithNewOp<triton::AIULoadOp>(
+            op, op.getResult().getType(), desc.base, i32Offsets, desc.shape,
+            order, triton::CacheModifier::NONE, triton::EvictionPolicy::NORMAL);
+        newLoad->setAttrs(filterSegmentSizes(op->getAttrs()));
+      }
+    } else {
+      auto newLoad = rewriter.replaceOpWithNewOp<triton::LoadOp>(
+          op, generatePtr(rewriter, loc, blockShape, desc, offsets),
+          generateMask(rewriter, loc, blockShape, desc, offsets), other,
+          triton::CacheModifier::NONE, triton::EvictionPolicy::NORMAL, false);
+      newLoad->setAttrs(filterSegmentSizes(op->getAttrs()));
+    }
 
     return llvm::success();
   }

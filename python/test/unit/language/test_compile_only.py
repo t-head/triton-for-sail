@@ -1,10 +1,12 @@
+import pytest
 import triton
 import triton.language as tl
 from triton.backends.compiler import GPUTarget
 import re
 from triton.compiler import ASTSource
+from triton._internal_testing import is_ppu
 
-
+@pytest.mark.skipif(is_ppu(), reason="ptxas-blackwell is not installed on PPU")
 def test_compile_only_sm100() -> None:
 
     @triton.jit
@@ -21,6 +23,7 @@ def test_compile_only_sm100() -> None:
     assert k.asm["cubin"] != b""
 
 
+@pytest.mark.skipif(is_ppu(), reason="ptxas-blackwell is not installed on PPU")
 def test_compile_only_dot() -> None:
 
     @triton.jit
@@ -76,6 +79,7 @@ def test_compile_only_dot() -> None:
     assert k.asm["cubin"] != b""
 
 
+@pytest.mark.skipif(is_ppu(), reason="ptxas-blackwell is not installed on PPU")
 def test_compile_only_k_loop() -> None:
 
     @triton.jit
@@ -121,6 +125,7 @@ def test_compile_only_k_loop() -> None:
     assert k.asm["cubin"] != b""
 
 
+@pytest.mark.skipif(is_ppu(), reason="ptxas-blackwell is not installed on PPU")
 def test_compile_only_dot_mxfp() -> None:
 
     @triton.jit

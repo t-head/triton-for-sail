@@ -1543,6 +1543,21 @@ void init_triton_ir(py::module &&m) {
               Value y_index) -> void {
              self.create<DescriptorScatterOp>(desc, x_indices, y_index, value);
            })
+      .def("create_aiu_load",
+           [](TritonOpBuilder &self, Value &ptr, std::vector<Value> &indices,
+              std::vector<Value> &shape, std::vector<int32_t> &order, Type type,
+              CacheModifier cacheModifier,
+              EvictionPolicy evictionPolicy) -> Value {
+             return self.create<AIULoadOp>(type, ptr, indices, shape, order,
+                                           cacheModifier, evictionPolicy);
+           })
+      .def("create_tensor_pointer_aiu_load",
+           [](TritonOpBuilder &self, Value &ptr, Type type,
+              CacheModifier cacheModifier,
+              EvictionPolicy evictionPolicy) -> Value {
+             return self.create<AIULoadOp>(type, ptr, cacheModifier,
+                                           evictionPolicy);
+           })
       .def("create_reshape",
            [](TritonOpBuilder &self, Value &arg, std::vector<int64_t> &shape,
               bool allowReorder) -> Value {
@@ -1840,10 +1855,11 @@ void init_triton_ir(py::module &&m) {
       .def("create_make_tensor_descriptor",
            [](TritonOpBuilder &self, Value &base, std::vector<Value> &shape,
               std::vector<Value> &strides, std::vector<int32_t> &tensorShape,
-              bool isSignedInteger, PaddingOption paddingOption) -> Value {
+              bool isSignedInteger, PaddingOption paddingOption,
+              bool isAIU) -> Value {
              return self.create<MakeTensorDescOp>(base, shape, strides,
                                                   tensorShape, isSignedInteger,
-                                                  paddingOption);
+                                                  paddingOption, isAIU);
            });
 
   py::class_<PassManager>(m, "pass_manager", py::module_local())
