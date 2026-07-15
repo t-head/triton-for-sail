@@ -22,6 +22,7 @@ import triton.language as tl
 import inspect
 import os
 from triton.language.extra import libdevice
+from triton._internal_testing import is_ppu
 
 from pathlib import Path
 
@@ -71,7 +72,6 @@ print(f'The maximum difference between torch and triton is '
 def is_cuda():
     return triton.runtime.driver.active.get_current_target().backend == "cuda"
 
-
 def is_hip():
     return triton.runtime.driver.active.get_current_target().backend == "hip"
 
@@ -82,6 +82,9 @@ current_dir = Path(os.path.dirname(os.path.abspath(current_file)))
 if is_cuda():
     libdir = current_dir.parent.parent / 'third_party/nvidia/backend/lib'
     extern_libs = {'libdevice': str(libdir / 'libdevice.10.bc')}
+elif is_ppu():
+    libdir = current_dir.parent.parent / 'third_party/ppu/backend/lib'
+    extern_libs = {'libdevice': str(libdir / 'libdevice.ppu.bc')}
 elif is_hip():
     libdir = current_dir.parent.parent / 'third_party/amd/backend/lib'
     extern_libs = {}

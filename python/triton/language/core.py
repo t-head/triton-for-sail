@@ -2182,6 +2182,26 @@ def store_tensor_descriptor(desc: tensor_descriptor_base, offsets: Sequence[cons
     return desc.store(offsets, value, _semantic=_semantic)
 
 
+@builtin
+def aiu_load(pointer, offsets=(0, 0), block_shape=(0, 0), shape=(0, 0), dtype=void, order=(1, 0), _semantic=None):
+    """
+    Return a tensor of data whose values are loaded from memory at location defined by `pointer`:
+
+        (1) If `pointer` is a single element pointer, offsets&block_shape&shape should be provided.  In
+            this case:
+
+            - `pointer` is the start address of a memory tensor
+            - `offsets` is a 2D value indicate the offset of the start pointer of the loading tile to the memory tensor
+            - `block_shape` is a 2D value indicate the tile size loaded by aiu_load.
+            - `shape` is a 2D value indicate the memory tensor size.
+
+        (2) If `pointer` is a block pointer defined by `make_block_ptr`, a tensor is loaded.
+    """
+
+    type = block_type(dtype, tuple(block_shape))
+    return _semantic.aiu_load(pointer, offsets, shape, order, "", "", type, _semantic)
+
+
 @_tensor_member_fn
 @builtin
 def store(pointer, value, mask=None, boundary_check=(), cache_modifier="", eviction_policy="", _semantic=None):

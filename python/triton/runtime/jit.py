@@ -714,6 +714,8 @@ class JITFunction(JITCallable, KernelInterface[T]):
 
         # Kernel is not cached; we have to compile.
         if kernel is None:
+            if self.ppu_hint in ('fwd', 'bwd'):
+                kwargs['ppu_hint'] = self.ppu_hint
             options, signature, constexprs, attrs = self._pack_args(backend, kwargs, bound_args, specialization,
                                                                     options)
 
@@ -749,7 +751,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
         return self._fn_name if self._repr is None else self._repr(_)
 
     def __init__(self, fn, version=None, do_not_specialize=None, do_not_specialize_on_alignment=None, debug=None,
-                 noinline=None, repr=None, launch_metadata=None):
+                 noinline=None, repr=None, launch_metadata=None, ppu_hint=None):
         do_not_specialize = do_not_specialize if do_not_specialize else []
         do_not_specialize_on_alignment = do_not_specialize_on_alignment if do_not_specialize_on_alignment else []
 
@@ -760,6 +762,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
         self.do_not_specialize_on_alignment = do_not_specialize_on_alignment
         self._repr = repr
         self.launch_metadata = launch_metadata
+        self.ppu_hint = ppu_hint
 
         self.params = []
         for i, param in enumerate(self.signature.parameters.values()):
@@ -831,10 +834,31 @@ class JITFunction(JITCallable, KernelInterface[T]):
         src = self.ASTSource(self, signature, constexprs, attrs)
 
         async_mode = _async_compile.active_mode.get()
-        if async_mode is not None:
 
-            env_vars = get_cache_invalidating_env_vars()
+        env_vars = get_cache_invalidating_env_vars()
+        cache_key = get_cache_key(src, backend, options, env_vars)
+
+        import os
+        if os.getenv("TRITON_JIT_DEBUG", "").upper() in ["ON", "1", "YES", "TRUE", "Y"]:
+            import hashlib
+            import base64
             cache_key = get_cache_key(src, backend, options, env_vars)
+            hex_key = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()
+            dir_name = base64.b32encode(bytes.fromhex(hex_key)).decode("utf-8").rstrip("=")
+            cache_root = knobs.cache.dir
+            cache_dir = os.path.join(cache_root, dir_name)
+            if not os.path.exists(cache_dir):
+                constexpr_str = ", ".join(f"{k}={v!r}" for k, v in constexprs.items())
+                print(
+                    f"[TRITON JIT] kernel={self.__qualname__}"
+                    f" | constexprs={constexpr_str}"
+                    f" | cache={cache_dir}"
+                )
+
+        if async_mode is not None:
+            # move to upwards
+            # env_vars = get_cache_invalidating_env_vars()
+            # cache_key = get_cache_key(src, backend, options, env_vars)
 
             def async_compile():
                 return self.compile(src, target=target, options=options.__dict__, _env_vars=env_vars)
@@ -879,6 +903,7 @@ def jit(
     do_not_specialize_on_alignment: Optional[Iterable[int | str]] = None,
     debug: Optional[bool] = None,
     noinline: Optional[bool] = None,
+    ppu_hint: Optional[str] = None,
 ) -> Callable[[T], JITFunction[T]]:
     ...
 
@@ -893,6 +918,7 @@ def jit(
     do_not_specialize_on_alignment: Optional[Iterable[int | str]] = None,
     debug: Optional[bool] = None,
     noinline: Optional[bool] = None,
+    ppu_hint: Optional[str] = None,
 ) -> KernelInterface[T]:
     """
     Decorator for JIT-compiling a function using the Triton compiler.
@@ -929,6 +955,7 @@ def jit(
                 noinline=noinline,
                 repr=repr,
                 launch_metadata=launch_metadata,
+                ppu_hint=ppu_hint,
             )
 
     if fn is not None:

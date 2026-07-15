@@ -195,7 +195,7 @@ def compile_kernel(args: CompileArgs):
         "warp_size": target.warp_size,
     }
     output_files = []
-    backend_name = target.backend
+    backend_name = options.backend_name
     template_dir = Path(__file__).parent / "extra" / backend_name
     for template_path in template_dir.glob('compile.*'):
         ext = template_path.suffix

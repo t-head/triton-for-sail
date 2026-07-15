@@ -210,17 +210,23 @@ def get_llvm_package_info():
         elif arch == 'arm64':
             system_suffix = 'ubuntu-arm64'
         elif arch == 'x64':
-            vglibc = tuple(map(int, platform.libc_ver()[1].split('.')))
-            vglibc = vglibc[0] * 100 + vglibc[1]
-            if vglibc > 228:
-                # Ubuntu 24 LTS (v2.39)
-                # Ubuntu 22 LTS (v2.35)
-                # Ubuntu 20 LTS (v2.31)
-                system_suffix = "ubuntu-x64"
+            build_platform = os.environ.get('BUILD_PLATFORM', 'ubuntu')
+            if build_platform == 'ubuntu':
+                vglibc = tuple(map(int, platform.libc_ver()[1].split('.')))
+                vglibc = vglibc[0] * 100 + vglibc[1]
+                if vglibc > 228:
+                    # Ubuntu 24 LTS (v2.39)
+                    # Ubuntu 22 LTS (v2.35)
+                    # Ubuntu 20 LTS (v2.31)
+                    system_suffix = "ubuntu-x64"
+                else:
+                    # Manylinux_2.28 (v2.28)
+                    # AlmaLinux 8 (v2.28)
+                    system_suffix = "almalinux-x64"
+            elif build_platform == 'alios':
+                system_suffix = 'alios7u2-x64'
             else:
-                # Manylinux_2.28 (v2.28)
-                # AlmaLinux 8 (v2.28)
-                system_suffix = "almalinux-x64"
+                raise RuntimeError("Unexpected BUILD_PLATFORM: " + build_platform)
         else:
             print(
                 f"LLVM pre-compiled image is not available for {system}-{arch}. Proceeding with user-configured LLVM from source build."
@@ -367,6 +373,33 @@ def download_and_copy(name, src_func, dst_path, variable, version, url_func):
         shutil.copy(src_path, dst_path)
 
 
+def get_llvm_irformatter():
+    '''
+    Get irformatter
+    '''
+    binary = "llvm-irformatter"
+    paths = [
+        os.environ.get("TRITON_IR_FORMATTER_PATH", ""),
+        os.path.join(os.environ.get("PPU_SDK"), "bin", binary)
+    ]
+    for bin in paths:
+        if os.path.exists(bin) and os.path.isfile(bin):
+            return bin
+    raise RuntimeError("Cannot find IR Formatter")
+
+
+def copy_llvm_irformatter():
+    binary = "llvm-irformatter"
+    src_path = get_llvm_irformatter()
+    base_dir = os.path.dirname(__file__)
+    dst_path = os.path.join(base_dir, "third_party", "ppu", "backend", f'bin/{binary}')  # final binary path
+    os.makedirs(os.path.split(dst_path)[0], exist_ok=True)
+    print(f'copy {src_path} to {dst_path} ...')
+    if os.path.isdir(src_path):
+        shutil.copytree(src_path, dst_path, dirs_exist_ok=True)
+    else:
+        shutil.copy(src_path, dst_path)
+
 # ---- cmake extension ----
 
 
@@ -405,7 +438,11 @@ class CMakeBuild(build_ext):
         build_ext.finalize_options(self)
 
     def run(self):
+        # copy nvidia toolchain dependencies
         download_and_copy_dependencies()
+
+        # copy ppu toolchain dependencies
+        copy_llvm_irformatter()
 
         try:
             out = subprocess.check_output(["cmake", "--version"])
@@ -619,7 +656,7 @@ def download_and_copy_dependencies():
     )
 
 
-backends = [*BackendInstaller.copy(["nvidia", "amd"]), *BackendInstaller.copy_externals()]
+backends = [*BackendInstaller.copy(["nvidia", "amd", "ppu"]), *BackendInstaller.copy_externals()]
 
 
 def get_package_dirs():

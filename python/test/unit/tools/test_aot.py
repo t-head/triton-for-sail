@@ -10,8 +10,11 @@ import numpy as np
 
 import triton
 from triton.backends.compiler import GPUTarget
-from triton.backends.nvidia.driver import include_dirs, library_dirs
-from triton._internal_testing import is_cuda, is_hip
+from triton._internal_testing import is_cuda, is_ppu, is_hip
+if is_ppu():
+    from triton.backends.ppu.driver import include_dirs, library_dirs
+else:
+    from triton.backends.nvidia.driver import include_dirs, library_dirs
 
 kernel_utils_src = """
 import triton
@@ -84,7 +87,7 @@ def kernel(
 """
 
 test_utils_src = """
-#include <cuda.h>
+#include <hggc.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -140,19 +143,19 @@ def gen_test_bin(dir, M, N, K, exe="test", algo_id=0):
 int main(int argc, char **argv) {{
   int M = {M}, N = {N}, K = {K};
 
-  // initialize CUDA handles
-  CUdevice dev;
-  CUcontext ctx;
-  CUstream stream;
-  CUdeviceptr A, B, C;
-  CUresult err = 0;
-  cuInit(0);
-  cuDeviceGet(&dev, 0);
-  cuCtxCreate(&ctx, 0, dev);
-  cuMemAlloc(&A, M * K * 2);
-  cuMemAlloc(&B, K * N * 2);
-  cuMemAlloc(&C, M * N * 4);
-  cuStreamCreate(&stream, 0);
+  // initialize HGGC handles
+  HGdevice dev;
+  HGcontext ctx;
+  HGstream stream;
+  HGdeviceptr A, B, C;
+  HGresult err = 0;
+  hgInit(0);
+  hgDeviceGet(&dev, 0);
+  hgCtxCreate_v2(&ctx, 0, dev);
+  hgMemAlloc(&A, M * K * 2);
+  hgMemAlloc(&B, K * N * 2);
+  hgMemAlloc(&C, M * N * 4);
+  hgStreamCreate(&stream, 0);
   load_matmul_fp16();
 
   // initialize input data
@@ -162,11 +165,11 @@ int main(int argc, char **argv) {{
   memset(hB, 0, K*N*2);
   read_csv_to_buffer(argv[1], hA, M*K);
   read_csv_to_buffer(argv[2], hB, K*N);
-  cuMemcpyHtoD(A, hA, M*K*2);
-  cuMemcpyHtoD(B, hB, K*N*2);
+  hgMemcpyHtoD(A, hA, M*K*2);
+  hgMemcpyHtoD(B, hB, K*N*2);
 
   // launch kernel
-  CUresult ret;
+  HGresult ret;
   int algo_id = {algo_id};
   if (algo_id == 0) {{
     ret = matmul_fp16_default(stream, C, A, B, M, N, K, N, 1, K, 1, N, 1);
@@ -179,15 +182,15 @@ int main(int argc, char **argv) {{
   // read data
   int32_t hC[M*N];
   memset(hC, 0, M*N*4);
-  cuMemcpyDtoH(hC, C, M*N*4);
+  hgMemcpyDtoH(hC, C, M*N*4);
   write_buffer_to_csv(argv[3], hC, M*N);
 
-  // free cuda handles
+  // free hggc handles
   unload_matmul_fp16();
-  cuMemFree(A);
-  cuMemFree(B);
-  cuMemFree(C);
-  cuCtxDestroy(ctx);
+  hgMemFree(A);
+  hgMemFree(B);
+  hgMemFree(C);
+  hgCtxDestroy(ctx);
 }}
 """
     src = test_utils_src + test_src
@@ -199,7 +202,7 @@ int main(int argc, char **argv) {{
         command.extend(["-I", inc_dir])
     for lib_dir in library_dirs():
         command.extend(["-L", lib_dir])
-    command.extend(["-l", "cuda", "-L", dir, "-l", "kernel", "-o", exe])
+    command.extend(["-l", "hggc", "-L", dir, "-l", "kernel", "-o", exe])
     subprocess.run(command, check=True, cwd=dir)
 
 
@@ -419,7 +422,7 @@ def test_launcher_has_no_available_kernel():
         assert "kernel launch failed" in result.stderr
 
 
-@pytest.mark.skipif(not is_cuda(), reason="Requires CUDA")
+@pytest.mark.skipif(not (is_cuda() or is_ppu()), reason="Requires CUDA")
 def test_compile_link_autotune_matmul():
     np.random.seed(3)
 

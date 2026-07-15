@@ -778,7 +778,7 @@ class InterpreterBuilder:
         return ret
 
     def create_make_tensor_descriptor(self, base: TensorHandle, shape: List[TensorHandle], strides: List[TensorHandle],
-                                      tensor_shape: List[int], is_signed: bool, padding: str = "zero"):
+                                      tensor_shape: List[int], is_signed: bool, padding: str = "zero", is_aiu: bool = False):
         desc = TensorDescHandle(base, shape, strides, tensor_shape, padding)
         desc.validate()
         return desc

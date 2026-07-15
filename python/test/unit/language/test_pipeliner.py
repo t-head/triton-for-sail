@@ -5,11 +5,11 @@ import torch
 import triton
 import triton.language as tl
 
-from triton._internal_testing import is_cuda, is_hopper_or_newer, is_hip_cdna, is_hip_cdna2, is_hip
+from triton._internal_testing import is_cuda, is_ppu, is_hopper_or_newer, is_hip_cdna, is_hip_cdna2, is_hip
 
 
 def check_capabilities():
-    if is_cuda():
+    if is_cuda() or is_ppu():
         cc = torch.cuda.get_device_capability()
         if cc[0] < 8:
             pytest.skip("CUDA 8.0+ required")
@@ -214,11 +214,11 @@ def dot_scale_ref(x, scale, y, type_x, type_y):
 @pytest.mark.parametrize("scale", [True, False])
 def test_pipeline_matmul(scale, device):
     check_capabilities()
-    if scale and not (is_cuda() or is_hip_cdna()):
+    if scale and not (is_cuda() or is_ppu() or is_hip_cdna()):
         pytest.skip("NYI: scale_dot just implemented in CUDA/HIP")
     M, N, K = 512, 512, 128
     BLOCK_M, BLOCK_N, BLOCK_K = 64, 64, 32
-    NUM_STAGES = 4 if is_cuda() else 2
+    NUM_STAGES = 4 if is_cuda() or is_ppu() else 2
 
     if scale:
         # Large enough tile to let our heuristics to pipeline small tensor kick in
@@ -277,7 +277,7 @@ def test_pipeline_matmul(scale, device):
     atol = 1e-2 if is_hip_cdna2() or scale else None
     rtol = 1e-2 if is_hip_cdna2() or scale else None
     torch.testing.assert_close(ref_out, output, atol=atol, rtol=rtol, equal_nan=scale)
-    if is_cuda():
+    if is_cuda() or is_ppu():
         ttgir = handler.asm["ttgir"]
         if use_tma:
             assert ttgir.count("ttng.async_tma_copy_global_to_local") != 0, "async tma copy not found"
@@ -308,7 +308,10 @@ def test_pipeline_matmul(scale, device):
                     count = 3
                 assert ttgir.count("ttg.local_alloc") == count, "alloc number not match"
             else:
-                assert ttgir.count("ttg.local_alloc") == (3 if scale else 2), "alloc number not match"
+                if is_ppu():
+                    assert ttgir.count("ttg.local_alloc") == 2, "alloc number not match"
+                else:
+                    assert ttgir.count("ttg.local_alloc") == (3 if scale else 2), "alloc number not match"
 
             # 4. check dot
             cc = torch.cuda.get_device_capability()
@@ -331,7 +334,7 @@ def test_pipeline_vecadd(device):
     handler = vecadd_kernel[grid](a, b, output, SIZE, NUM_BLOCKS, BLOCK_SIZE, NUM_STAGES)
     ref_out = a + b
     torch.testing.assert_close(ref_out, output)
-    if is_cuda():
+    if is_cuda() or is_ppu():
         ttgir = handler.asm["ttgir"]
         # 1. check number of stages
         assert ttgir.count("ttg.async_copy_global_to_local") / 2 == NUM_STAGES, "num_stages not match"

@@ -7,6 +7,8 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "third_party/ppu/include/Dialect/TritonPPUGPU/IR/Dialect.h"
+#include "third_party/ppu/include/TritonPPUGPUToLLVM/AIUUtility.h"
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -20,6 +22,7 @@
 #include "llvm/Support/Debug.h"
 #include <queue>
 
+#undef DEBUG_TYPE
 #define DEBUG_TYPE "triton-loop-pipeline"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
@@ -184,6 +187,8 @@ Operation *mlir::triton::predicateOp(RewriterBase &rewriter, Operation *op,
   if (isa<ttg::LocalStoreOp>(op))
     return op;
   if (isa<ttng::TMEMAllocOp, ttng::TMEMLoadOp>(op))
+    return op;
+  if(isa<triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp>(op))
     return op;
   if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
     rewriter.setInsertionPoint(op);
@@ -502,6 +507,10 @@ bool mlir::triton::isTMALoad(Operation *op) {
   return isa<tt::DescriptorLoadOp, tt::DescriptorGatherOp>(op);
 }
 
+bool mlir::triton::isAIULoad(Operation *op) {
+  return isa<tt::AIULoadOp>(op);
+}
+
 bool mlir::triton::canBeAsyncLoad(Operation *op) {
   if (mlir::triton::isTMALoad(op)) {
     return true;
@@ -623,6 +632,28 @@ ttg::SharedEncodingTrait mlir::triton::getSharedEncoding(Operation *op) {
       llvm::report_fatal_error("unrecognized tma load type");
     }
     return ttng::getEncodingFromDescriptor(op, ty, desc);
+  }
+
+  if (isAIULoad(op)) {
+    int numWarps = ttg::lookupNumWarps(op);
+    auto tileShape = ty.getShape();
+    size_t rank = tileShape.size();
+    auto elemBytes = ty.getElementTypeBitWidth() / 8;
+    auto tileC = tileShape[rank - 1];
+    auto tileW = tileShape[rank - 2];
+    if (order[rank - 1] != 0) {
+      tileC = tileShape[rank - 2];
+      tileW = tileShape[rank - 1];
+    }
+    auto mod = op->getParentOfType<ModuleOp>();
+    assert(mod && "Parent ModuleOp not found for AIULoadOp");
+    auto computeCapability = getPPUComputeCapability(mod);
+    unsigned version = (computeCapability == 80) ? 1 : 2;
+    SmallVector<unsigned> aiuLoad = mlir::LLVM::PPU::AIULoadStrategy(
+        numWarps, tileW, tileC, elemBytes, version);
+
+    return ttg::PPUAIUSharedEncodingAttr::get(ty.getContext(), version, aiuLoad,
+                                              order, ctaLayout);
   }
 
   if (localAllocEnc)

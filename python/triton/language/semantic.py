@@ -1,5 +1,6 @@
 from __future__ import annotations  # remove after python 3.11
 import warnings
+import os
 
 from typing import List, Optional, Sequence, Tuple, TypeVar, Generic, Type
 import numbers
@@ -992,6 +993,34 @@ class TritonSemantic(Generic[TensorTy]):
             return sorted(boundary_check)
         return ()
 
+    def aiu_load(self, ptr: tl.tensor, offsets, shape, order, cache_modifier: str, eviction_policy: str, type,
+                    builder: ir.builder) -> tl.tensor:
+        if ptr.type.is_ptr() and ptr.type.element_ty.is_block():
+            # `dst_ty` is de-referenced type of the pointer type
+            dst_ty = ptr.type.element_ty
+            x = self.builder.create_tensor_pointer_aiu_load(ptr.handle, dst_ty.to_ir(self.builder),
+                                                    self._str_to_load_cache_modifier(cache_modifier),
+                                                    self._str_to_eviction_policy(eviction_policy))
+            return tl.tensor(x, dst_ty)
+        else:
+            offsets = self._convert_to_ir_values(offsets, require_i64=False)
+            shape = self._convert_to_ir_values(shape)
+
+            # Check `order`
+            if not hasattr(order, "__iter__"):
+                order = [order]
+            order = [elem.value if isinstance(elem, tl.constexpr) else elem for elem in order]
+            assert sorted(order) == list(range(len(order))), "Expected a permutation of (0, 1, ..., len(order)-1) in order"
+
+            # Must have same length
+            assert all(len(order) == len(list_like) for list_like in [shape, offsets]), \
+                "Expected shape/offsets/order to have the same length"
+
+            x = self.builder.create_aiu_load(ptr.handle, offsets, shape, order, type.to_ir(self.builder),
+                                            self._str_to_load_cache_modifier(cache_modifier),
+                                            self._str_to_eviction_policy(eviction_policy))
+            return tl.tensor(x, type)
+
     def _load_block_pointer(self, ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile):
         # Load by a block pointer: `pointer_type<block_type<>>`
         # Block pointer can not have `mask` and `other` arguments
@@ -1944,6 +1973,24 @@ class TritonSemantic(Generic[TensorTy]):
         if last_stride != 1:
             raise ValueError(f"Tensor descriptor last dim must be 1 but got {last_stride}")
 
+        promote_use_aiu = True
+        # AIU only support 2D
+        if ndim != 2:
+            promote_use_aiu = False
+        else:
+            tileW = tl._unwrap_if_constexpr(block_shape[-2])
+            if tileW % 16 != 0:
+                promote_use_aiu = False
+        # AIU only support B16
+        if elem_size != 2:
+            promote_use_aiu = False
+        # contig dimension should be at least 32Byte
+        if contig_dim_size * elem_size < 32:
+            promote_use_aiu = False
+
+        if os.getenv("PPU_DISABLE_AIU_PROMOTION", "").upper() in ["ON", "1", "YES", "TRUE", "Y"]:
+            promote_use_aiu = False
+
         shape = [self.make_scalar(x, tl.int32) for x in shape]
         strides = [self.make_scalar(tl._unwrap_if_constexpr(x), tl.int64) for x in strides]
 
@@ -1962,5 +2009,5 @@ class TritonSemantic(Generic[TensorTy]):
 
         handle = self.builder.create_make_tensor_descriptor(base_handle, [s.handle for s in shape],
                                                             [s.handle for s in strides], block_shape, is_signed_int,
-                                                            padding)
+                                                            padding, promote_use_aiu)
         return tl.tensor_descriptor(handle, shape, strides, type)

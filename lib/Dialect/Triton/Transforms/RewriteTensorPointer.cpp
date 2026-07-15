@@ -25,6 +25,7 @@ private:
   SmallVector<Value> strides;
   SmallVector<Value> offsets;
   ArrayRef<int64_t> tensorShape;
+  ArrayRef<int32_t> order;
 
   // A cache to avoid generating the same offset with range
   DenseMap<unsigned, Value> cachedOffsetWithRange;
@@ -39,18 +40,25 @@ public:
   RewritedInfo(Value base, const SmallVector<Value> &shape,
                const SmallVector<Value> &strides,
                const SmallVector<Value> &offsets,
-               const ArrayRef<int64_t> &tensorShape)
+               const ArrayRef<int64_t> &tensorShape,
+               ArrayRef<int32_t> order)
       : base(base), shape(shape), strides(strides), offsets(offsets),
-        tensorShape(tensorShape) {
+        tensorShape(tensorShape), order(order) {
     assert(shape.size() == strides.size() && shape.size() == offsets.size() &&
            shape.size() == tensorShape.size());
   }
+
+  SmallVector<Value> getShape() { return shape; }
+
+  Value getBasePtr() { return base; }
 
   unsigned int length() const { return shape.size(); }
 
   Value getOffset(unsigned i) { return offsets[i]; }
 
   SmallVector<Value> getOffsets() { return offsets; }
+
+  ArrayRef<int32_t> getOrder() { return order; }
 
   void setOffset(unsigned i, Value newOffset) {
     offsets[i] = newOffset;
@@ -245,7 +253,7 @@ public:
     // Save information
     rewritedInfo[op.getResult()] =
         RewritedInfo(op.getBase(), op.getShape(), op.getStrides(), i64Offsets,
-                     tensorType.getShape());
+                     tensorType.getShape(), op.getOrder());
 
     // Erase the original operation
     eraser.push(op);
@@ -323,6 +331,41 @@ public:
                               storeOp.getEvict());
     }
 
+    // Erase the original operation
+    eraser.push(op);
+    return nullptr;
+  }
+
+  Operation *rewriteAIULoadOp(OpBuilder &builder, Operation *op,
+                              std::stack<Operation *> &eraser) {
+    assert(isa<triton::AIULoadOp>(op));
+
+    // We only have to rewrite AIU load with tensor pointers
+    auto ptr = op->getOperand(0);
+    if (!triton::isTensorPointerType(ptr.getType()))
+      return nullptr;
+
+    // Get info from previous results
+    assert(rewritedInfo.count(ptr));
+    auto info = rewritedInfo[ptr];
+
+    auto loadOp = dyn_cast<triton::AIULoadOp>(op);
+
+    auto basePtr = info.getBasePtr();
+    auto shape = info.getShape();
+    auto offsets = info.getOffsets();
+    auto order = info.getOrder();
+    // Cast I32 offsets into I64
+    SmallVector<Value> i32Offsets;
+    for (auto offset : offsets) {
+      auto i32Offset = builder.create<arith::TruncIOp>(
+          loadOp.getLoc(), builder.getI32Type(), offset);
+      i32Offsets.push_back(i32Offset);
+    }
+    auto newResult = builder.create<triton::AIULoadOp>(
+        loadOp.getLoc(), loadOp.getResult().getType(), basePtr, i32Offsets,
+        shape, order, loadOp.getCache(), loadOp.getEvict());
+    op->getResult(0).replaceAllUsesWith(newResult);
     // Erase the original operation
     eraser.push(op);
     return nullptr;
@@ -502,6 +545,8 @@ public:
       return rewriteAdvanceOp(builder, advanceOp, eraser);
     } else if (isa<triton::LoadOp>(op) || isa<triton::StoreOp>(op)) {
       return rewriteLoadStoreOp(builder, op, eraser);
+    } else if (isa<triton::AIULoadOp>(op)) {
+      return rewriteAIULoadOp(builder, op, eraser);
     } else if (isa<scf::SCFDialect, cf::ControlFlowDialect>(op->getDialect())) {
       if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
         return rewriteIfOp(builder, ifOp, eraser);
