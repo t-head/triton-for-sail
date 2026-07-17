@@ -1,317 +1,252 @@
+# Triton for SAIL
 
-| **`Documentation`** | **`Nightly Wheels`** |
-|-------------------- | -------------------- |
-| [![Documentation](https://github.com/triton-lang/triton/actions/workflows/documentation.yml/badge.svg)](https://triton-lang.org/) | [![Wheels](https://github.com/triton-lang/triton/actions/workflows/wheels.yml/badge.svg)](https://github.com/triton-lang/triton/actions/workflows/wheels.yml) |
+> For Triton's language features, compiler design philosophy, general installation, and debugging tips, please refer to the [upstream Triton README](README.triton.md) and the [official Triton documentation](https://triton-lang.org). This document **focuses on the PPU backend's extensions and optimizations relative to upstream Triton**.
 
-# Triton Conference 2025
+## 1. Overview
 
-![Triton Registration Banner](https://github.com/user-attachments/assets/b4b6972a-857c-417f-bf2c-f16f38a358c0)
+This repository is the **PPU fork** of Triton, providing support for the PPU independently developed by T-Head Semiconductor.
 
-### Registration
+- **Target hardware**: T-Head PPU, covering two generations of Tensor Core — PPU0010 (MMAv1) and PPU0015 (MMAv2).
+- **Runtime**: Requires the T-Head SAIL SDK (PPU SDK) environment.
+- **Programming interface**: Write kernels using exactly the same Python programming interface as upstream Triton; the PPU backend transparently handles compilation and execution targeting PPU hardware.
 
-The 3rd Triton conference is scheduled to take place on October 21, 2025. Click [here](https://tritonconference.eventbuilder.com/TritonDeveloperConference) to register!
+## 2. Core Features and Optimizations
 
-### Poster Submission
+The PPU backend follows Triton's standard multi-stage compilation flow: ttir → ttgir → llir → hgbin, inserting PPU-specific passes at each stage. The core implementation lives in [`third_party/ppu/backend/compiler.py`](third_party/ppu/backend/compiler.py).
 
-We invite members of the Triton community who are attending the Triton Developer Conference to present posters about their Triton-related technical work.
+Key optimizations on PPU:
 
-Please submit basic information of your poster, including author information and abstract using this [form](https://forms.gle/QfgTF8o1CWNENAnA7).
+- **AIU asynchronous data movement**: Data loads from global memory to shared memory (TSM) are automatically converted into asynchronous copies performed by the AIU (AI accelerator in compute Unit). Combined with software pipelining, this implements multi-buffering inside loops, overlapping tile prefetch with MMA computation to hide global memory access latency and improve compute efficiency.
 
-**Important Dates**
-- Submission: 10/1/2025
-- Author notification: 10/7/2025
-- Final version (PDF): 10/14/2025
+- **Swizzled shared memory layout**: Triton automatically derives the tiling scheme and swizzle encoding from the number of warps, the tile shape, and the element bit width. On one hand, this eliminates shared memory bank conflicts and guarantees effective bandwidth under concurrent multi-warp access; on the other hand, it aligns the data layout in TSM with the MMA operand layout, reducing extra layout conversion overhead.
 
-# Triton
+- **Tensor Core acceleration and low-precision support**: Triton compiles `tl.dot` into PPU's MMA hardware instructions and automatically derives the tile partitioning granularity to fully leverage Tensor Core acceleration. It provides low-precision / mixed-precision support, including FP8 (E5M2 / E4M3), FP16, and BF16.
 
-This is the development repository of Triton, a language and compiler for writing highly efficient custom Deep-Learning primitives. The aim of Triton is to provide an open-source environment to write fast code at higher productivity than CUDA, but also with higher flexibility than other existing DSLs.
 
-The foundations of this project are described in the following MAPL2019 publication: [Triton: An Intermediate Language and Compiler for Tiled Neural Network Computations](http://www.eecs.harvard.edu/~htk/publication/2019-mapl-tillet-kung-cox.pdf). Please consider citing this work if you use Triton!
 
-The [official documentation](https://triton-lang.org) contains installation instructions and tutorials.  See also these third-party [Triton puzzles](https://github.com/srush/Triton-Puzzles), which can all be run using the Triton interpreter -- no GPU required.
+## 3. AIU Usage Guide
 
-# Quick Installation
+PPU Triton extends the Triton language with a new `aiu_load` API that moves data from global memory to shared memory via the AIU (AI accelerator in compute Unit) to accelerate data transfer. It currently provides the `tl.aiu_load`, `make_block_ptr`, and `make_tensor_descriptor` interfaces, which users can easily integrate into existing Triton kernels.
 
-You can install the latest stable release of Triton from pip:
+### 3.1 tl.aiu_load
 
-```shell
-pip install triton
+```python
+def aiu_load(pointer, offsets=(0, 0), block_shape=(0, 0), shape=(0, 0), dtype=void, order=(1, 0), _semantic=None):
+    """
+    Return a tensor of data whose values are loaded from memory at location defined by `pointer`:
+
+        (1) If `pointer` is a single element pointer, offsets&block_shape&shape should be provided.  In
+            this case:
+            - `pointer` is the start address of a memory tensor
+            - `offsets` is a 2D value indicate the offset of the start pointer of the loading tile to the memory tensor
+            - `block_shape` is a 2D value indicate the tile size loaded by aiu_load.
+            - `shape` is a 2D value indicate the memory tensor size.
+            - `order` is the order of the original data format
+
+        (2) If `pointer` is a block pointer defined by `make_block_ptr`, a tensor is loaded.
+    """
 ```
 
-Binary wheels are available for CPython 3.10-3.14.
+Use `tl.aiu_load` when you need to load a `BLOCK_M x BLOCK_K` tensor from an `M x K` global data tensor into shared memory.
 
-# Install from source
+**Constraints of `aiu_load`:**
+
+- The tensor must be 32-byte aligned.
+- `BLOCK_M` must be a multiple of 16.
+- The data along the `BLOCK_K` dimension must be a multiple of 32 bytes.
+- The block tensor must be contiguous along both the M and K dimensions.
+- Supported data types:
+  - PPU0010: `b16`
+  - PPU0015: `b16`, `b8`
+
+
+The following is an example matmul kernel using `tl.aiu_load`:
+
+```python
+@triton.jit
+def matmul_kernel_aiu(a_ptr, b_ptr, c_ptr,
+                      stride_am, stride_ak,
+                      stride_bk, stride_bn,
+                      stride_cm, stride_cn,
+                      M, N, K,
+                      BLOCK_SIZE_M: tl.constexpr,
+                      BLOCK_SIZE_N: tl.constexpr,
+                      BLOCK_SIZE_K: tl.constexpr):
+    pid = tl.program_id(axis=0)
+    num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
+    pid_m = pid % num_pid_m
+    pid_n = pid // num_pid_m
+    offs_am = pid_m * BLOCK_SIZE_M
+    offs_bn = pid_n * BLOCK_SIZE_N
+    offs_k = 0
+    accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+
+    for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
+        a = tl.aiu_load(a_ptr, [offs_am, offs_k], [BLOCK_SIZE_M, BLOCK_SIZE_K], [M, K], tl.float16)
+        b = tl.aiu_load(b_ptr, [offs_k, offs_bn], [BLOCK_SIZE_K, BLOCK_SIZE_N], [K, N], tl.float16)
+        accumulator = tl.dot(a, b, acc=accumulator)
+        offs_k += BLOCK_SIZE_K
+    c = accumulator.to(tl.float16)
+
+    # -----------------------------------------------------------
+    # Write back the block of the output matrix C with masks.
+    offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+    offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    c_ptrs = c_ptr + stride_cm * offs_cm[:, None] + stride_cn * offs_cn[None, :]
+    c_mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
+    tl.store(c_ptrs, c, mask=c_mask)
+```
+
+### 3.2 make_block_ptr
+
+Using `make_block_ptr` makes `aiu_load` simpler; it requires `make_block_ptr` / `aiu_load` / `advance` to be used together.
+
+```python
+def make_block_ptr(base: tensor, shape, strides, offsets, block_shape, order, _semantic=None):
+    """
+    Returns a pointer to a block in a parent tensor
+
+    :param base: The base pointer to the parent tensor
+    :param shape: The shape of the parent tensor
+    :param strides: The strides of the parent tensor
+    :param offsets: The offsets to the block
+    :param block_shape: The shape of the block
+    :param order: The order of the original data format
+    """
+```
+
+- `tl.make_block_ptr`: constructs a pointer to a block within a parent tensor.
+- `tl.aiu_load`: accepts the result of `make_block_ptr` as input.
+- `tl.advance`: advances the block pointer.
+
+```python
+def advance(base, offsets, _semantic=None):
+    """
+    Advance a block pointer
+
+    :param base: the block pointer to advance
+    :param offsets: the offsets to advance, a tuple by dimension
+    """
+```
+
+Example:
+
+```python
+@triton.jit
+def matmul_kernel_aiu(a_ptr, b_ptr, c_ptr,
+                      stride_am, stride_ak,
+                      stride_bk, stride_bn,
+                      stride_cm, stride_cn,
+                      M, N, K,
+                      BLOCK_SIZE_M: tl.constexpr,
+                      BLOCK_SIZE_N: tl.constexpr,
+                      BLOCK_SIZE_K: tl.constexpr):
+    pid = tl.program_id(axis=0)
+    num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
+    pid_m = pid % num_pid_m
+    pid_n = pid // num_pid_m
+
+    offs_am = pid_m * BLOCK_SIZE_M
+    offs_bn = pid_n * BLOCK_SIZE_N
+    offs_k = 0
+    accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+
+    a_tensor_ptr = tl.make_block_ptr(a_ptr, (M, K), (stride_am, stride_ak), (offs_am, offs_k), (BLOCK_SIZE_M, BLOCK_SIZE_K), (1, 0))
+    b_tensor_ptr = tl.make_block_ptr(b_ptr, (K, N), (stride_bk, stride_bn), (offs_k, offs_bn), (BLOCK_SIZE_K, BLOCK_SIZE_N), (1, 0))
+
+    for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
+        a = tl.aiu_load(a_tensor_ptr)
+        b = tl.aiu_load(b_tensor_ptr)
+        accumulator = tl.dot(a, b, acc=accumulator)
+        a_tensor_ptr = tl.advance(a_tensor_ptr, (0, BLOCK_SIZE_K))
+        b_tensor_ptr = tl.advance(b_tensor_ptr, (BLOCK_SIZE_K, 0))
+
+    c = accumulator.to(tl.float16)
+    # -----------------------------------------------------------
+    # Write back the block of the output matrix C with masks.
+    offs_cm = pid_m * BLOCK_SIZE_M
+    offs_cn = pid_n * BLOCK_SIZE_N
+    c_tensor_ptr = tl.make_block_ptr(c_ptr, (M, N), (stride_cm, stride_cn), (offs_cm, offs_cn), (BLOCK_SIZE_M, BLOCK_SIZE_N), (1, 0))
+    tl.store(c_tensor_ptr, c)
+```
+
+
+### 3.3 make_tensor_descriptor
+
+PPU Triton adds AIU support for `tl.make_tensor_descriptor`; when the conditions are met, a load op can be automatically promoted to an AIU load.
+
+```python
+def make_tensor_descriptor(
+    base: tensor,
+    shape: List[tensor],
+    strides: List[tensor],
+    block_shape: List[constexpr],
+    padding_option="zero",
+    _semantic=None,
+) -> tensor_descriptor:
+    """Make a tensor descriptor object
+
+    :param base: the base pointer of the tensor, must be 16-byte aligned
+    :param shape: A list of non-negative integers representing the tensor shape
+    :param strides: A list of tensor strides. Leading dimensions must be multiples
+        of 16-byte strides and the last dimension must be contiguous.
+    :param block_shape: The shape of block to be loaded/stored from global memory
+    """
+```
+
+When using `tl.make_tensor_descriptor` in Triton kernels, the loads can be automatically promoted to AIU loads when the conditions are met.
+
+### 3.4 More Examples
+
+For more AIU use cases, refer to the tests and performance examples in the repository:
+
+- [`python/test/unit/ppu/aiu/`](python/test/unit/ppu/aiu) — AIU functional tests, covering `aiu_load`, `block pointer`, `tensor descriptor`, `dot`, and `addmm`, along with various data types (FP16, FP8) and order combinations.
+- [`python/test/unit/ppu/perf/`](python/test/unit/ppu/perf) — AIU-based performance examples, such as matrix multiplication ([`03-matrix-multiplication-aiu.py`](python/test/unit/ppu/perf/03-matrix-multiplication-aiu.py), [`03-matrix-multiplication-mxfp4-aiu.py`](python/test/unit/ppu/perf/03-matrix-multiplication-mxfp4-aiu.py)) and fused attention ([`06-fused-attention-aiu.py`](python/test/unit/ppu/perf/06-fused-attention-aiu.py)).
+
+## 4. Build and Installation
+
+### 4.1 Prerequisites
+
+- **PPU SDK**: Install the PPU SDK and specify its path via the `PPU_SDK` environment variable (defaults to `/usr/local/PPU_SDK`). The SDK provides headers, libraries, and toolchain executables such as `ppu-llc` and `llvm-irformatter`.
+- **Runtime driver**: Install the PPU runtime driver `libhggc.so` and make sure it can be found via `ldconfig` or `LD_LIBRARY_PATH`.
+- **Build dependencies**: Python 3.10+, a C++ compiler, CMake, Ninja, etc. (see the [upstream Triton README](README.triton.md)).
 
 ```shell
-git clone https://github.com/triton-lang/triton.git
-cd triton
+export PPU_SDK=/usr/local/PPU_SDK           # adjust to your actual install path
+export LD_LIBRARY_PATH=$PPU_SDK/lib:$LD_LIBRARY_PATH
+```
 
-pip install -r python/requirements.txt # build-time dependencies
-pip install -e .
+### 4.2 Install from source
+
+```shell
+# In the repository root
+pip install -r python/requirements.txt      # build-time dependencies
+pip install -e .                            # compile and install in editable mode
 ```
 
 Or with a virtualenv:
 
 ```shell
-git clone https://github.com/triton-lang/triton.git
-cd triton
-
 python -m venv .venv --prompt triton
 source .venv/bin/activate
-
-pip install -r python/requirements.txt # build-time dependencies
+pip install -r python/requirements.txt
 pip install -e .
 ```
 
-# Building with a custom LLVM
+> Build options (custom LLVM, `ccache`, limiting memory usage with `MAX_JOBS`, etc.) are identical to upstream Triton; see "Building with a custom LLVM" and "Tips for building" in the [upstream Triton README](README.triton.md).
 
-Triton uses LLVM to generate code for GPUs and CPUs.  Normally, the Triton build
-downloads a prebuilt LLVM, but you can also build and use LLVM from source.
+### 4.3 Verify the installation
 
-LLVM does not have a stable API, so the Triton build will not work at an
-arbitrary LLVM version.
+After building from source, check the import and version with `python -c "import triton; print(triton.__version__)"`. If the version number prints correctly, Triton has been installed successfully and the C++/MLIR extensions load correctly.
 
-For convenience, use the following command to build LLVM and install Triton with the custom LLVM:
+Then you can run the examples in the AIU section for end-to-end verification.
 
-```shell
-make dev-install-llvm
-```
 
-<details>
-<summary>
-Alternatively, follow these steps to build LLVM from source manually.
-</summary>
+### 4.4 Environment variables
 
-1. Find the version of LLVM that Triton builds against.  Check
-`cmake/llvm-hash.txt` to see the current version. For example, if it says:
-       49af6502c6dcb4a7f7520178bd14df396f78240c.
+For general environment variables, see the [upstream Triton README](README.triton.md). Below are the additional PPU-specific environment variables:
 
-   This means that the version of Triton you have builds against
-   [LLVM](https://github.com/llvm/llvm-project) 49af6502.
-
-2. `git checkout` LLVM at this revision.  Optionally, make additional
-   modifications to LLVM.
-
-3. [Build LLVM](https://llvm.org/docs/CMake.html).  For example, you might run:
-
-       $ cd $HOME/llvm-project  # your clone of LLVM.
-       $ mkdir build
-       $ cd build
-       $ cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_ASSERTIONS=ON ../llvm -DLLVM_ENABLE_PROJECTS="mlir;llvm;lld" -DLLVM_TARGETS_TO_BUILD="host;NVPTX;AMDGPU"
-       $ ninja
-
-4. Grab a snack, this will take a while.
-
-5. Build Triton as above, but set the following environment variables:
-
-       # Modify as appropriate to point to your LLVM build.
-       $ export LLVM_BUILD_DIR=$HOME/llvm-project/build
-
-       $ cd <triton install>
-       $ LLVM_INCLUDE_DIRS=$LLVM_BUILD_DIR/include \
-         LLVM_LIBRARY_DIR=$LLVM_BUILD_DIR/lib \
-         LLVM_SYSPATH=$LLVM_BUILD_DIR \
-         pip install -e .
-
-</details>
-
-# Tips for building
-
-- Set `TRITON_BUILD_WITH_CLANG_LLD=true` as an environment variable to use clang
-  and lld.  lld in particular results in faster builds.
-
-- Set `TRITON_BUILD_WITH_CCACHE=true` to build with ccache.
-
-- Set `TRITON_HOME=/some/path` to change the location of the `.triton`
-  directory where Triton's cache is located and downloads are stored
-  during the build. By default, this is the user's home directory. It
-  can be changed anytime.
-
-- If you're running out of memory when building Triton, specify the `MAX_JOBS`
-  environment variable (to the `pip install -e .` command) to limit the
-  number of jobs.
-
-- Pass `--no-build-isolation` to `pip install` to make nop builds faster.
-  Without this, every invocation of `pip install` uses a different symlink to
-  cmake, and this forces ninja to rebuild most of the `.a` files.
-
-- The build system creates a `compile_commands.json` file under the Triton repo
-  directory. This file is used by VSCode IntelliSense and clangd to provide
-  code completion and other features for C++ code.
-
-  If IntelliSense does not work, you can try the following steps:
-
-    - Do a local build. Run command `pip install -e .`.
-    - Get the full path to the `compile_commands.json` file produced by the build:
-      `find ./build -name 'compile_commands.json' | xargs readlink -f`.
-      You might get a full path similar to `/Users/{username}/triton/build/cmake.macosx-11.1-arm64-cpython-3.12/compile_commands.json`.
-    - In VSCode, install the
-      [C/C++
-      extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cpptools),
-      then open the command palette (`Shift + Command + P` on Mac, or `Shift +
-      Ctrl + P` on Windows/Linux) and open `C/C++: Edit Configurations (UI)`.
-    - Open "Advanced Settings" and paste the full path to
-      `compile_commands.json` into the "Compile Commands" textbox.
-
-# Running tests
-
-There currently isn't a turnkey way to run all the Triton tests, but you can
-follow the following recipe:
-
-```shell
-# One-time setup.  Note this will reinstall local Triton because torch
-# overwrites it with the public version.
-$ make dev-install
-
-# To run all tests (requires a GPU)
-$ make test
-
-# Or, to run tests without a gpu
-$ make test-nogpu
-```
-
-# Tips for hacking
-
-For detailed instructions on how to debug Triton's frontend, please refer to this [tutorial](https://triton-lang.org/main/programming-guide/chapter-3/debugging.html). The following includes additional tips for hacking on Triton's backend.
-
-**Configuration knobs**
-
-See [`python/triton/knobs.py`](python/triton/knobs.py) for the full list of configuration knobs. You can set those knobs directly in python or use environment variables to control them. Below are some of the environment variables you can specify (see `knobs.py` for the full list):
-
-- `MLIR_ENABLE_DUMP=1` dumps the IR before every MLIR pass Triton runs, for all
-   kernels. Use `MLIR_ENABLE_DUMP=kernelName` to dump for a specific kernel only.
-  - Triton cache can interfere with the dump. In cases where `MLIR_ENABLE_DUMP=1` does not work, try cleaning your triton cache: `rm -r ~/.triton/cache/*`.
-- `MLIR_DUMP_PATH` specifies where `MLIR_ENABLE_DUMP` will dump to. If unset will dump to stderr.
-- `LLVM_IR_ENABLE_DUMP=1` dumps the IR before every pass run over the LLVM IR.
-- `TRITON_REPRODUCER_PATH=<reproducer_path>` will generate an MLIR reproducer file
-  at `<reproducer_path>` before each MLIR compiler stage. If any of the stages fail,
-  `<reproducer_path>` will be a local MLIR reproducer captured right before the failing pass.
-- `TRITON_INTERPRET=1` uses the Triton interpreter instead of running on the
-  GPU.  You can insert Python breakpoints in your kernel code!
-- `TRITON_ENABLE_LLVM_DEBUG=1` passes `-debug` to LLVM, printing a lot of
-  debugging information to stdout.  If this is too noisy, run with just
-  `TRITON_LLVM_DEBUG_ONLY` instead to limit the output.
-  - An alternative way to reduce output noisiness is running with
-  `LLVM_IR_ENABLE_DUMP=1`, extract the IR before the LLVM pass of interest, and
-  then run LLVM's `opt` standalone, perhaps passing `-debug-only=foo` on the
-  command line.
-
-- `TRITON_LLVM_DEBUG_ONLY=<comma-separated>` is the equivalent of LLVM's
-  `-debug-only` command-line option. This limits the LLVM debug output to
-  specific pass or component names (which are specified using `#define
-  DEBUG_TYPE` throughout LLVM and Triton) in order to allow the debug output to
-  be less noisy. `TRITON_LLVM_DEBUG_ONLY` allows for one or more comma
-  separated values to be specified (eg
-  `TRITON_LLVM_DEBUG_ONLY="tritongpu-remove-layout-conversions"` or
-  `TRITON_LLVM_DEBUG_ONLY="tritongpu-remove-layout-conversions,regalloc"`).
-- `TRITON_ENABLE_ASAN=1` invokes the LLVM address sanitizer for
-  memory leak and out of bounds access detection. Currently only supported on the AMD
-  backend. This must be run using the ASAN libraries documented [here](https://rocm.docs.amd.com/projects/llvm-project/en/latest/conceptual/using-gpu-sanitizer.html).
-  - When enabling the address sanitizer it is recommended to disable various memory caching strategies
-  both within the ROCm stack and PyTorch. This will give the address sanitizer the best chance at finding the
-  memory fault where it originates. See this [test](https://github.com/triton-lang/triton/blob/main/third_party/amd/python/test/test_address_sanitizer.py) for more details.
-
-- `USE_IR_LOC={ttir,ttgir}` reparses the IR such that the location information
-  will be the line number of the IR file with that particular extension,
-  instead of line number of the python file. This can provide a direct mapping
-  from the IR to llir/ptx. When used with performance tools, it can provide a
-  breakdown on IR instructions.
-- `TRITON_PRINT_AUTOTUNING=1` prints out the best autotuning config and total time
-  spent for each kernel after autotuning is complete.
-- `DISABLE_LLVM_OPT` will disable llvm optimizations for make_llir and make_ptx
-  if its value is true when parsing as Bool. Otherwise, it will be parsed as a list
-  of flags to disable llvm optimizations. One usage case is
-  `DISABLE_LLVM_OPT="disable-lsr"`
-  Loop strength reduction is known to cause up to 10% performance changes for
-  certain kernels with register pressure.
-- `TRITON_ALWAYS_COMPILE=1` forces to compile kernels regardless of cache hit.
-- `MLIR_ENABLE_TIMING` dumps the timing information for each MLIR pass.
-- `LLVM_ENABLE_TIMING` dumps the timing information for each LLVM pass.
-- `TRITON_DEFAULT_FP_FUSION` overrides the default behavior of allowing fp fusion (mul+add->fma).
-- `MLIR_ENABLE_DIAGNOSTICS=<comma-separated>` controls diagnostic emission in MLIR.
-  Options are: `warnings`, `remarks`, `stacktraces`, `operations`.
-  Use comma-separated values to customize output. For example,
-  `MLIR_ENABLE_DIAGNOSTICS=remarks,operations` enables remarks and IR operations,
-  while `MLIR_ENABLE_DIAGNOSTICS=warnings,stacktraces` enables warnings with
-  stacktraces. By default, only errors are shown. Setting `warnings` includes
-  errors and warnings; `remarks` includes errors, warnings, and remarks.
-- `MLIR_ENABLE_REMARK` is deprecated. Please use `MLIR_ENABLE_DIAGNOSTICS=remarks`.
-- `TRITON_KERNEL_DUMP` enables the dumping of the IR from each compilation stage and the final ptx/amdgcn.
-- `TRITON_DUMP_DIR` specifies the directory to save the dumped IR and ptx/amdgcn when `TRITON_KERNEL_DUMP` is set to 1.
-- `TRITON_KERNEL_OVERRIDE` enables the override of the compiled kernel with a user-specified IR/ptx/amdgcn at the beginning of each compilation stage.
-- `TRITON_OVERRIDE_DIR` specifies the directory from which to load the IR/ptx/amdgcn files when `TRITON_KERNEL_OVERRIDE` is set to 1.
-- `TRITON_F32_DEFAULT` sets the default input precision of `tl.dot` when using 32-bit floats, which can be either `ieee`, `tf32`, or `tf32x3`.
-- `TRITON_FRONT_END_DEBUGGING=1` disables exception wrapping when an error occurs in the compiler frontend, allowing the full stack trace to be seen.
-- `TRITON_DISABLE_LINE_INFO=1` removes all line information from the module.
-- `PTXAS_OPTIONS` passes additional command-line options to the PTX assembler `ptxas` (only on NVIDIA).
-- `LLVM_EXTRACT_DI_LOCAL_VARIABLES` emit full debug info, allowing for eval of values in gpu debuggers (ie cuda-gdb, rocm-gdb etc)
-
-> [!NOTE]
-> Some of these environment variables don't have a knob in `knobs.py`-- those are only relevant to the C++ layer(s), hence they don't exist in the python layer.
-
-**Kernel Override Steps**
-
-```bash
-export TRITON_ALWAYS_COMPILE=1
-export TRITON_KERNEL_DUMP=1
-export TRITON_DUMP_DIR=<dump_dir>
-export TRITON_KERNEL_OVERRIDE=1
-export TRITON_OVERRIDE_DIR=<override_dir>
-# Step 1: Run the kernel once to dump kernel's IRs and ptx/amdgcn in $TRITON_DUMP_DIR
-# Step 2: Copy $TRITON_DUMP_DIR/<kernel_hash> to $TRITON_OVERRIDE_DIR
-# Step 3: Delete the stages that you do not want to override and modify the stage you do want to override
-# Step 4: Run the kernel again to see the overridden result
-```
-
-**Compiler Pipeline Inspection Steps**
-To introspect the pipeline `add_stages`, before running your kernels, simply set
-the add_stages_inspection_hook like so:
-
-```python
-def inspect_stages(_self, stages, options, language, capability):
-    # inspect or modify add_stages here
-triton.knobs.runtime.add_stages_inspection_hook = inspect_stages
-```
-
-# Changelog
-
-Version 2.0 is out! New features include:
-
-- Many, many bug fixes
-- Performance improvements
-- Backend rewritten to use MLIR
-- Support for kernels that contain back-to-back matmuls (e.g., flash attention)
-
-# Contributing
-
-Community contributions are more than welcome, whether it be to fix bugs or to add new features at [github](https://github.com/triton-lang/triton/). For more detailed instructions, please visit our [contributor's guide](CONTRIBUTING.md).
-
-# Compatibility
-
-Supported Platforms:
-
-- Linux
-
-Supported Hardware:
-
-- NVIDIA GPUs (Compute Capability 8.0+)
-- AMD GPUs (ROCm 6.2+)
-- Under development: CPUs
-
-# Development Container (Dev Container)
-
-**Dev Containers** for the Triton project are available from
-the [triton-dev-containers repository](https://github.com/redhat-et/triton-dev-containers).
-
-### Key Benefits:
-- **Consistency**: All developers can work with the same development
-  environment, ensuring uniform behavior across different systems.
-- **Isolation**: The container prevents potential conflicts with software
-  installed on your local machine.
-- **Portability**: Easily share the development environment with team members,
-  minimizing onboarding time and setup issues.
-
-### How to Use the Dev Container:
-
-For detailed instructions on how to use the dev containers, please see
-the [dev container user guide](https://github.com/redhat-et/triton-dev-containers/blob/main/.devcontainer/devcontainer.md).
+- `PPU_LLC_OPTIONS`: extra options passed to `ppu-llc`.
+- `DISABLE_PPU_LLC_OPT`: disable `ppu-llc` optimizations.
+- `TRITON_LIBDEVICE_PATH`: specify the PPU libdevice path.
+- `TRITON_DUMP_COMPILE_LOG`: export the compilation log.
