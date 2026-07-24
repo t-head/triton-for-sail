@@ -59,7 +59,6 @@ def TritonPPUGPUReorderInstructions: Pass<"tritonppugpu-reorder-instructions", "
                     "instruction scheduler.";
 
   let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
-                           "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect",
                            "mlir::triton::TritonDialect"];
 }
 
