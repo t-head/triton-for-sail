@@ -208,9 +208,9 @@ LogicalResult lowerPPULdMatrix(
 
   auto srcVals = SmallVector<Value>{};
 
-  // Remove broadcasting on the register dimension
-  auto removeBroadcast = actionRemoveBroadcastedRegs(cvt);
-  cvt = removeBroadcast.apply(cvt);
+  // // Remove broadcasting on the register dimension
+  // auto removeBroadcast = actionRemoveBroadcastedRegs(cvt);
+  // cvt = removeBroadcast.apply(cvt);
 
   std::optional<ColumnAction> maybePermutation;
   LinearLayout tile;
@@ -366,12 +366,12 @@ LogicalResult lowerPPULdMatrix(
     }
   }
 
-  // Undo the permutation and the removeBroadcast
-  if (maybePermutation.has_value()) {
-    auto invPerm = maybePermutation.value().inverse();
-    srcVals = invPerm.apply(srcVals);
-  }
-  srcVals = broadcastAs(srcVals, regL);
+  // // Undo the permutation and the removeBroadcast
+  // if (maybePermutation.has_value()) {
+  //   auto invPerm = maybePermutation.value().inverse();
+  //   srcVals = invPerm.apply(srcVals);
+  // }
+  // srcVals = broadcastAs(srcVals, regL);
   auto structTy = LLVM::LLVMStructType::getLiteral(
       ctx, SmallVector<Type>(srcVals.size(), llvmElemTy));
   src = packLLElements(loc, typeConverter, srcVals, rewriter, structTy);
