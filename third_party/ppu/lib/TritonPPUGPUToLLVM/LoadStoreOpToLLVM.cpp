@@ -610,6 +610,9 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
 
     int elementSizeInBytes =
         op.getResult().getType().getElementType().getIntOrFloatBitWidth() / 8;
+    assert(elementSizeInBytes == 2 &&
+        "AIU load only supports b16 element type on PPU0010");
+
     int totalNumElements = product(op.getResult().getType().getShape());
     int64_t size = totalNumElements * elementSizeInBytes;
     int rank = op.getCoord().size();
