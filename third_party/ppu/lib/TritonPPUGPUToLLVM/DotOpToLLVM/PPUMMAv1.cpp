@@ -277,6 +277,7 @@ enum class TensorCoreType : uint8_t {
   FP32_FP16_FP16_FP32 = 0, // default
   FP32_BF16_BF16_FP32,
   FP32_TF32_TF32_FP32,
+  FP32_FP32_FP32_FP32,
   FP16_FP16_FP16_FP16,
   FP32_FP8E5M2_FP8E5M2_FP32,
   FP32_FP8E5M2_FP8E4M3FN_FP32,
@@ -306,6 +307,7 @@ Type getMmaRetType(TensorCoreType mmaType, MLIRContext *ctx) {
   case TensorCoreType::FP32_BF16_BF16_FP32:
     return fp32x8Ty;
   case TensorCoreType::FP32_TF32_TF32_FP32:
+  case TensorCoreType::FP32_FP32_FP32_FP32:
     return fp32x8Ty;
   case TensorCoreType::FP16_FP16_FP16_FP16:
     return fp16x2Pack4Ty;
@@ -349,6 +351,9 @@ TensorCoreType getMmaType(triton::DotOp op) {
     if (aTy.getElementType().isF32() && bTy.getElementType().isF32() &&
         op.getInputPrecision() == InputPrecision::TF32)
       return TensorCoreType::FP32_TF32_TF32_FP32;
+    if (aTy.getElementType().isF32() && bTy.getElementType().isF32() &&
+        op.getInputPrecision() == InputPrecision::IEEE)
+      return TensorCoreType::FP32_FP32_FP32_FP32;
   } else if (dTy.getElementType().isInteger(32)) {
     if (aTy.getElementType().isInteger(8) && bTy.getElementType().isInteger(8))
       return TensorCoreType::INT32_INT8_INT8_INT32;
@@ -367,6 +372,8 @@ inline static const std::map<TensorCoreType, std::string> mmaInstrTix = {
      "ppu.mma.sync.aligned.m16n16k16.row.col.f32.bf16.bf16.f32"},
     {TensorCoreType::FP32_TF32_TF32_FP32,
      "ppu.mma.sync.aligned.m16n16k8.row.col.f32.tf32.tf32.f32"},
+    {TensorCoreType::FP32_FP32_FP32_FP32,
+     "ppu.mma.sync.aligned.m16n16k8.row.col.f32.f32.f32.f32"},
 
     {TensorCoreType::INT32_INT1_INT1_INT32,
      "ppu.mma.sync.aligned.m16n16k256.row.col.s32.b1.b1.s32.xor.popc"},
