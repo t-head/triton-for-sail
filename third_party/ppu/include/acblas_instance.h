@@ -63,7 +63,7 @@ class AcblasLtInstance {
       const acblasLtMatrixLayout_t, const acblasLtMatmulAlgo_t *, void *,
       size_t, hggcStream_t);
 
-  static constexpr const char *name = "libacblas.so";
+  static constexpr const char *name = "libacblasLt.so";
 
   acblasLtCreate_t acblasLtCreate;
   acblasLtDestroy_t acblasLtDestroy;
