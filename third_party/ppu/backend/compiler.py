@@ -118,8 +118,18 @@ def file_hash(path):
         return hashlib.sha256(f.read()).hexdigest()
 
 
-def sm_arch_from_capability(capability: int):
-    return f"sm_{capability}"
+PPU_ARCH_FROM_CAPABILITY = {
+    80: "ppu001",
+    89: "ppu0015",
+}
+
+
+def ppu_arch_from_capability(capability: int):
+    arch = PPU_ARCH_FROM_CAPABILITY.get(int(capability))
+    if arch is None:
+        raise RuntimeError(f"Unsupported compute capability {capability} for the PPU backend. "
+                           f"Supported capabilities are {sorted(PPU_ARCH_FROM_CAPABILITY)}.")
+    return arch
 
 
 def llir_get_kernel_name(llir: str) -> str:
@@ -520,7 +530,7 @@ please share the reproducer above with Triton project.
             # Accept more ppu-llc options if provided
             ppu_llc_extra_options = opt.ppu_llc_options.split(" ") if opt.ppu_llc_options else []
 
-            arch = sm_arch_from_capability(capability)
+            arch = ppu_arch_from_capability(capability)
 
             fsrc.name = fsrcformatted
 
@@ -534,7 +544,7 @@ please share the reproducer above with Triton project.
                 "-v",
                 *disable_opt,
                 *ppu_llc_extra_options,
-                f"--gpu-name={arch}",
+                f"--ppu-arch={arch}",
                 fsrc.name,
                 "-o",
                 fbin,
