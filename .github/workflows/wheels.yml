@@ -4,8 +4,6 @@ on:
   pull_request:
     paths:
       - .github/workflows/wheels.yml
-  schedule:
-    - cron: "0 8 * * *"
 
 permissions: read-all
 
