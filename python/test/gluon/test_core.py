@@ -19,7 +19,6 @@ from triton._internal_testing import (
     is_hip_cdna4,
     is_hopper_or_newer,
     is_hopper,
-    is_ppu,
 )
 from triton.compiler import max_shared_mem
 from triton.tools.mxfp import MXFP4Tensor, MXScaleTensor
@@ -3280,7 +3279,6 @@ def _shared_atomic_scatter_rmw_cases():
     return cases
 
 
-@pytest.mark.skipif(is_ppu(), reason="ttg.local_atomic_scatter_rmw has no PPU lowering")
 @pytest.mark.parametrize(
     "op,init_value,use_mask,torch_dtype,gluon_dtype,use_constant_values,N,M,axis,rhs_shape",
     _shared_atomic_scatter_rmw_cases(),
@@ -3376,7 +3374,6 @@ def shared_atomic_scatter_rmw_broadcast_kernel(
     ttgl.store(final_ptr + offsets_2d, final)
 
 
-@pytest.mark.skipif(is_ppu(), reason="ttg.local_atomic_scatter_rmw has no PPU lowering")
 def test_shared_atomic_scatter_rmw_broadcast():
     device = torch.device("cuda")
     N, M = 16, 32

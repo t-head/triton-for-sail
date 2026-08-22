@@ -635,6 +635,181 @@ struct LocalStoreOpConversion
 private:
   const ppu::TargetInfo &targetInfo;
 };
+// Map an RMWOp plus element type onto the ppu.atom/ppu.red opcode and type
+// suffix. Returns failure for combinations PPU cannot express, so the op stays
+// illegal instead of being miscompiled.
+static LogicalResult getSharedAtomicOpcode(RMWOp rmwOp, Type valueElemTy,
+                                           std::string &opStr,
+                                           std::string &tyStr) {
+  unsigned bits = valueElemTy.getIntOrFloatBitWidth();
+  std::string sBits = std::to_string(bits);
+  switch (rmwOp) {
+  case RMWOp::AND:
+    opStr = "and";
+    tyStr = "b" + sBits;
+    return success();
+  case RMWOp::OR:
+    opStr = "or";
+    tyStr = "b" + sBits;
+    return success();
+  case RMWOp::XOR:
+    opStr = "xor";
+    tyStr = "b" + sBits;
+    return success();
+  case RMWOp::ADD:
+    opStr = "add";
+    tyStr = "u" + sBits;
+    return success();
+  case RMWOp::MAX:
+    opStr = "max";
+    tyStr = "s" + sBits;
+    return success();
+  case RMWOp::MIN:
+    opStr = "min";
+    tyStr = "s" + sBits;
+    return success();
+  case RMWOp::UMAX:
+    opStr = "max";
+    tyStr = "u" + sBits;
+    return success();
+  case RMWOp::UMIN:
+    opStr = "min";
+    tyStr = "u" + sBits;
+    return success();
+  case RMWOp::XCHG:
+    opStr = "exch";
+    tyStr = "b" + sBits;
+    return success();
+  case RMWOp::FADD:
+    opStr = "add";
+    if (bits == 16)
+      opStr += ".noftz";
+    tyStr = (valueElemTy.isBF16() ? "bf" : "f") + sBits;
+    return success();
+  default:
+    return failure();
+  }
+}
+
+// Emit a single shared-memory atomic RMW. Uses ppu.red when the old value is
+// unused and ppu.atom otherwise.
+static FailureOr<Value> emitSharedAtomicRMW(ConversionPatternRewriter &rewriter,
+                                            Location loc, Type valueElemTy,
+                                            Value ptr, Value value, RMWOp rmwOp,
+                                            bool returnOld, Value pred) {
+  std::string opStr, tyStr;
+  if (failed(getSharedAtomicOpcode(rmwOp, valueElemTy, opStr, tyStr)))
+    return failure();
+
+  unsigned bits = valueElemTy.getIntOrFloatBitWidth();
+  // Register constraint code for the value operand. Mirrors
+  // getRegisterSizeCode() in LoadStoreOpToLLVM.cpp, which is file-local there.
+  std::string tyId;
+  switch (bits) {
+  case 16:
+    tyId = "h";
+    break;
+  case 32:
+    tyId = "r";
+    break;
+  case 64:
+    tyId = "l";
+    break;
+  default:
+    return failure();
+  }
+
+  TIXBuilder tixBuilder;
+  // Suffix order matches PPU's own global atomic RMW
+  // (ppu.atom.global.<scope>.<sem>.<op>.<ty>, LoadStoreOpToLLVM.cpp) and
+  // NVIDIA's PTX builder. The op carries no sem attribute; upstream hardcodes
+  // relaxed for shared scatter atomics, and omitting it would leave the
+  // ordering unstated rather than relaxed.
+  const char *semStr = "relaxed";
+  // PTX has no red.exch, so an unused-result exchange still has to use atom.
+  // NVIDIA gets the same effect by trying red and falling back on failure.
+  if (!returnOld && rmwOp != RMWOp::XCHG) {
+    // Shared-memory addresses use "r" (32-bit), unlike global atomics' "l".
+    auto *ptrOpr = tixBuilder.newAddrOperand(ptr, "r");
+    auto *valOpr = tixBuilder.newOperand(value, tyId);
+    auto &red = *tixBuilder.create("ppu.red");
+    red.shared().o("cta").o(semStr).o(opStr).o(tyStr);
+    red(ptrOpr, valOpr).maybePredicate(pred);
+    return tixBuilder.launch(rewriter, loc,
+                             void_ty(rewriter.getContext()));
+  }
+
+  // The output operand must be created before the inputs: inline asm requires
+  // output constraints to precede input constraints, and TIXBuilder emits them
+  // in creation order.
+  auto *dstOpr = tixBuilder.newOperand("=" + tyId, /*init=*/true);
+  auto *ptrOpr = tixBuilder.newAddrOperand(ptr, "r");
+  auto *valOpr = tixBuilder.newOperand(value, tyId);
+  auto &atom = *tixBuilder.create("ppu.atom");
+  atom.shared().o("cta").o(semStr).o(opStr).o(tyStr);
+  atom(dstOpr, ptrOpr, valOpr).maybePredicate(pred);
+  return tixBuilder.launch(rewriter, loc, valueElemTy);
+}
+
+struct LocalAtomicScatterRMWOpConversion
+    : public ConvertOpToLLVMPattern<triton::gpu::LocalAtomicScatterRMWOp> {
+  LocalAtomicScatterRMWOpConversion(const LLVMTypeConverter &converter,
+                                    const ppu::TargetInfo &targetInfo,
+                                    PatternBenefit benefit = 1)
+      : ConvertOpToLLVMPattern<triton::gpu::LocalAtomicScatterRMWOp>(converter,
+                                                                    benefit),
+        targetInfo(targetInfo) {}
+
+  LogicalResult
+  matchAndRewrite(triton::gpu::LocalAtomicScatterRMWOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
+
+    auto lowering = prepareLocalAtomicScatterRMW(
+        op, adaptor.getDst(), adaptor.getIndices(), adaptor.getValues(),
+        op.getMask() ? adaptor.getMask() : Value(), rewriter, targetInfo,
+        getTypeConverter());
+    if (failed(lowering))
+      return failure();
+    LocalAtomicScatterRMWInfo &info = *lowering;
+
+    RMWOp rmwOp = op.getAtomicRmwOp();
+    bool returnOld = !op.getResult().use_empty();
+
+    SmallVector<Value> results;
+    if (returnOld)
+      results.reserve(info.ptrs.size());
+    for (auto [i, ptrAndValue] :
+         llvm::enumerate(llvm::zip(info.ptrs, info.values))) {
+      auto [ptr, value] = ptrAndValue;
+      Value pred =
+          maybeAnd(rewriter, loc, info.threadPred,
+                   info.maskValues.empty() ? Value() : info.maskValues[i]);
+      auto old = emitSharedAtomicRMW(rewriter, loc, info.llvmElemTy, ptr, value,
+                                     rmwOp, returnOld, pred);
+      if (failed(old))
+        return failure();
+      if (returnOld)
+        results.push_back(*old);
+    }
+
+    if (!returnOld) {
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    if (!info.removeBroadcast.isIdentity())
+      results = broadcastAs(results, info.regLayout);
+    finalizeTensorAtomicResults(op, info.valuesTy, rewriter, results,
+                                info.llvmElemTy, b, info.threadPred, targetInfo,
+                                getTypeConverter());
+    return success();
+  }
+
+private:
+  const ppu::TargetInfo &targetInfo;
+};
 } // namespace
 
 void mlir::triton::ppu::populateMemoryOpToLLVMPatterns(
@@ -647,6 +822,8 @@ void mlir::triton::ppu::populateMemoryOpToLLVMPatterns(
                                        benefit.getBenefit() + 1);
   patterns.add<LocalLoadOpConversion>(typeConverter, targetInfo,
                                       benefit.getBenefit() + 1);
+  patterns.add<LocalAtomicScatterRMWOpConversion>(typeConverter, targetInfo,
+                                                  benefit.getBenefit() + 1);
   mlir::triton::populateMemoryOpToLLVMPatterns(typeConverter, targetInfo,
                                                patterns, benefit);
 }
