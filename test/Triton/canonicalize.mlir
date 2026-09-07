@@ -260,3 +260,15 @@ tt.func @no_canonicalize_indivisible_offset(%base: tensor<128x!tt.ptr<f32>>) -> 
   %result = tt.int_to_ptr %offset_ptr_int : tensor<128xi64> -> tensor<128x!tt.ptr<f32>>
   tt.return %result : tensor<128x!tt.ptr<f32>>
 }
+
+// -----
+
+// CHECK-LABEL: @canonicalize_masked_store_preserves_attributes
+// CHECK: tt.store %arg0, %arg1 {ignore_cta}
+// CHECK-NOT: arith.constant
+tt.func @canonicalize_masked_store_preserves_attributes(
+    %ptr: tensor<16x16x!tt.ptr<f32>>, %value: tensor<16x16xf32>) {
+  %mask = arith.constant dense<true> : tensor<16x16xi1>
+  tt.store %ptr, %value, %mask {ignore_cta} : tensor<16x16x!tt.ptr<f32>>
+  tt.return
+}

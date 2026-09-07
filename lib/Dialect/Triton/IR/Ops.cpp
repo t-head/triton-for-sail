@@ -136,10 +136,8 @@ struct CanonicalizeMaskedStorePattern : public OpRewritePattern<StoreOp> {
       return failure();
 
     if (splatMask.getSplatValue<IntegerAttr>().getValue() == true) {
-      // mask = splat(1)
-      rewriter.replaceOpWithNewOp<StoreOp>(
-          storeOp, storeOp.getPtr(), storeOp.getValue(), storeOp.getCache(),
-          storeOp.getEvict());
+      rewriter.modifyOpInPlace(storeOp,
+                               [&] { storeOp.getMaskMutable().clear(); });
     } else {
       // mask = splat(0)
       rewriter.eraseOp(storeOp);
