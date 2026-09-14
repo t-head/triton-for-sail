@@ -152,6 +152,17 @@ bool TargetInfo::supportMaximumMinimum() const {
   return computeCapability >= 80;
 }
 
+// Use a fully serial in-thread reduction chain (arity larger than any
+// per-thread axis pack) instead of the default balanced binary tree. The
+// balanced tree changes the order of maxnum/fadd chains in the generated
+// IR, which measurably affects the downstream PPU instruction scheduler.
+unsigned TargetInfo::getReductionTreeArity(Operation *combinerOp) const {
+  if (isa<arith::AddFOp, arith::MaximumFOp, arith::MinimumFOp,
+      arith::MaxNumFOp, arith::MinNumFOp>(combinerOp))
+    return 32;
+  return 2;
+}
+
 Value TargetInfo::getClusterCTAId(RewriterBase &rewriter, Location loc) const {
   return triton::ppugpu::ClusterCTAIdOp::create(rewriter, loc,
                                                rewriter.getI32Type());

@@ -35,6 +35,8 @@ public:
 
   bool supportMaximumMinimum() const override;
 
+  unsigned getReductionTreeArity(Operation *combinerOp) const override;
+
   Value getClusterCTAId(RewriterBase &rewriter, Location loc) const override;
 
   Value ballot(RewriterBase &rewriter, Location loc, Type type,
