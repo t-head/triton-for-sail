@@ -1315,7 +1315,7 @@ void PPUMmaEncodingAttr::print(AsmPrinter &printer) const {
   maybePrintCTALayout(getContext(), printer, getCTALayout(),
                       /*rank=*/getRank());
 
-  printer << ", instrShape = [" << getInstrShape() << "]}>"
+  printer << ", instrShape = [" << getInstrShape() << "]"
           << ", vecSize = " << getVecSize() << "}>";
 }
 
