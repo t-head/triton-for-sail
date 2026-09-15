@@ -232,7 +232,8 @@ class DotOperandLayout(DistributedLayout):
         super().__setattr__("operand_index", _unwrap_if_constexpr(self.operand_index))
         super().__setattr__("parent", _unwrap_if_constexpr(self.parent))
         super().__setattr__("k_width", _unwrap_if_constexpr(self.k_width))
-        super().__setattr__("is_chained", _unwrap_if_constexpr(self.is_chained))
+        if not isinstance(self.is_chained, bool):
+            super().__setattr__("is_chained", _unwrap_if_constexpr(self.is_chained))
 
     def _to_ir(self, builder):
         return builder.get_dot_operand_layout(self.operand_index, self.parent._to_ir(builder), self.k_width,
