@@ -3,9 +3,12 @@ import torch
 import triton
 import pytest
 import triton.language as tl
+from triton._internal_testing import is_ppu
 
 
 def test_disam_cubin():
+    if is_ppu():
+        pytest.skip("Skip test for PPU.")
     if not triton.runtime.driver.active.get_current_target().backend == "cuda":
         pytest.skip("Test requires CUDA.")
 
