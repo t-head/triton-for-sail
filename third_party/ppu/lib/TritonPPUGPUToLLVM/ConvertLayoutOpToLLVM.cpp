@@ -339,7 +339,7 @@ private:
     // so they can be consumed by tensor core operations
     SmallVector<Value> vecVals;
     for (unsigned i = 0; i < elems; i += vecSize) {
-      Value packed = rewriter.create<LLVM::UndefOp>(loc, vecTy);
+      Value packed = LLVM::UndefOp::create(rewriter, loc, vecTy);
       for (unsigned j = 0; j < vecSize; j++)
         packed = b.insert_element(vecTy, packed, vals[i + j], b.i32_val(j));
       vecVals.push_back(b.bitcast(packed, i32_ty));

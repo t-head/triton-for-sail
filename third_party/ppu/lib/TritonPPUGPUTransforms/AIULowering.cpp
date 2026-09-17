@@ -71,18 +71,18 @@ public:
     MemDescType memDescType =
         MemDescType::get(tensorType.getShape(), tensorType.getElementType(),
                          encoding, sharedMemorySpace, /*mutableMemory=*/true);
-    Value alloc = rewriter.create<LocalAllocOp>(loc, memDescType, Value());
+    Value alloc = LocalAllocOp::create(rewriter, loc, memDescType, Value());
 
     Operation *copy =
-        rewriter.create<triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp>(
-            loc, op.getSrcPtr(), op.getIndices(), op.getShape(), alloc);
+        triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp::create(
+            rewriter, loc, op.getSrcPtr(), op.getIndices(), op.getShape(), alloc);
 
-    Value Zero = rewriter.create<arith::ConstantIntOp>(loc, 0, 0);
+    Value Zero = arith::ConstantIntOp::create(rewriter, loc, 0, 0);
 
-    Operation *commmit = rewriter.create<triton::gpu::AsyncCommitGroupOp>(
-        loc, copy->getResult(0));
-    Operation *wait = rewriter.create<triton::gpu::AsyncWaitOp>(
-        loc, commmit->getResult(0), 0);
+    Operation *commmit = triton::gpu::AsyncCommitGroupOp::create(
+        rewriter, loc, copy->getResult(0));
+    Operation *wait = triton::gpu::AsyncWaitOp::create(
+        rewriter, loc, commmit->getResult(0), 0);
     rewriter.replaceOpWithNewOp<LocalLoadOp>(op, op.getType(), alloc);
     return success();
   }

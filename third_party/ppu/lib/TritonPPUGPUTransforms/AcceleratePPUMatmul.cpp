@@ -583,8 +583,8 @@ public:
         oldRetType.getShape(), oldRetType.getElementType(), mmaEnc);
     // convert accumulator
     auto oldAcc = dotOp.getOperand(2);
-    auto newAcc =
-        rewriter.create<ConvertLayoutOp>(oldAcc.getLoc(), newRetType, oldAcc);
+    auto newAcc = ConvertLayoutOp::create(rewriter, oldAcc.getLoc(), newRetType,
+                                          oldAcc);
 
     auto getDotOperand = [&](Value v, int opIdx, int bitwidth) {
       auto minType =
@@ -594,7 +594,7 @@ public:
           v.getContext(), opIdx, newRetType.getEncoding(), minType);
       auto newVType = RankedTensorType::get(
           vType.getShape(), vType.getElementType(), newVEncoding);
-      return rewriter.create<ConvertLayoutOp>(v.getLoc(), newVType, v);
+      return ConvertLayoutOp::create(rewriter, v.getLoc(), newVType, v);
     };
 
     // convert operands
@@ -685,17 +685,17 @@ public:
       auto newScaleType = RankedTensorType::get(
           scale.getType().getShape(), scale.getType().getElementType(),
           newScaleEncoding);
-      auto newScale =
-          rewriter.create<ConvertLayoutOp>(scale.getLoc(), newScaleType, scale);
+      auto newScale = ConvertLayoutOp::create(rewriter, scale.getLoc(),
+                                              newScaleType, scale);
       return newScale;
     };
 
     auto newAScale = convertScale(aEncLL, aScale, 0);
     auto newBScale = convertScale(bEncLL, bScale, 1);
 
-    DotScaledOp newScaledDot = rewriter.create<triton::DotScaledOp>(
-        dotOp.getLoc(), newRetType, a, b, newAcc, newAScale, newBScale,
-        aElemType, bElemType, dotOp.getFastMath());
+    DotScaledOp newScaledDot = triton::DotScaledOp::create(
+        rewriter, dotOp.getLoc(), newRetType, a, b, newAcc, newAScale,
+        newBScale, aElemType, bElemType, dotOp.getFastMath());
     // convert dot instruction
     rewriter.replaceOpWithNewOp<ConvertLayoutOp>(dotOp, dotOp.getType(),
                                                  newScaledDot->getResult(0));

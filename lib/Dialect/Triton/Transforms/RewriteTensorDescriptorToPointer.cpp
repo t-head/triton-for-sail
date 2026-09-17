@@ -348,8 +348,8 @@ struct RewriteLoadPattern : OpConversionPattern<triton::DescriptorLoadOp> {
       // Cast I32 offsets into I64
       SmallVector<Value> i32Offsets;
       for (auto offset : offsets) {
-        auto i32Offset = rewriter.create<arith::TruncIOp>(
-            op.getLoc(), rewriter.getI32Type(), offset);
+        auto i32Offset = arith::TruncIOp::create(
+            rewriter, op.getLoc(), rewriter.getI32Type(), offset);
         i32Offsets.push_back(i32Offset);
       }
 

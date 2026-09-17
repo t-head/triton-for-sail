@@ -172,11 +172,11 @@ static void MarkChainedDot(ModuleOp mod) {
             dstBType.getShape(), dstBType.getElementType(), chainedEncB);
 
         OpBuilder builder(cvtOp);
-        auto newCvtA = builder.create<mlir::triton::gpu::ConvertLayoutOp>(
-            cvtOp.getLoc(), newAType, cvtOp.getSrc());
+        auto newCvtA = mlir::triton::gpu::ConvertLayoutOp::create(
+            builder, cvtOp.getLoc(), newAType, cvtOp.getSrc());
         builder.setInsertionPointAfter(cvtBOp);
-        auto newCvtB = builder.create<mlir::triton::gpu::LocalLoadOp>(
-            cvtBOp.getLoc(), newBType, cvtBOp.getSrc());
+        auto newCvtB = mlir::triton::gpu::LocalLoadOp::create(
+            builder, cvtBOp.getLoc(), newBType, cvtBOp.getSrc());
         cvtOp.replaceAllUsesWith(newCvtA.getResult());
         cvtBOp.replaceAllUsesWith(newCvtB.getResult());
         cvtOp.erase();

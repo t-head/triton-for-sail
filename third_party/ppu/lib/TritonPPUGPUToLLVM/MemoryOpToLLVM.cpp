@@ -306,10 +306,9 @@ LogicalResult lowerPPULdMatrix(
                      ? i32_ty
                      : static_cast<Type>(LLVM::LLVMStructType::getLiteral(
                            ctx, SmallVector<Type>(nVecs, i32_ty)));
-    Value res = rewriter
-                    .create<triton::ppugpu::PPULoadMatrixOp>(
-                        loc, matTy, vecAddr,
-                        /*needTrans=*/transpose, Opb8bLdmatrix)
+    Value res = triton::ppugpu::PPULoadMatrixOp::create(
+                    rewriter, loc, matTy, vecAddr,
+                    /*needTrans=*/transpose, Opb8bLdmatrix)
                     .getResult();
 
     // Extract result into srcVals

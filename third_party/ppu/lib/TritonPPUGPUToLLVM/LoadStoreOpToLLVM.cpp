@@ -605,7 +605,7 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
     auto mod = op->getParentOfType<ModuleOp>();
     int numWarps = ttg::lookupNumWarps(op);
     int warpSize = ttg::TritonGPUDialect::getThreadsPerWarp(mod);
-    Value warpID = rewriter.create<ppugpu::WarpIdOp>(loc);
+    Value warpID = ppugpu::WarpIdOp::create(rewriter, loc);
     warpID = LLVM::PPU::toUniformB32(loc, rewriter, warpID);
 
     int elementSizeInBytes =
@@ -711,8 +711,8 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
     }
 
     // Drop the result token.
-    Value zero = rewriter.create<LLVM::ConstantOp>(
-        op.getLoc(), IntegerType::get(op.getContext(), 32),
+    Value zero = LLVM::ConstantOp::create(
+        rewriter, op.getLoc(), IntegerType::get(op.getContext(), 32),
         rewriter.getI32IntegerAttr(0));
     rewriter.replaceOp(op, zero);
     return success();
@@ -734,7 +734,7 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
     auto mod = op->getParentOfType<ModuleOp>();
     int numWarps = ttg::lookupNumWarps(op);
     int warpSize = ttg::TritonGPUDialect::getThreadsPerWarp(mod);
-    Value warpID = rewriter.create<ppugpu::WarpIdOp>(loc);
+    Value warpID = ppugpu::WarpIdOp::create(rewriter, loc);
     warpID = LLVM::PPU::toUniformB32(loc, rewriter, warpID);
 
     int elementSizeInBytes =
@@ -868,8 +868,8 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
     }
 
     // Drop the result token.
-    Value zero = rewriter.create<LLVM::ConstantOp>(
-        op.getLoc(), IntegerType::get(op.getContext(), 32),
+    Value zero = LLVM::ConstantOp::create(
+        rewriter, op.getLoc(), IntegerType::get(op.getContext(), 32),
         rewriter.getI32IntegerAttr(0));
     rewriter.replaceOp(op, zero);
     return success();

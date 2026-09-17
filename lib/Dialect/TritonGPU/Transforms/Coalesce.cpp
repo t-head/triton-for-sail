@@ -101,13 +101,13 @@ struct CoalescePass : public impl::TritonGPUCoalesceBase<CoalescePass> {
           threadsPerWarp, blockedEnc.getCGALayout());
       auto newTensorTy = getNewType(tensorType, newEnc);
 
-      auto newOp = builder.create<triton::AIULoadOp>(
-          aiuLoad->getLoc(), newTensorTy, aiuLoad.getSrcPtr(),
+      auto newOp = triton::AIULoadOp::create(
+          builder, aiuLoad->getLoc(), newTensorTy, aiuLoad.getSrcPtr(),
           aiuLoad.getIndices(), aiuLoad.getShape(), order, aiuLoad.getCache(),
           aiuLoad.getEvict());
 
-      auto newResult = builder.create<triton::gpu::ConvertLayoutOp>(
-          aiuLoad->getLoc(), tensorType, newOp->getResult(0));
+      auto newResult = triton::gpu::ConvertLayoutOp::create(
+          builder, aiuLoad->getLoc(), tensorType, newOp->getResult(0));
       aiuLoad->getResult(0).replaceAllUsesWith(newResult);
       op->erase();
     }

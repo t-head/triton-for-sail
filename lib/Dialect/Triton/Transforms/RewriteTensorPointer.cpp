@@ -358,13 +358,13 @@ public:
     // Cast I32 offsets into I64
     SmallVector<Value> i32Offsets;
     for (auto offset : offsets) {
-      auto i32Offset = builder.create<arith::TruncIOp>(
-          loadOp.getLoc(), builder.getI32Type(), offset);
+      auto i32Offset = arith::TruncIOp::create(
+          builder, loadOp.getLoc(), builder.getI32Type(), offset);
       i32Offsets.push_back(i32Offset);
     }
-    auto newResult = builder.create<triton::AIULoadOp>(
-        loadOp.getLoc(), loadOp.getResult().getType(), basePtr, i32Offsets,
-        shape, order, loadOp.getCache(), loadOp.getEvict());
+    auto newResult = triton::AIULoadOp::create(
+        builder, loadOp.getLoc(), loadOp.getResult().getType(), basePtr,
+        i32Offsets, shape, order, loadOp.getCache(), loadOp.getEvict());
     op->getResult(0).replaceAllUsesWith(newResult);
     // Erase the original operation
     eraser.push(op);
