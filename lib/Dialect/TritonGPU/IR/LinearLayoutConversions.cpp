@@ -46,6 +46,19 @@ SmallVector<StringAttr> permuteDimNames(const SmallVector<StringAttr> &names,
   return ret;
 }
 
+LinearLayout ppuAIUSharedToLinearLayout(ArrayRef<int64_t> shape,
+                                        PPUAIUSharedEncodingAttr shared) {
+  MLIRContext *ctx = shared.getContext();
+  auto shapePerCTA = getShapePerCTA(shared, shape);
+  auto outDimNames = standardOutDimNames(ctx, shape.size());
+
+  LinearLayout ctaLayout = LinearLayout::empty();
+  for (unsigned dim : shared.getOrder())
+    ctaLayout *= LinearLayout::identity1D(shapePerCTA[dim], S("offset"),
+                                          outDimNames[dim]);
+  return combineCtaCgaWithShape(ctaLayout, shared.getCGALayout(), shape);
+}
+
 LinearLayout swizzledSharedToLinearLayout(ArrayRef<int64_t> shape,
                                           SwizzledSharedEncodingAttr shared) {
   MLIRContext *ctx = shared.getContext();
@@ -1511,6 +1524,8 @@ LinearLayout TritonGPUDialect::toLinearLayout(ArrayRef<int64_t> shape,
            "shape must be a postive power of 2");
     if (auto shared = dyn_cast<SwizzledSharedEncodingAttr>(layout)) {
       result = swizzledSharedToLinearLayout(shape, shared);
+    } else if (auto shared = dyn_cast<PPUAIUSharedEncodingAttr>(layout)) {
+      result = ppuAIUSharedToLinearLayout(shape, shared);
     } else if (auto shared = dyn_cast<SharedLinearEncodingAttr>(layout)) {
       result = shared.toLinearLayout(shape);
     } else if (auto shared = dyn_cast<NVMMASharedEncodingAttr>(layout)) {

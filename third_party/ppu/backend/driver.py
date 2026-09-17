@@ -32,7 +32,13 @@ from triton.backends.driver import GPUDriver
 
 dirname = os.path.dirname(os.path.realpath(__file__))
 hggc_path = os.getenv("PPU_SDK", default="/usr/local/PPU_SDK")
-include_dirs = [os.path.join(hggc_path, "include")]
+hggc_roots = [hggc_path]
+if os.path.basename(os.path.normpath(hggc_path)) == "CUDA_SDK":
+    hggc_roots.append(os.path.dirname(os.path.normpath(hggc_path)))
+include_dirs = [
+    os.path.join(root, relative) for root in hggc_roots
+    for relative in ("include", os.path.join("targets", "x86_64-linux", "include"))
+]
 libdevice_dir = os.path.join(hggc_path, "lib")
 libraries = ['libhggc.so']
 PyHGtensorMap = None
