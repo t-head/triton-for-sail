@@ -247,7 +247,7 @@ getSharedMemoryScale(Value arg, mlir::PatternRewriter &rewriter, Location loc) {
 
   Attribute SharedMemorySpace =
       SharedMemorySpaceAttr::get(argType.getContext());
-  auto CTALayout = getCTALayout(argType.getEncoding());
+  auto CTALayout = getCGALayout(argType.getEncoding());
   // No swizzling for scale for now
   auto newLayout = NVMMASharedEncodingAttr::get(
       argType.getContext(), /*swizzlingByteWidth=*/0,
@@ -350,7 +350,7 @@ static MMAEncodingResult createMMAEncodingForDot(DotOpInterface dotOp,
     return {nullptr, RankedTensorType(), Value(), versionMajor, versionMinor};
   }
 
-  auto CTALayout = getCTALayout(oldRetType.getEncoding());
+  auto CTALayout = getCGALayout(oldRetType.getEncoding());
   auto retShapePerCTA = getShapePerCTA(oldRetType);
   auto instrShape = PPUMmaVersionToInstrShape(
       versionMajor, retShapePerCTA, oldAType.getElementType(), numWarps);
@@ -464,7 +464,7 @@ public:
 
 static DistributedEncodingTrait
 replaceCTALayout(DistributedEncodingTrait layout,
-                 const triton::gpu::CTAEncodingAttr &newCTALayout) {
+                 const triton::gpu::CGAEncodingAttr &newCTALayout) {
   if (auto blockedLayout = mlir::dyn_cast<BlockedEncodingAttr>(layout)) {
     return BlockedEncodingAttr::get(
         layout.getContext(), blockedLayout.getSizePerThread(),
@@ -494,7 +494,7 @@ static Value splitBOperand(Value b, mlir::PatternRewriter &rewriter) {
   auto kBlock = StringAttr::get(ctx, "block");
   auto dims = standardOutDimNames(ctx, 2);
   auto newCTALayout =
-      CTAEncodingAttr::get(ctx, LinearLayout({{kBlock, {{0, 1}}}}, dims));
+      CGAEncodingAttr::get(ctx, LinearLayout({{kBlock, {{0, 1}}}}, dims));
   Attribute newLayout = replaceCTALayout(currentLayout, newCTALayout);
   rewriter.setInsertionPoint(loadOp);
   for (OpOperand &operand : loadOp->getOpOperands()) {
@@ -568,7 +568,7 @@ public:
       return failure();
 
     // get MMA encoding for the given number of warps
-    auto CTALayout = getCTALayout(oldRetType.getEncoding());
+    auto CTALayout = getCGALayout(oldRetType.getEncoding());
     int versionMajor = 2;
     int versionMinor = 0;
     auto instrShape = PPUMmaVersionToInstrShape(

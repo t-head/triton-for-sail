@@ -42,11 +42,11 @@ static Attribute pickDescriptorLoadStoreLayout(int numWarps, int threadsPerWarp,
 
   SmallVector<unsigned> order =
       getMatrixOrder(type.getRank(), /*rowMajor*/ true);
-  auto CTALayout = triton::gpu::getCTALayout(type.getEncoding());
+  auto cgaLayout = triton::gpu::getCGALayout(type.getEncoding());
 
   Attribute layout = triton::gpu::BlockedEncodingAttr::get(
       type.getContext(), type.getShape(), sizePerThread, order, numWarps,
-      threadsPerWarp, CTALayout);
+      threadsPerWarp, cgaLayout);
   return layout;
 }
 
@@ -98,7 +98,7 @@ struct CoalescePass : public impl::TritonGPUCoalesceBase<CoalescePass> {
       auto newEnc = triton::gpu::BlockedEncodingAttr::get(
           &getContext(), tensorType.getShape(),
           ArrayRef(blockedEnc.getSizePerThread()), ArrayRef(newOrder), numWarps,
-          threadsPerWarp, blockedEnc.getCTALayout());
+          threadsPerWarp, blockedEnc.getCGALayout());
       auto newTensorTy = getNewType(tensorType, newEnc);
 
       auto newOp = builder.create<triton::AIULoadOp>(
@@ -139,11 +139,11 @@ struct CoalescePass : public impl::TritonGPUCoalesceBase<CoalescePass> {
         return;
 
       auto tensorType = cast<RankedTensorType>(ptr.getType());
-      CTAEncodingAttr ctaLayout = getCTALayout(tensorType.getEncoding());
+      CGAEncodingAttr cgaLayout = getCGALayout(tensorType.getEncoding());
       SmallVector<int64_t> shapePerCTA = getShapePerCTA(tensorType);
-      auto layout = buildCoalescedEncoding(&getContext(), axisInfoAnalysis,
-                                           curr, numWarps, threadsPerWarp,
-                                           ctaLayout, shapePerCTA);
+      auto layout =
+          buildCoalescedEncoding(axisInfoAnalysis, curr, numWarps,
+                                 threadsPerWarp, cgaLayout, shapePerCTA);
       layoutMap[curr] = layout;
     });
 

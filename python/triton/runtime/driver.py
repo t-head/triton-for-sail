@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import os
 import shutil
 
 from ..backends import backends, DriverBase
@@ -12,9 +13,19 @@ def _is_ppu_device() -> bool:
 
 
 def _create_driver() -> DriverBase:
+    selected = os.environ.get("TRITON_DEFAULT_BACKEND", None)
+    if selected:
+        if selected not in backends:
+            raise RuntimeError(f"Unknown backend device '{selected}'. Available backends: {list(backends.keys())}")
+        driver = backends[selected].driver
+        if not driver.is_active():
+            raise RuntimeError(f"Backend device '{selected}' is not active.")
+        return driver()
+
     active_drivers = [x.driver for x in backends.values() if x.driver.is_active()]
-    if len(active_drivers) > 1 and _is_ppu_device():
-        active_drivers = [backends["ppu"].driver]
+    if len(active_drivers) == 2 and all(backends[name].driver in active_drivers for name in ("nvidia", "ppu")):
+        preferred = "ppu" if _is_ppu_device() else "nvidia"
+        active_drivers = [backends[preferred].driver]
     if len(active_drivers) != 1:
         raise RuntimeError(f"{len(active_drivers)} active drivers ({active_drivers}). There should only be one.")
     return active_drivers[0]()

@@ -137,10 +137,10 @@ Value Prefetcher::generatePrefetch(Value v, unsigned opIdx, bool isPrologue,
     offset[kIdx] = *offsetK;
 
   auto memEnc = type.getEncoding();
-  if (auto aiuEnc = cast<PPUAIUSharedEncodingAttr>(memEnc)) {
+  if (auto aiuEnc = dyn_cast<PPUAIUSharedEncodingAttr>(memEnc)) {
     memEnc = PPUAIUSharedEncodingAttr::get(
         type.getContext(), aiuEnc.getVersionMajor(), aiuEnc.getAIUStrategy(),
-        aiuEnc.getOrder(), aiuEnc.getCTALayout(), *offsetK);
+        aiuEnc.getOrder(), aiuEnc.getCGALayout(), offsetK.value_or(0));
   }
   Value newSmem = triton::gpu::MemDescSubsliceOp::create(
       builder, v.getLoc(),
@@ -171,13 +171,14 @@ LogicalResult Prefetcher::initialize() {
       // Only accepts dotOps encoded as Nvidia MMA v2 or AMD MFMA
       auto dstPPUMmaEnc =
           dyn_cast<PPUMmaEncodingAttr>(getEncoding(dotOp.getResult()));
+      // Generic prefetch does not preserve PPU MMA semantics.
+      if (dstPPUMmaEnc)
+        return failure();
       auto dstMmaEnc =
           dyn_cast<NvidiaMmaEncodingAttr>(getEncoding(dotOp.getResult()));
       auto dstMfmaEnc =
           dyn_cast<AMDMfmaEncodingAttr>(getEncoding(dotOp.getResult()));
-      if (!dstMfmaEnc && (!dstMmaEnc || dstMmaEnc.getVersionMajor() != 2) &&
-          (!dstPPUMmaEnc || (dstPPUMmaEnc.getVersionMajor() != 1 &&
-                             dstPPUMmaEnc.getVersionMajor() != 2)))
+      if (!dstMfmaEnc && (!dstMmaEnc || dstMmaEnc.getVersionMajor() != 2))
         // Don't rewrite if any other type is found.
         return failure();
       dotsInFor.push_back(dotOp);

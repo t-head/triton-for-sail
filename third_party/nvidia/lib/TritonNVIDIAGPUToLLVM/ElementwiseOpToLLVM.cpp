@@ -417,7 +417,7 @@ struct FpToFpOpConversion
 
     auto undefRounding = static_cast<RoundingMode>(-1);
 
-    static DenseMap<std::tuple<TypeID, TypeID, RoundingMode>, Fp8ConversionDesc>
+    DenseMap<std::tuple<TypeID, TypeID, RoundingMode>, Fp8ConversionDesc>
         srcMap = {
             // F8 -> F16
             {{F8E4M3TyID, F16TyID, undefRounding}, Fp8E4M3Nv_to_Fp16},
@@ -650,7 +650,7 @@ struct ExpOpConversionApprox
     Value prod = b.fmul(f32_ty, operands[0][0], b.f32_val(log2e));
 
     Type resultTy = operands[0][0].getType();
-    StringRef name = "llvm.nvvm.ex2.approx.f";
+    StringRef name = "llvm.nvvm.ex2.approx.f32";
     auto callOp =
         LLVM::createLLVMIntrinsicCallOp(rewriter, loc, name, resultTy, {prod});
     return {callOp.getResult(0)};

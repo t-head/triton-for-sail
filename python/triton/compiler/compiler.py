@@ -245,6 +245,9 @@ def compile(src, target=None, options=None, _env_vars=None):
     # create cache manager
     env_vars = get_cache_invalidating_env_vars() if _env_vars is None else _env_vars
     key = get_cache_key(src, backend, options, env_vars=env_vars)
+    if knobs.runtime.add_stages_inspection_hook is not None:
+        inspect_stages_key, inspect_stages_hash = knobs.runtime.add_stages_inspection_hook()
+        key += inspect_stages_key
     hash = hashlib.sha256(key.encode("utf-8")).hexdigest()
     fn_cache_manager = get_cache_manager(hash)
     # For dumping/overriding only hash the source as we want it to be independent of triton
@@ -381,9 +384,19 @@ def _is_ppu_device() -> bool:
 
 
 def make_backend(target: GPUTarget) -> BaseBackend:
+    selected = os.environ.get("TRITON_DEFAULT_BACKEND", None)
+    if selected:
+        if selected not in backends:
+            raise RuntimeError(f"Unknown backend '{selected}'. Available backends: {list(backends.keys())}")
+        backend = backends[selected].compiler
+        if not backend.supports_target(target):
+            raise RuntimeError(f"Backend '{selected}' does not support target '{target.backend}'.")
+        return backend(target)
+
     actives = [x.compiler for x in backends.values() if x.compiler.supports_target(target)]
-    if len(actives) > 1 and _is_ppu_device():
-        actives = [backends["ppu"].compiler]
+    if len(actives) == 2 and all(backends[name].compiler in actives for name in ("nvidia", "ppu")):
+        preferred = "ppu" if _is_ppu_device() else "nvidia"
+        actives = [backends[preferred].compiler]
     if len(actives) != 1:
         raise RuntimeError(
             f"{len(actives)} compatible backends for target ({target.backend}) ({actives}). There should only be one.")

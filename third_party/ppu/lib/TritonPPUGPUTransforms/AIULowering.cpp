@@ -47,7 +47,7 @@ public:
     auto tensorType = op.getResult().getType();
     assert(tensorType.getRank() > 1);
     auto order = getOrder(tensorType);
-    auto ctaLayout = getCTALayout(tensorType.getEncoding());
+    auto ctaLayout = getCGALayout(tensorType.getEncoding());
     auto elemBytes = tensorType.getElementTypeBitWidth() / 8;
     int numWarps = lookupNumWarps(op);
 

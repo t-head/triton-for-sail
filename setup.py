@@ -378,13 +378,12 @@ def get_llvm_irformatter():
     Get irformatter
     '''
     binary = "llvm-irformatter"
-    paths = [
-        os.environ.get("TRITON_IR_FORMATTER_PATH", ""),
-        os.path.join(os.environ.get("PPU_SDK"), "bin", binary)
-    ]
-    for bin in paths:
-        if os.path.exists(bin) and os.path.isfile(bin):
-            return bin
+    paths = [os.environ.get("TRITON_IR_FORMATTER_PATH", "")]
+    if ppu_sdk := os.environ.get("PPU_SDK"):
+        paths.append(os.path.join(ppu_sdk, "bin", binary))
+    for path in paths:
+        if os.path.isfile(path):
+            return path
     raise RuntimeError("Cannot find IR Formatter")
 
 
@@ -442,7 +441,8 @@ class CMakeBuild(build_ext):
         download_and_copy_dependencies()
 
         # copy ppu toolchain dependencies
-        copy_llvm_irformatter()
+        if os.environ.get("TRITON_IR_FORMATTER_PATH") or os.environ.get("PPU_SDK"):
+            copy_llvm_irformatter()
 
         try:
             out = subprocess.check_output(["cmake", "--version"])
@@ -528,6 +528,11 @@ class CMakeBuild(build_ext):
                 "-DCMAKE_MODULE_LINKER_FLAGS=-fuse-ld=lld",
                 "-DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=lld",
             ]
+
+        if check_env_flag("LLVM_BUILD_SHARED_LIBS"):
+            cmake_args += ["-DLLVM_BUILD_SHARED_LIBS=1"]
+        else:
+            cmake_args += ["-DLLVM_BUILD_SHARED_LIBS=0"]
 
         # Note that asan doesn't work with binaries that use the GPU, so this is
         # only useful for tools like triton-opt that don't run code on the GPU.
@@ -840,7 +845,7 @@ def get_triton_version_suffix():
 
 
 # keep it separate for easy substitution
-TRITON_VERSION = "3.5.0" + get_triton_version_suffix()
+TRITON_VERSION = "3.6.0" + get_triton_version_suffix()
 
 # Dynamically define supported Python versions and classifiers
 MIN_PYTHON = (3, 10)

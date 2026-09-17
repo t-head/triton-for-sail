@@ -33,8 +33,8 @@ SmallVector<Value> getStrides(const SharedMemoryObject &smemObj,
                               triton::gpu::MemDescType memDesc, Location loc,
                               RewriterBase &rewriter);
 
-triton::gpu::CTAEncodingAttr
-getExpandedCTALayout(MLIRContext *ctx, triton::gpu::CTAEncodingAttr ctaLayout);
+triton::gpu::CGAEncodingAttr
+getExpandedCTALayout(MLIRContext *ctx, triton::gpu::CGAEncodingAttr ctaLayout);
 
 Attribute getExpandedEncoding(Attribute encoding);
 
