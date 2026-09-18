@@ -75,10 +75,24 @@ struct GetNumProgramsOpConversion
   }
 };
 
+struct WarpIdOpConversion
+    : public ConvertOpToLLVMPattern<triton::gpu::WarpIdOp> {
+  using ConvertOpToLLVMPattern<
+      triton::gpu::WarpIdOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::gpu::WarpIdOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<ppugpu::WarpIdOp>(op);
+    return success();
+  }
+};
+
 } // namespace
 
 void mlir::triton::ppu::populateSPMDOpToLLVMPattern(
     LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
     PatternBenefit benefit) {
-  patterns.add<GetNumProgramsOpConversion>(typeConverter, benefit);
+  patterns.add<GetNumProgramsOpConversion, WarpIdOpConversion>(typeConverter,
+                                                               benefit);
 }
