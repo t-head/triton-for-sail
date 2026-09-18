@@ -1579,6 +1579,9 @@ struct AsyncCopyGlobalToLocalOpConversion
       return emitError(loc,
                        "cp.async does not support non-trivial block dimension");
     }
+    cvt = cvt.sublayout(
+        {str_attr("register"), str_attr("lane"), str_attr("warp")},
+        {str_attr("offset")});
     auto affineOffset = smemObj.getShmemOffset(loc, rewriter, dstTy);
     auto maskSpanAffineOffset = SharedMemoryObject::getMaskSpanOffsets(dstTy);
     auto [laneId, warpId] = getLaneAndWarpId(rewriter, loc);
