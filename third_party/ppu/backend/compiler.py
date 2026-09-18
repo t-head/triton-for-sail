@@ -152,6 +152,10 @@ class HGGCOptions:
         key = "_".join([f"{name}-{val}" for name, val in sorted(hash_dict.items())])
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
+    @property
+    def enable_iisan(self):
+        return "iisan" in self.instrumentation_mode
+
 
 class PPUBackend(BaseBackend):
     instrumentation = None
