@@ -18,6 +18,7 @@
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/TMAUtilities.h"
 #include "triton/Tools/LayoutUtils.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
 #include <queue>
@@ -629,13 +630,15 @@ ttg::SharedEncodingTrait mlir::triton::getSharedEncoding(Operation *op) {
   }
 
   if (isAIULoad(op)) {
+    auto aiuLoadOp = cast<tt::AIULoadOp>(op);
+    auto aiuOrder = llvm::to_vector_of<unsigned>(aiuLoadOp.getOrder());
     int numWarps = ttg::lookupNumWarps(op);
     auto tileShape = ty.getShape();
     size_t rank = tileShape.size();
     auto elemBytes = ty.getElementTypeBitWidth() / 8;
     auto tileC = tileShape[rank - 1];
     auto tileW = tileShape[rank - 2];
-    if (order[rank - 1] != 0) {
+    if (aiuOrder[rank - 1] != 0) {
       tileC = tileShape[rank - 2];
       tileW = tileShape[rank - 1];
     }
@@ -646,8 +649,8 @@ ttg::SharedEncodingTrait mlir::triton::getSharedEncoding(Operation *op) {
     SmallVector<unsigned> aiuLoad = mlir::LLVM::PPU::AIULoadStrategy(
         numWarps, tileW, tileC, elemBytes, version);
 
-    return ttg::PPUAIUSharedEncodingAttr::get(ty.getContext(), version, aiuLoad,
-                                              order, cgaLayout);
+    return ttg::PPUAIUSharedEncodingAttr::get(
+        ty.getContext(), version, aiuLoad, aiuOrder, cgaLayout);
   }
 
   if (localAllocEnc)

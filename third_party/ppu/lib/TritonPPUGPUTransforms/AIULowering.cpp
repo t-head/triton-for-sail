@@ -29,6 +29,7 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#include "llvm/ADT/STLExtras.h"
 
 namespace mlir {
 namespace triton {
@@ -46,7 +47,7 @@ public:
     auto loc = op.getLoc();
     auto tensorType = op.getResult().getType();
     assert(tensorType.getRank() > 1);
-    auto order = getOrder(tensorType);
+    auto order = llvm::to_vector_of<unsigned>(op.getOrder());
     auto ctaLayout = getCGALayout(tensorType.getEncoding());
     auto elemBytes = tensorType.getElementTypeBitWidth() / 8;
     int numWarps = lookupNumWarps(op);
