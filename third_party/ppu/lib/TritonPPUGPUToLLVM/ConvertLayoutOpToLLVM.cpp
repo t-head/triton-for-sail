@@ -67,9 +67,6 @@ struct ConvertLayoutOpSwizzlingConversion
     LinearLayout dstLayout = toLinearLayout(dstTy);
 
     StringAttr kBlock = str_attr("block");
-    StringAttr kWarp = str_attr("warp");
-    StringAttr kLane = str_attr("lane");
-    StringAttr kReg = str_attr("register");
 
     assert(to_vector(conversion.getInDimNames()) ==
            to_vector(conversion.getOutDimNames()));
@@ -77,13 +74,7 @@ struct ConvertLayoutOpSwizzlingConversion
     if (!llvm::is_contained(dims, kBlock) &&
         cvtNeedsSharedMemory(srcTy, dstTy)) {
       auto loc = op.getLoc();
-      // Remove the kBlock dimension from the layout as it's the identity in the
-      // cvt
-      srcLayout = srcLayout.sublayout({kReg, kLane, kWarp},
-                                      to_vector(srcLayout.getOutDimNames()));
-      dstLayout = dstLayout.sublayout({kReg, kLane, kWarp},
-                                      to_vector(dstLayout.getOutDimNames()));
-
+      // Swizzling helpers require the identity kBlock dimension.
       auto llvmElemTy = getTypeConverter()->convertType(srcTy.getElementType());
       auto smemBase = LLVM::getSharedMemoryBase(loc, rewriter, targetInfo,
                                                 op.getOperation());
@@ -186,8 +177,15 @@ struct ConvertLayoutOpSwizzlingConversion
     auto storeCvt = *divideRight(totalStoreCvt, reps);
     auto loadCvt = *divideRight(totalLoadCvt, reps);
     auto kOffset = str_attr("offset");
-    storeCvt = storeCvt.reshapeOuts({{kOffset, storeCvt.getTotalOutDimSize()}});
-    loadCvt = loadCvt.reshapeOuts({{kOffset, loadCvt.getTotalOutDimSize()}});
+    auto kBlock = str_attr("block");
+    auto nBlock = storeCvt.getInDimSize(kBlock);
+    storeCvt = storeCvt.reshapeOuts(
+        {{kOffset, storeCvt.getTotalOutDimSize() / nBlock}, {kBlock, nBlock}});
+    loadCvt = loadCvt.reshapeOuts(
+        {{kOffset, loadCvt.getTotalOutDimSize() / nBlock}, {kBlock, nBlock}});
+
+    assert(storeCvt.isTrivialOver({kBlock}));
+    assert(loadCvt.isTrivialOver({kBlock}) || idxDst == 0);
 
     auto tileSize = storeCvt.getInDimSize(kReg);
 
@@ -201,6 +199,13 @@ struct ConvertLayoutOpSwizzlingConversion
         targetInfo.warpSync(loc, rewriter);
       else
         targetInfo.barrier(loc, rewriter, triton::gpu::AddrSpace::Local);
+    };
+    auto kLane = str_attr("lane");
+    auto kWarp = str_attr("warp");
+    auto dropBlock = [&](const LinearLayout &cvt) {
+      SmallVector<StringAttr> inDims = {kReg, kLane, kWarp};
+      SmallVector<StringAttr> outDims = {kOffset};
+      return cvt.sublayout(inDims, outDims);
     };
     for (int i = 0; i < nReps; ++i) {
       if (i > 0)
@@ -217,8 +222,9 @@ struct ConvertLayoutOpSwizzlingConversion
       } else {
         assert(idxSrc == 1 || idxSrc == 2);
         bool transpose = idxSrc == 2;
+        auto storeCvtNoBlock = dropBlock(storeCvt);
         auto result = lowerLdStMatrix(
-            loc, storeCvt, transpose, tileInVals, smemBase, affineOffset,
+            loc, storeCvtNoBlock, transpose, tileInVals, smemBase, affineOffset,
             maskSpanAffineOffset, llvmElemTy, rewriter, targetInfo);
         assert(succeeded(result));
       }
@@ -234,8 +240,9 @@ struct ConvertLayoutOpSwizzlingConversion
       } else {
         assert(idxDst == 1 || idxDst == 2);
         bool transpose = idxDst == 2;
+        auto loadCvtNoBlock = dropBlock(loadCvt);
         auto result = lowerLdStMatrix(
-            loc, loadCvt, transpose, tileOutVals, smemBase, affineOffset,
+            loc, loadCvtNoBlock, transpose, tileOutVals, smemBase, affineOffset,
             maskSpanAffineOffset, llvmElemTy, rewriter, targetInfo);
         assert(succeeded(result));
       }
@@ -255,17 +262,8 @@ struct ConvertLayoutOpSwizzlingConversion
     auto srcTy = op.getSrc().getType();
     auto dstTy = op.getType();
 
-    // Remove the kBlock dimension from the layout as it's the identity in the
-    // cvt
     auto srcLayout = toLinearLayout(srcTy);
     auto dstLayout = toLinearLayout(dstTy);
-    auto kReg = str_attr("register");
-    auto kLane = str_attr("lane");
-    auto kWarp = str_attr("warp");
-    srcLayout = srcLayout.sublayout({kReg, kLane, kWarp},
-                                    to_vector(srcLayout.getOutDimNames()));
-    dstLayout = dstLayout.sublayout({kReg, kLane, kWarp},
-                                    to_vector(dstLayout.getOutDimNames()));
 
     auto llvmElemTy = getTypeConverter()->convertType(srcTy.getElementType());
     auto smemBase =
