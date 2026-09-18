@@ -186,8 +186,18 @@ struct ConvertLayoutOpSwizzlingConversion
 
     assert(storeCvt.isTrivialOver({kBlock}));
     assert(loadCvt.isTrivialOver({kBlock}) || idxDst == 0);
+    assert(nBlock == 1);
 
-    auto tileSize = storeCvt.getInDimSize(kReg);
+    auto kLane = str_attr("lane");
+    auto kWarp = str_attr("warp");
+    auto dropBlock = [&](const LinearLayout &cvt) {
+      SmallVector<StringAttr> inDims = {kReg, kLane, kWarp};
+      SmallVector<StringAttr> outDims = {kOffset};
+      return cvt.sublayout(inDims, outDims);
+    };
+    auto storeCvtNoBlock = dropBlock(storeCvt);
+    auto loadCvtNoBlock = dropBlock(loadCvt);
+    auto tileSize = storeCvtNoBlock.getInDimSize(kReg);
 
     assert(permutedInVals.size() == tileSize * nReps);
     SmallVector<Value> outVals;
@@ -200,13 +210,6 @@ struct ConvertLayoutOpSwizzlingConversion
       else
         targetInfo.barrier(loc, rewriter, triton::gpu::AddrSpace::Local);
     };
-    auto kLane = str_attr("lane");
-    auto kWarp = str_attr("warp");
-    auto dropBlock = [&](const LinearLayout &cvt) {
-      SmallVector<StringAttr> inDims = {kReg, kLane, kWarp};
-      SmallVector<StringAttr> outDims = {kOffset};
-      return cvt.sublayout(inDims, outDims);
-    };
     for (int i = 0; i < nReps; ++i) {
       if (i > 0)
         emitBarrier();
@@ -216,13 +219,12 @@ struct ConvertLayoutOpSwizzlingConversion
       // Store
       // idxSrc 0: st.shared, idxSrc 1: stmatrix, idxSrc 2: stmatrix.trans
       if (idxSrc == 0) {
-        lowerLdStShared(loc, ctx, storeCvt, tileInVals, llvmElemTy, smemBase,
-                        /*paddingShifts=*/{}, affineOffset,
+        lowerLdStShared(loc, ctx, storeCvtNoBlock, tileInVals, llvmElemTy,
+                        smemBase, /*paddingShifts=*/{}, affineOffset,
                         maskSpanAffineOffset, rewriter, targetInfo);
       } else {
         assert(idxSrc == 1 || idxSrc == 2);
         bool transpose = idxSrc == 2;
-        auto storeCvtNoBlock = dropBlock(storeCvt);
         auto result = lowerLdStMatrix(
             loc, storeCvtNoBlock, transpose, tileInVals, smemBase, affineOffset,
             maskSpanAffineOffset, llvmElemTy, rewriter, targetInfo);
@@ -234,13 +236,12 @@ struct ConvertLayoutOpSwizzlingConversion
       // idxDst 0: ld.shared, idxDst 1: ldmatrix, idxDst 2: ldmatrix.trans
       if (idxDst == 0) {
         tileOutVals = lowerLdStShared(
-            loc, ctx, loadCvt, {}, llvmElemTy, smemBase,
+            loc, ctx, loadCvtNoBlock, {}, llvmElemTy, smemBase,
             /*paddingShifts=*/{}, affineOffset, maskSpanAffineOffset, rewriter,
             targetInfo);
       } else {
         assert(idxDst == 1 || idxDst == 2);
         bool transpose = idxDst == 2;
-        auto loadCvtNoBlock = dropBlock(loadCvt);
         auto result = lowerLdStMatrix(
             loc, loadCvtNoBlock, transpose, tileOutVals, smemBase, affineOffset,
             maskSpanAffineOffset, llvmElemTy, rewriter, targetInfo);
