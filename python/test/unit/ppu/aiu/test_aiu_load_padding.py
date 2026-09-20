@@ -27,7 +27,7 @@ def load_kernel_aiu(a_ptr, c_ptr, M, K, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_K
                          (128, 64), (128, 128), (128, 256),
                          (256, 256)
                          ])
-def test_aiu_load(monkeypatch, num_stages, M, K, BLOCK_M, BLOCK_K, num_warps):    
+def test_aiu_load(monkeypatch, num_stages, M, K, BLOCK_M, BLOCK_K, num_warps):
     device = "cuda"
     torch.manual_seed(42)
     A = torch.randn((M, K), dtype=torch.float16, device=device)

@@ -811,8 +811,9 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
     }
     //@$0
     std::string aiuInst;
-    std::string dtype = (elementSizeInBytes == 4) ? ".b32" : 
-                        (elementSizeInBytes == 2) ? ".b16" : ".b8";
+    std::string dtype = (elementSizeInBytes == 4)
+                            ? ".b32"
+                            : (elementSizeInBytes == 2) ? ".b16" : ".b8";
     aiuInst = "ppu.cp.async.aiu.bulk.tensor.shared.global.2d.tile.padz.swzl" + dtype +
               "[$0], [$1], {$2, $3, $4}, {$5, $6, $7}, {$8, $9}, {$10, $11, $12}, $13;";
     if(isNeedPred) {
