@@ -45,6 +45,8 @@ jobs:
             cd /workspace/source
             # Fix: image bakes in PIP_INDEX_URL pointing to unreachable internal server
             unset PIP_INDEX_URL
+            # Fix: image bakes in git insteadOf redirecting github.com to unreachable internal gerrit
+            git config --global --unset-all url.https://ai-gerrit.eng.t-head.cn/Public/Github/.insteadOf 2>/dev/null || true
             # PPU SDK and torch are pre-installed in the docker image
             source /usr/local/PPU_SDK/envsetup.sh
             # TODO: Uncomment when using base image without pre-installed SDK/torch
