@@ -93,6 +93,7 @@ class HggcUtils(object):
         global PyHGtensorMap
         PyHGtensorMap = mod.PyHGtensorMap
         self.load_binary = mod.load_binary
+        self.unload_module = mod.unload_module
         self.get_device_properties = mod.get_device_properties
         self.hgOccupancyMaxActiveClusters = mod.hgOccupancyMaxActiveClusters
         self.set_printf_fifo_size = mod.set_printf_fifo_size
@@ -151,7 +152,9 @@ def make_launcher(constants, signature, tensordesc_meta):
     def _expand_signature(signature):
         output = []
         tensordesc_idx = 0
-        for sig in signature:
+
+        def visit(sig, result):
+            nonlocal tensordesc_idx
             if isinstance(sig, str) and sig.startswith("tensordesc"):
                 meta = tensordesc_meta[tensordesc_idx] if tensordesc_meta else None
                 tensordesc_idx += 1
@@ -162,23 +165,31 @@ def make_launcher(constants, signature, tensordesc_meta):
                 ndim = shape.count(",") + 1
 
                 if meta is None:
-                    output.append("*" + dtype)
+                    result.append("*" + dtype)
                     # Currently the host side tensor descriptors get passed in as a
                     # tensor desc, shape, and strides. We have no way to use these
                     # shape and strides when processing tensor descriptors which is
                     # why we provide our own decomposition above. Sadly this means
                     # we have to pass the shape and strides twice.
                     for _ in range(2 * ndim):
-                        output.append("i64")
-                    output.append("i1")
-                    output.append("i1")
+                        result.append("i64")
+                    result.append("i1")
+                    result.append("i1")
 
                 for _ in range(ndim):
-                    output.append("i32")
+                    result.append("i32")
                 for _ in range(ndim):
-                    output.append("i64")
+                    result.append("i64")
+            elif isinstance(sig, tuple):
+                inner = []
+                for value in sig:
+                    visit(value, inner)
+                result.append(tuple(inner))
             else:
-                output.append(sig)
+                result.append(sig)
+
+        for sig in signature:
+            visit(sig, output)
 
         assert not tensordesc_meta or tensordesc_idx == len(tensordesc_meta)
         return output
@@ -611,25 +622,43 @@ def make_tensordesc_arg(arg, metadata):
 
 
 def wrap_handle_tensordesc(launcher, signature, tensordesc_meta):
-    has_tensor_desc_arg = any(isinstance(sig, str) and sig.startswith("tensordesc") for sig in signature.values())
-    if not has_tensor_desc_arg:
+    signature = tuple(signature.values())
+
+    def count_tensordesc(sig):
+        if isinstance(sig, str):
+            return int(sig.startswith("tensordesc"))
+        if isinstance(sig, tuple):
+            return sum(count_tensordesc(value) for value in sig)
+        return 0
+
+    tensordesc_count = sum(count_tensordesc(sig) for sig in signature)
+    if tensordesc_count == 0:
         return launcher
 
-    tensordesc_indices = set(
-        [i for i, sig in enumerate(signature.values()) if isinstance(sig, str) and sig.startswith("tensordesc")])
-    assert not tensordesc_meta or len(tensordesc_meta) == len(tensordesc_indices)
+    assert not tensordesc_meta or len(tensordesc_meta) == tensordesc_count
     if not tensordesc_meta:
-        tensordesc_meta = [None] * len(tensordesc_indices)
+        tensordesc_meta = [None] * tensordesc_count
 
     def inner(*args):
         final_args = list(args[:_BASE_ARGS_FORMAT_LEN])
         tensordesc_idx = 0
-        for i, arg in enumerate(args[_BASE_ARGS_FORMAT_LEN:]):
-            if i in tensordesc_indices:
-                final_args.extend(make_tensordesc_arg(arg, tensordesc_meta[tensordesc_idx]))
+
+        def visit(sig, arg, result):
+            nonlocal tensordesc_idx
+            if isinstance(sig, str) and sig.startswith("tensordesc"):
+                result.extend(make_tensordesc_arg(arg, tensordesc_meta[tensordesc_idx]))
                 tensordesc_idx += 1
+            elif isinstance(sig, tuple):
+                inner_args = []
+                for inner_sig, inner_arg in zip(sig, arg):
+                    visit(inner_sig, inner_arg, inner_args)
+                result.append(tuple(inner_args))
             else:
-                final_args.append(arg)
+                result.append(arg)
+
+        for sig, arg in zip(signature, args[_BASE_ARGS_FORMAT_LEN:]):
+            visit(sig, arg, final_args)
+        assert tensordesc_idx == tensordesc_count
         return launcher(*final_args)
 
     return inner
@@ -662,6 +691,7 @@ class HggcLauncher(object):
         self.launch_pdl = metadata.launch_pdl
 
     def __call__(self, gridX, gridY, gridZ, stream, function, *args):
+        active_driver = triton.runtime.driver.active
 
         def allocate_scratch(size, align, allocator):
             if size > 0:
@@ -671,9 +701,19 @@ class HggcLauncher(object):
                 return alloc_fn(alloc_size, align, stream)
             return None
 
+        def allocate_default_profile_scratch(size, align):
+            if size > 0:
+                grid_size = gridX * gridY * gridZ
+                alloc_size = grid_size * self.num_ctas * size
+                return active_driver.allocate_default_profile_scratch(alloc_size, align, stream)
+            return None
+
         global_scratch = allocate_scratch(self.global_scratch_size, self.global_scratch_align, _allocation._allocator)
-        profile_scratch = allocate_scratch(self.profile_scratch_size, self.profile_scratch_align,
-                                           _allocation._profile_allocator)
+        if _allocation.has_profile_allocator():
+            profile_scratch = allocate_scratch(self.profile_scratch_size, self.profile_scratch_align,
+                                               _allocation._profile_allocator)
+        else:
+            profile_scratch = allocate_default_profile_scratch(self.profile_scratch_size, self.profile_scratch_align)
         self.launch(gridX, gridY, gridZ, stream, function, self.launch_cooperative_grid, self.launch_pdl,
                     global_scratch, profile_scratch, *args)
 

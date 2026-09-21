@@ -1861,7 +1861,9 @@ class TritonSemantic(Generic[TensorTy]):
         if last_stride != 1:
             raise ValueError(f"Tensor descriptor last dim must be 1 but got {last_stride}")
 
-        promote_use_aiu = self.builder.options.backend_name == "ppu" and ndim == 2 and elem_size == 2
+        padding = self._str_to_padding_option(padding_option)
+        promote_use_aiu = (self.builder.options.backend_name == "ppu" and ndim == 2 and elem_size == 2
+                           and padding == ir.PADDING_OPTION.PAD_ZERO)
         if promote_use_aiu:
             contiguous_shape = tl._unwrap_if_constexpr(shape[-1])
             non_contiguous_stride = tl._unwrap_if_constexpr(strides[-2])
@@ -1885,8 +1887,6 @@ class TritonSemantic(Generic[TensorTy]):
         type = tl.block_type(base.type.element_ty, block_shape)
         base_handle = base.handle
         is_signed_int = base.type.element_ty.is_int_signed()
-
-        padding = self._str_to_padding_option(padding_option)
 
         if base.type.element_ty.is_int() and padding == ir.PADDING_OPTION.PAD_NAN:
             raise ValueError("Padding option `nan` is not supported for integer blocks")

@@ -183,3 +183,74 @@ def test_descriptor_padded_stride():
     _descriptor_padded_stride[grid](input, output, ROWS=rows, COLS=cols, ROW_STRIDE=row_stride,
                                     BLOCK_ROWS=block_rows, BLOCK_COLS=block_cols)
     torch.testing.assert_close(output, input[:, :cols], atol=0, rtol=0)
+
+
+@triton.jit
+def _descriptor_dynamic_padded_stride(
+    input_ptr,
+    output_ptr,
+    rows,
+    cols,
+    row_stride,
+    BLOCK_ROWS: tl.constexpr,
+    BLOCK_COLS: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    blocks_per_row = tl.cdiv(cols, BLOCK_COLS)
+    block_row = pid // blocks_per_row
+    block_col = pid % blocks_per_row
+    desc = tl.make_tensor_descriptor(input_ptr, shape=[rows, cols], strides=[row_stride, 1],
+                                     block_shape=[BLOCK_ROWS, BLOCK_COLS])
+    values = desc.load([block_row * BLOCK_ROWS, block_col * BLOCK_COLS])
+    offsets = (block_row * BLOCK_ROWS + tl.arange(0, BLOCK_ROWS))[:, None] * cols
+    offsets += block_col * BLOCK_COLS + tl.arange(0, BLOCK_COLS)[None, :]
+    tl.store(output_ptr + offsets, values)
+
+
+def test_descriptor_dynamic_padded_stride():
+    rows, cols, row_stride = 32, 32, 48
+    block_rows, block_cols = 16, 32
+    torch.manual_seed(42)
+    input = torch.randn((rows, row_stride), dtype=torch.bfloat16, device="cuda")
+    output = torch.empty((rows, cols), dtype=torch.bfloat16, device="cuda")
+    grid = (triton.cdiv(rows, block_rows) * triton.cdiv(cols, block_cols), )
+    kernel = _descriptor_dynamic_padded_stride[grid](input, output, rows, cols, row_stride,
+                                                     BLOCK_ROWS=block_rows, BLOCK_COLS=block_cols)
+    torch.testing.assert_close(output, input[:, :cols], atol=0, rtol=0)
+    assert "tt.aiu_load" not in kernel.asm["ttir"]
+
+
+@triton.jit
+def _descriptor_nan_padding(
+    input_ptr,
+    output_ptr,
+    ROWS: tl.constexpr,
+    COLS: tl.constexpr,
+    OUTPUT_COLS: tl.constexpr,
+    BLOCK_ROWS: tl.constexpr,
+    BLOCK_COLS: tl.constexpr,
+):
+    block_row = tl.program_id(0)
+    block_col = tl.program_id(1)
+    desc = tl.make_tensor_descriptor(input_ptr, shape=[ROWS, COLS], strides=[COLS, 1],
+                                     block_shape=[BLOCK_ROWS, BLOCK_COLS], padding_option="nan")
+    values = desc.load([block_row * BLOCK_ROWS, block_col * BLOCK_COLS])
+    rows = block_row * BLOCK_ROWS + tl.arange(0, BLOCK_ROWS)
+    cols = block_col * BLOCK_COLS + tl.arange(0, BLOCK_COLS)
+    tl.store(output_ptr + rows[:, None] * OUTPUT_COLS + cols[None, :], values)
+
+
+def test_descriptor_nan_padding_falls_back_from_aiu():
+    rows, cols = 48, 48
+    output_rows, output_cols = 64, 64
+    block_rows, block_cols = 32, 32
+    torch.manual_seed(42)
+    input = torch.randn((rows, cols), dtype=torch.bfloat16, device="cuda")
+    output = torch.empty((output_rows, output_cols), dtype=torch.bfloat16, device="cuda")
+    kernel = _descriptor_nan_padding[(2, 2)](
+        input, output, ROWS=rows, COLS=cols, OUTPUT_COLS=output_cols,
+        BLOCK_ROWS=block_rows, BLOCK_COLS=block_cols)
+    expected = torch.full_like(output, float("nan"))
+    expected[:rows, :cols] = input
+    torch.testing.assert_close(output, expected, atol=0, rtol=0, equal_nan=True)
+    assert "tt.aiu_load" not in kernel.asm["ttir"]

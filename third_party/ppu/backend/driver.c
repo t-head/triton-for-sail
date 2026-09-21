@@ -186,6 +186,19 @@ static PyObject *loadBinary(PyObject *self, PyObject *args) {
                        n_spills, n_max_threads);
 }
 
+static PyObject *unloadModule(PyObject *self, PyObject *args) {
+  HGmodule mod;
+  if (!PyArg_ParseTuple(args, "K", &mod)) {
+    return NULL;
+  }
+
+  Py_BEGIN_ALLOW_THREADS;
+  HGGC_CHECK_AND_RETURN_NULL_ALLOW_THREADS(hgModuleUnload(mod));
+  Py_END_ALLOW_THREADS;
+
+  Py_RETURN_NONE;
+}
+
 typedef HGresult (*hgOccupancyMaxActiveClusters_t)(
     int *numClusters, HGfunction func, const HGlaunchConfig *config);
 
@@ -352,6 +365,8 @@ static PyTypeObject PyHGtensorMapType = {
 static PyMethodDef ModuleMethods[] = {
     {"load_binary", loadBinary, METH_VARARGS,
      "Load provided hgbin into HGGC driver"},
+    {"unload_module", unloadModule, METH_VARARGS,
+     "Unload a module from the HGGC driver"},
     {"get_device_properties", getDeviceProperties, METH_VARARGS,
      "Get the properties for a given device"},
     {"hgOccupancyMaxActiveClusters", occupancyMaxActiveClusters, METH_VARARGS,

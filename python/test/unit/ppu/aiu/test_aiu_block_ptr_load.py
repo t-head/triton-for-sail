@@ -57,3 +57,43 @@ def test_descriptor_descend(num_stages, num_warps, M, K, N):
                           num_stages=num_stages, num_warps=num_warps)
     ref = A.float() @ B.float()
     torch.testing.assert_close(C.float(), ref, atol=1.0, rtol=1e-2)
+
+
+@triton.jit
+def _auto_promoted_block_ptr_load(
+    input_ptr,
+    output_ptr,
+    ROWS: tl.constexpr,
+    COLS: tl.constexpr,
+    BLOCK_ROWS: tl.constexpr,
+    BLOCK_COLS: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    blocks_per_row = tl.cdiv(COLS, BLOCK_COLS)
+    block_row = pid // blocks_per_row
+    block_col = pid % blocks_per_row
+    block_ptr = tl.make_block_ptr(
+        input_ptr,
+        shape=(ROWS, COLS),
+        strides=(COLS, 1),
+        offsets=(block_row * BLOCK_ROWS, block_col * BLOCK_COLS),
+        block_shape=(BLOCK_ROWS, BLOCK_COLS),
+        order=(1, 0),
+    )
+    values = tl.load(block_ptr)
+    offsets = (block_row * BLOCK_ROWS + tl.arange(0, BLOCK_ROWS))[:, None] * COLS
+    offsets += block_col * BLOCK_COLS + tl.arange(0, BLOCK_COLS)[None, :]
+    tl.store(output_ptr + offsets, values)
+
+
+def test_auto_promoted_block_ptr_load():
+    rows, cols = 64, 64
+    block_rows, block_cols = 32, 32
+    torch.manual_seed(42)
+    input = torch.randn((rows, cols), dtype=torch.bfloat16, device="cuda")
+    output = torch.empty_like(input)
+    grid = (triton.cdiv(rows, block_rows) * triton.cdiv(cols, block_cols), )
+    kernel = _auto_promoted_block_ptr_load[grid](input, output, ROWS=rows, COLS=cols,
+                                                 BLOCK_ROWS=block_rows, BLOCK_COLS=block_cols)
+    torch.testing.assert_close(output, input, atol=0, rtol=0)
+    assert "tt.aiu_load" in kernel.asm["ttir"]
