@@ -64,15 +64,49 @@ jobs:
             pip install -e .
             # Install test dependencies
             pip install -r python/test-requirements.txt pandas
-            # Run checkin tests
-            python .github/scripts/triton_ut_test.py -o test_result.xml --test-dir /workspace/source
+            # Run checkin tests (verbose output so logs are captured by ppu-scheduler-action)
+            python .github/scripts/run_checkin_tests.py -o test_result.xml --test-dir /workspace/source --env-output env_info.json -v
+            # Print test summary to stdout (captured in pod logs)
+            echo "========== TEST RESULT SUMMARY =========="
+            python3 << 'PYEOF'
+            import xml.etree.ElementTree as ET
+            tree = ET.parse('test_result.xml')
+            root = tree.getroot()
+            for ts in root.findall('.//testsuite'):
+                total = int(ts.get('tests', 0))
+                fail = int(ts.get('failures', 0))
+                err = int(ts.get('errors', 0))
+                skip = int(ts.get('skipped', 0))
+                time_s = ts.get('time', '?')
+                print(f'Total: {total}, Passed: {total-fail-err-skip}, Failed: {fail}, Errors: {err}, Skipped: {skip}, Time: {time_s}s')
+            for tc in root.findall('.//testcase'):
+                failure = tc.find('failure')
+                error = tc.find('error')
+                status = 'FAIL' if failure is not None else ('ERROR' if error is not None else 'PASS')
+                name = tc.get('classname', '') + '.' + tc.get('name', '')
+                print(f'  [{status}] {name} ({tc.get("time", "?")}s)')
+            PYEOF
+            echo "========================================="
+            # env_info.json is now produced by run_checkin_tests.py --env-output
+            # Copy test results and env info to NAS for runner to pick up
+            NAS_RESULT_DIR="/mnt/wl_nas/devops/triton-ci/${GITHUB_RUN_ID:-0}/${GITHUB_RUN_ATTEMPT:-1}"
+            mkdir -p "$NAS_RESULT_DIR"
+            cp test_result.xml "$NAS_RESULT_DIR/" 2>/dev/null || true
+            cp env_info.json "$NAS_RESULT_DIR/" 2>/dev/null || true
           cleanup_policy: on_success
 
       - name: Test summary
         if: always()
+        shell: bash
         run: |
-          echo "## PPU Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status**: ${{ steps.ppu-test.outputs.job_status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration**: ${{ steps.ppu-test.outputs.duration_seconds }}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Pods**: ${{ steps.ppu-test.outputs.task_pods }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Log artifact**: ${{ steps.ppu-test.outputs.log_artifact_name }}" >> $GITHUB_STEP_SUMMARY
+          NAS_RESULT_DIR="/wl_nas/devops/triton-ci/${{ github.run_id }}/${{ github.run_attempt }}"
+          python3 .github/scripts/report_test_results.py \
+            --xml "$NAS_RESULT_DIR/test_result.xml" \
+            --env-info "$NAS_RESULT_DIR/env_info.json" \
+            --docker-image "reg.docker.alibaba-inc.com/ai-tmp/pytorch:2.10.0-ubuntu24.04-hggcrt3-py312-ppu202609181903" \
+            --run-number "${{ github.run_number }}" \
+            --branch "${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}" \
+            --job-status "${{ steps.ppu-test.outputs.job_status }}" \
+            --duration "${{ steps.ppu-test.outputs.duration_seconds }}" \
+            --pods "${{ steps.ppu-test.outputs.task_pods }}" \
+            >> $GITHUB_STEP_SUMMARY || true

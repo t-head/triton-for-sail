@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
+"""Run curated PPU checkin tests and produce a merged JUnit XML report.
+
+This script drives the 48 curated PPU integration tests used by the
+triton-for-sail CI pipeline.  It executes each test via pytest, collects
+per-test JUnit XML fragments, merges them into a single report, and
+optionally dumps environment metadata for downstream reporting.
+"""
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -657,6 +665,54 @@ def print_summary(results: List[TestResult], output_xml: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 环境信息收集
+# ---------------------------------------------------------------------------
+
+def collect_env_info() -> dict:
+    """
+    收集当前运行环境的版本信息（Python、PyTorch、Triton、HGCC、PPU SDK 等）。
+
+    返回:
+        包含环境信息的字典
+    """
+    info = {}
+    # Python version
+    info["Python"] = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    # PyTorch
+    try:
+        import torch
+        info["PyTorch"] = torch.__version__
+        if torch.cuda.is_available():
+            info["CUDA"] = torch.version.cuda or "N/A"
+            info["GPU Count"] = str(torch.cuda.device_count())
+            if torch.cuda.device_count() > 0:
+                info["GPU"] = torch.cuda.get_device_name(0)
+    except ImportError:
+        pass
+    # Triton
+    try:
+        import triton
+        info["Triton"] = triton.__version__
+    except ImportError:
+        pass
+    # HGCC compiler
+    try:
+        r = subprocess.run(["hgcc", "--version"], capture_output=True, text=True, timeout=10)
+        if r.returncode == 0:
+            info["HGCC"] = r.stdout.strip().split("\n")[0]
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    # PPU SDK
+    try:
+        sdk_path = os.environ.get("PPU_SDK", "")
+        if sdk_path:
+            info["PPU SDK"] = sdk_path
+    except Exception:
+        pass
+    return info
+
+
+# ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
 
@@ -675,9 +731,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "示例用法:\n"
-            "  python triton_ci.py\n"
-            "  python triton_ci.py -o result.xml --test-dir /path/to/repo\n"
-            "  python triton_ci.py --keep-temp -v\n"
+            "  python run_checkin_tests.py\n"
+            "  python run_checkin_tests.py -o result.xml --test-dir /path/to/repo\n"
+            "  python run_checkin_tests.py --keep-temp -v\n"
         ),
     )
     parser.add_argument(
@@ -699,6 +755,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--verbose", "-v",
         action="store_true",
         help="输出详细信息",
+    )
+    parser.add_argument(
+        "--env-output",
+        default="",
+        help="收集环境信息并写入指定的 JSON 文件路径（留空则跳过）",
     )
 
     args = parser.parse_args(argv)
@@ -738,6 +799,15 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # ---- 打印摘要 ----
     print_summary(results, args.output)
+
+    # ---- 收集环境信息（可选） ----
+    if args.env_output:
+        env_info = collect_env_info()
+        with open(args.env_output, "w") as f:
+            json.dump(env_info, f, indent=2)
+        print(f"📋 环境信息已写入: {args.env_output}")
+        for k, v in env_info.items():
+            print(f"  {k}: {v}")
 
     # ---- 返回退出码 ----
     has_failures = any(not r.passed for r in results)
