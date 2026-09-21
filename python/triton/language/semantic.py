@@ -1056,7 +1056,7 @@ class TritonSemantic(Generic[TensorTy]):
 
     def aiu_load(self, ptr: TensorTy, offsets, shape, order, cache_modifier: str, eviction_policy: str,
                  type: tl.block_type) -> TensorTy:
-        offsets = self._convert_to_ir_values(offsets, require_i64=False)
+        offsets = [self.make_scalar(offset, tl.int32).handle for offset in offsets]
         shape = self._convert_to_ir_values(shape)
         if not hasattr(order, "__iter__"):
             order = [order]
