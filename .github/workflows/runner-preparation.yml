@@ -9,6 +9,8 @@ on:
         value: ${{ jobs.prepare.outputs.matrix-AMD }}
       matrix-MACOS:
         value: ${{ jobs.prepare.outputs.matrix-MACOS }}
+      matrix-PPU:
+        value: ${{ jobs.prepare.outputs.matrix-PPU }}
 
 jobs:
   prepare:
@@ -17,6 +19,7 @@ jobs:
       matrix-NVIDIA: ${{ steps.set-matrix.outputs.matrix-NVIDIA }}
       matrix-AMD: ${{ steps.set-matrix.outputs.matrix-AMD }}
       matrix-MACOS: ${{ steps.set-matrix.outputs.matrix-MACOS }}
+      matrix-PPU: ${{ steps.set-matrix.outputs.matrix-PPU }}
     steps:
       - name: Decide pre-submit integration test enablement
         # Always enable integration tests for pre-submit pull requests.
@@ -99,7 +102,10 @@ jobs:
             echo '::set-output name=matrix-AMD::[["self-hosted", "gfx90a"], ["amd-gfx942"], ["amd-gfx950"]]'
             echo '::set-output name=matrix-MACOS::[["macos-latest"]]'
           else
-            echo '::set-output name=matrix-NVIDIA::["ubuntu-latest"]'
-            echo '::set-output name=matrix-AMD::["ubuntu-latest"]'
-            echo '::set-output name=matrix-MACOS::[["macos-latest"]]'
+            # TODO: Enable NVIDIA/AMD/macOS CI when runners are available
+            # echo '::set-output name=matrix-NVIDIA::["ubuntu-latest"]'
+            # echo '::set-output name=matrix-AMD::["ubuntu-latest"]'
+            # echo '::set-output name=matrix-MACOS::["macos-latest"]'
+            # PPU CI enabled
+            echo '::set-output name=matrix-PPU::["ZW-M890P"]'
           fi

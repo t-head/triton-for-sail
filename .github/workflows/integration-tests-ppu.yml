@@ -1,0 +1,76 @@
+name: Integration Tests PPU
+
+on:
+  workflow_call:
+    inputs:
+      matrix:
+        required: true
+        type: string
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SDK_URL: https://art-pub.eng.t-head.cn/artifactory/apackage/daily/ppu.2v2_release/latest/PPU_SDK/ppu_1.0.0_Ubuntu2404_v13_release.run
+  TORCH_URL: https://art-pub.eng.t-head.cn/artifactory/apackage/daily/ppu.2v2_release/latest/PPU_SDK_PYPI/pytorch/ppu_sdk_hggcrt3-pytorch2.10.0-ubuntu2404-py312.tar.gz
+
+jobs:
+  integration-tests-ppu:
+    runs-on: k8s-runner-group-cpu-thead
+    container:
+      image: ghcr.io/actions/actions-runner:latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: ${{ fromJson(inputs.matrix || '["ZW-M890P"]') }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: "true"
+
+      - name: Build and Test on PPU
+        id: ppu-test
+        uses: t-head/ppu-scheduler-action@main
+        with:
+          image: reg.docker.alibaba-inc.com/ai-tmp/pytorch:2.10.0-ubuntu24.04-hggcrt3-py312-ppu202609181903
+          nnodes: 0
+          nproc_per_node: 1
+          node_selector: "board-type=${{ matrix.runner }}"
+          namespace: ppu-sched
+          timeout_minutes: 300
+          command: |
+            cd /workspace/source
+            # Fix: image bakes in PIP_INDEX_URL pointing to unreachable internal server
+            unset PIP_INDEX_URL
+            # PPU SDK and torch are pre-installed in the docker image
+            source /usr/local/PPU_SDK/envsetup.sh
+            # TODO: Uncomment when using base image without pre-installed SDK/torch
+            # wget -nv -O /tmp/ppu_sdk.run $SDK_URL
+            # bash /tmp/ppu_sdk.run --prefix=/usr/local/ --silent
+            # rm -f /tmp/ppu_sdk.run
+            # source /usr/local/PPU_SDK/envsetup.sh
+            # wget -nv -O /tmp/torch.tar.gz $TORCH_URL
+            # mkdir -p /tmp/torch_pkg && tar -xzf /tmp/torch.tar.gz -C /tmp/torch_pkg
+            # pip install /tmp/torch_pkg/*.whl || pip install /tmp/torch_pkg/**/*.whl
+            # rm -rf /tmp/torch.tar.gz /tmp/torch_pkg
+            # Build and install Triton (editable install)
+            export TRITON_IR_FORMATTER_PATH=$PPU_SDK/bin/llvm-irformatter
+            pip install pybind11 setuptools==68.1.2
+            pip install -e .
+            # Install test dependencies
+            pip install -r python/test-requirements.txt pandas
+            # Run checkin tests
+            python .github/scripts/triton_ut_test.py -o test_result.xml --test-dir /workspace/source
+          cleanup_policy: on_success
+
+      - name: Test summary
+        if: always()
+        run: |
+          echo "## PPU Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ${{ steps.ppu-test.outputs.job_status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Duration**: ${{ steps.ppu-test.outputs.duration_seconds }}s" >> $GITHUB_STEP_SUMMARY
+          echo "- **Pods**: ${{ steps.ppu-test.outputs.task_pods }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Log artifact**: ${{ steps.ppu-test.outputs.log_artifact_name }}" >> $GITHUB_STEP_SUMMARY
