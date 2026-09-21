@@ -35,13 +35,13 @@ jobs:
         id: ppu-test
         uses: t-head/ppu-scheduler-action@main
         with:
-          image: reg.docker.alibaba-inc.com/ai-tmp/pytorch:2.10.0-ubuntu24.04-hggcrt3-py312-ppu202609181903
+          image: pytorch:2.10.0-ubuntu24.04-hggcrt3-py312-ppu202609181903
           nnodes: 0
           nproc_per_node: 1
           node_selector: "board-type=${{ matrix.runner }}"
           namespace: ppu-sched
           # Mount NAS so the pod can hand test results back to the runner:
-          #   host /wl_nas -> pod /mnt/wl_nas (pod writes results here, runner reads from /wl_nas)
+          #   host /wl_nas -> pod /mnt/wl_nas (both PPU pod and runner pod access NAS at /mnt/wl_nas)
           host_volumes: /nas_aisw:/nas_aisw,/wl_nas:/mnt/wl_nas
           timeout_minutes: 300
           command: |
@@ -68,7 +68,9 @@ jobs:
             # Install test dependencies
             pip install -r python/test-requirements.txt pandas
             # Run checkin tests (verbose output so logs are captured by ppu-scheduler-action)
-            python .github/scripts/run_checkin_tests.py -o test_result.xml --test-dir /workspace/source --env-output env_info.json -v
+            # Capture exit code so NAS copy always runs (even on test failure)
+            python .github/scripts/run_checkin_tests.py -o test_result.xml --test-dir /workspace/source --env-output env_info.json -v || TEST_RC=$?
+            TEST_RC=${TEST_RC:-0}
             # Print test summary to stdout (captured in pod logs)
             echo "========== TEST RESULT SUMMARY =========="
             python3 << 'PYEOF'
@@ -97,24 +99,9 @@ jobs:
             mkdir -p "$NAS_RESULT_DIR"
             cp test_result.xml "$NAS_RESULT_DIR/" 2>/dev/null || true
             cp env_info.json "$NAS_RESULT_DIR/" 2>/dev/null || true
-          cleanup_policy: on_success
-
-      - name: Test summary
-        if: ${{ !cancelled() }}
-        shell: bash
-        run: |
-          NAS_RESULT_DIR="/wl_nas/devops/triton-ci/${{ github.run_id }}/${{ github.run_attempt }}/${{ matrix.runner }}"
-          python3 .github/scripts/report_test_results.py \
-            --xml "$NAS_RESULT_DIR/test_result.xml" \
-            --env-info "$NAS_RESULT_DIR/env_info.json" \
-            --title "Triton PPU Test Results (${{ matrix.runner }})" \
-            --docker-image "reg.docker.alibaba-inc.com/ai-tmp/pytorch:2.10.0-ubuntu24.04-hggcrt3-py312-ppu202609181903" \
-            --run-number "${{ github.run_number }}" \
-            --branch "${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}" \
-            --job-status "${{ steps.ppu-test.outputs.job_status }}" \
-            --duration "${{ steps.ppu-test.outputs.duration_seconds }}" \
-            --pods "${{ steps.ppu-test.outputs.task_pods }}" \
-            >> $GITHUB_STEP_SUMMARY || true
+            # Propagate original test exit code so the action reports failure correctly
+            exit $TEST_RC
+          cleanup_policy: always
 
   ppu-results-summary:
     needs: integration-tests-ppu
@@ -129,9 +116,10 @@ jobs:
         if: ${{ !cancelled() }}
         shell: bash
         run: |
-          NAS_ROOT="/wl_nas/devops/triton-ci/${{ github.run_id }}/${{ github.run_attempt }}"
+          NAS_ROOT="/mnt/wl_nas/devops/triton-ci/${{ github.run_id }}/${{ github.run_attempt }}"
           python3 .github/scripts/report_test_results.py \
             --result-root "$NAS_ROOT" \
+            --boards '${{ inputs.matrix || '["ZW-M890P", "OAM-810E"]' }}' \
             --run-number "${{ github.run_number }}" \
             --branch "${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}" \
             >> $GITHUB_STEP_SUMMARY || true

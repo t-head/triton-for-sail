@@ -930,11 +930,16 @@ def collect_env_info() -> dict:
     try:
         r = subprocess.run(["hgcc", "--version"], capture_output=True, text=True, timeout=10)
         if r.returncode == 0:
-            first_line = r.stdout.strip().split("\n")[0]
-            # Extract version number: "hgcc(HGGC C/C++ Compiler) hgcc version X.Y.Z" -> "X.Y.Z"
+            output = r.stdout.strip()
+            # Search ALL lines for version number (may not be on first line)
+            # Patterns: "version X.Y.Z", "hgcc X.Y.Z", or standalone semver
             import re
-            m = re.search(r"version\s+([\d][\w.\-]+)", first_line)
-            info["HGCC"] = m.group(1) if m else first_line
+            m = re.search(r"version\s+([\d][\w.\-]+)", output)
+            if not m:
+                m = re.search(r"hgcc\s+([\d]+\.[\d]+[\w.\-]*)", output)
+            if not m:
+                m = re.search(r"(\d+\.\d+\.\d+[\w.\-]*)", output)
+            info["HGCC"] = m.group(1) if m else output.split("\n")[0]
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
     # PPU SDK

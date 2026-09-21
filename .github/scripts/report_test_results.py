@@ -204,9 +204,28 @@ def _report_single_board(args):
 # Mode B — combined multi-board report  (--result-root)
 # ---------------------------------------------------------------------------
 
+def _parse_boards_arg(raw):
+    """Parse --boards value: JSON array string or comma-separated list."""
+    if not raw or not raw.strip():
+        return []
+    raw = raw.strip()
+    # Try JSON first
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            result = [str(b).strip().strip('"').strip("'") for b in parsed]
+            return [b for b in result if b]
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+    # Fall back to comma-separated
+    result = [b.strip().strip('"').strip("'") for b in raw.split(",")]
+    return [b for b in result if b]
+
+
 def _report_combined(args):
     """Generate combined multi-board Markdown report.  Always returns 0."""
     root_dir = args.result_root
+    expected_boards = _parse_boards_arg(args.boards)
 
     # Title
     title = args.title
@@ -217,18 +236,29 @@ def _report_combined(args):
     print(f"# {title}")
     print()
 
-    # Discover boards
-    if not os.path.isdir(root_dir):
-        print(f"> ⚠️ No board results found under `{root_dir}`")
-        return 0
+    # Discover boards from filesystem
+    discovered = []
+    if os.path.isdir(root_dir):
+        discovered = sorted(
+            d
+            for d in os.listdir(root_dir)
+            if os.path.isdir(os.path.join(root_dir, d))
+        )
 
-    boards = sorted(
-        d
-        for d in os.listdir(root_dir)
-        if os.path.isdir(os.path.join(root_dir, d))
-    )
+    # Build union: expected (order preserved) + any discovered-but-unexpected
+    if expected_boards:
+        seen = set(expected_boards)
+        boards = list(expected_boards)
+        for d in discovered:
+            if d not in seen:
+                boards.append(d)
+                seen.add(d)
+    else:
+        boards = discovered
+
+    # Edge case: nothing at all
     if not boards:
-        print(f"> ⚠️ No board results found under `{root_dir}`")
+        print(f"> ⚠️ No board results found under `{root_dir}` — all jobs may have failed during setup. Check the per-board job logs.")
         return 0
 
     # Pre-parse all boards
@@ -236,6 +266,16 @@ def _report_combined(args):
     for board in boards:
         xml_path = os.path.join(root_dir, board, "test_result.xml")
         board_data[board] = _parse_xml(xml_path)
+
+    # Status banner
+    boards_with_results = sum(1 for b in boards if board_data[b] is not None)
+    total_boards = len(boards)
+    if boards_with_results == 0:
+        print("> \U0001f534 **No test results were produced by any board — all jobs likely failed during environment setup.**")
+        print()
+    elif boards_with_results < total_boards:
+        print(f"> ⚠️ **Partial results: {boards_with_results} of {total_boards} boards produced test results.**")
+        print()
 
     # Combined overview table
     print("## 概览")
@@ -245,7 +285,7 @@ def _report_combined(args):
     for board in boards:
         parsed = board_data[board]
         if parsed is None:
-            print(f"| {board} | ⚠️ XML not found | | | | |")
+            print(f"| {board} | ⚠️ No results (setup failed?) | | | | |")
         else:
             _, stats = parsed
             print(
@@ -276,7 +316,7 @@ def _report_combined(args):
 
         parsed = board_data[board]
         if parsed is None:
-            print("> ⚠️ Test result XML not found for this board.")
+            print("> ⚠️ No test results were produced for this board. The job likely failed during environment setup (before tests ran). Check the pod logs in the per-board job output above.")
             print()
             continue
 
@@ -332,6 +372,7 @@ def parse_args():
     parser.add_argument("--env-info", default="", help="[Mode A] Path to env info JSON file")
     # Mode B args
     parser.add_argument("--result-root", default=None, help="[Mode B] NAS directory containing per-board subdirectories")
+    parser.add_argument("--boards", default="", help="[Mode B] Expected board list: JSON array or comma-separated")
     # Shared args
     parser.add_argument("--title", default="Triton PPU Test Results", help="Report title")
     parser.add_argument("--run-number", default="", help="CI run number")
