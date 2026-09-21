@@ -24,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: ${{ fromJson(inputs.matrix || '["ZW-M890P"]') }}
+        runner: ${{ fromJson(inputs.matrix || '["ZW-M890P", "OAM-810E"]') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -35,11 +35,14 @@ jobs:
         id: ppu-test
         uses: t-head/ppu-scheduler-action@main
         with:
-          image: reg.docker.alibaba-inc.com/ai-tmp/pytorch:2.10.0-ubuntu24.04-hggcrt3-py312-ppu202609181903
+          image: pytorch:2.10.0-ubuntu24.04-hggcrt3-py312-ppu202609181903
           nnodes: 0
           nproc_per_node: 1
           node_selector: "board-type=${{ matrix.runner }}"
           namespace: ppu-sched
+          # Mount NAS so the pod can hand test results back to the runner:
+          #   host /wl_nas -> pod /mnt/wl_nas (pod writes results here, runner reads from /wl_nas)
+          host_volumes: /nas_aisw:/nas_aisw,/wl_nas:/mnt/wl_nas
           timeout_minutes: 300
           command: |
             cd /workspace/source
@@ -88,8 +91,9 @@ jobs:
             PYEOF
             echo "========================================="
             # env_info.json is now produced by run_checkin_tests.py --env-output
-            # Copy test results and env info to NAS for runner to pick up
-            NAS_RESULT_DIR="/mnt/wl_nas/devops/triton-ci/${{ github.run_id }}/${{ github.run_attempt }}"
+            # Copy test results and env info to NAS for runner to pick up.
+            # Per-runner subdir avoids collision between parallel matrix boards (890P / 810E).
+            NAS_RESULT_DIR="/mnt/wl_nas/devops/triton-ci/${{ github.run_id }}/${{ github.run_attempt }}/${{ matrix.runner }}"
             mkdir -p "$NAS_RESULT_DIR"
             cp test_result.xml "$NAS_RESULT_DIR/" 2>/dev/null || true
             cp env_info.json "$NAS_RESULT_DIR/" 2>/dev/null || true
@@ -99,14 +103,35 @@ jobs:
         if: always()
         shell: bash
         run: |
-          NAS_RESULT_DIR="/wl_nas/devops/triton-ci/${{ github.run_id }}/${{ github.run_attempt }}"
+          NAS_RESULT_DIR="/wl_nas/devops/triton-ci/${{ github.run_id }}/${{ github.run_attempt }}/${{ matrix.runner }}"
           python3 .github/scripts/report_test_results.py \
             --xml "$NAS_RESULT_DIR/test_result.xml" \
             --env-info "$NAS_RESULT_DIR/env_info.json" \
-            --docker-image "reg.docker.alibaba-inc.com/ai-tmp/pytorch:2.10.0-ubuntu24.04-hggcrt3-py312-ppu202609181903" \
+            --title "Triton PPU Test Results (${{ matrix.runner }})" \
+            --docker-image "pytorch:2.10.0-ubuntu24.04-hggcrt3-py312-ppu202609181903" \
             --run-number "${{ github.run_number }}" \
             --branch "${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}" \
             --job-status "${{ steps.ppu-test.outputs.job_status }}" \
             --duration "${{ steps.ppu-test.outputs.duration_seconds }}" \
             --pods "${{ steps.ppu-test.outputs.task_pods }}" \
+            >> $GITHUB_STEP_SUMMARY || true
+
+  ppu-results-summary:
+    needs: integration-tests-ppu
+    if: always()
+    runs-on: k8s-runner-group-cpu-thead
+    container:
+      image: ghcr.io/actions/actions-runner:latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Combined test summary
+        if: always()
+        shell: bash
+        run: |
+          NAS_ROOT="/wl_nas/devops/triton-ci/${{ github.run_id }}/${{ github.run_attempt }}"
+          python3 .github/scripts/report_test_results.py \
+            --result-root "$NAS_ROOT" \
+            --run-number "${{ github.run_number }}" \
+            --branch "${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}" \
             >> $GITHUB_STEP_SUMMARY || true

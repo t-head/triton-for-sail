@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run curated PPU checkin tests and produce a merged JUnit XML report.
 
-This script drives the 48 curated PPU integration tests used by the
+This script drives the 80 curated PPU integration tests used by the
 triton-for-sail CI pipeline.  It executes each test via pytest, collects
 per-test JUnit XML fragments, merges them into a single report, and
 optionally dumps environment metadata for downstream reporting.
@@ -304,6 +304,103 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
         ),
 
         # --------------------------------------------------------------
+        # 语言层 - 数据重组: tl.cat / tl.join / tl.split 覆盖
+        # 张量拼接、交错和拆分的 lowering 路径
+        # --------------------------------------------------------------
+        TestConfig(
+            # tl.cat: 两个 1D tensor 拼接, 覆盖 CatOp lowering
+            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
+            test_filter="test_cat[int8-4]",
+        ),
+        TestConfig(
+            # tl.join: 两个 1D tensor interleave 为 2D, 覆盖 JoinOp lowering
+            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
+            test_filter="test_join",
+        ),
+        TestConfig(
+            # tl.split: 2D tensor 按最后一维拆为两个 1D, 覆盖 SplitOp lowering
+            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
+            test_filter="test_split",
+        ),
+
+        # --------------------------------------------------------------
+        # 语言层 - 3D dot / scaled dot: 覆盖批量矩阵乘法和
+        # MX 浮点缩放 dot (dot_scaled) 路径
+        # --------------------------------------------------------------
+        TestConfig(
+            # 3D batched dot, B=1, 最小块 32x32, int8 精度
+            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
+            test_filter="test_dot3d[1-1-64-64-64-32-32-int8-int8]",
+        ),
+        TestConfig(
+            # tl.dot_scaled: MX 浮点缩放 matmul, e2m1 格式, 最小尺寸
+            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
+            test_filter="test_scaled_dot[32-32-64-True-True-False-e2m1-e4m3-4-16-1]",
+        ),
+
+        # --------------------------------------------------------------
+        # 语言层 - 构造 / 索引: tl.full 常量填充, tl.arange 序列生成,
+        # tl.gather 跨轴索引
+        # --------------------------------------------------------------
+        TestConfig(
+            # tl.full: 常量填充, shape=(128,) int32, 覆盖 SplatOp lowering
+            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
+            test_filter="test_full[shape2-int32]",
+        ),
+        TestConfig(
+            # tl.arange: 连续序列, start=0, 覆盖 MakeRangeOp lowering
+            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
+            test_filter="test_arange[1-0]",
+        ),
+        TestConfig(
+            # tl.gather: 1D/2D 跨轴索引, 覆盖 GatherOp lowering (全参数)
+            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
+            test_filter="test_gather",
+        ),
+
+        # --------------------------------------------------------------
+        # 语言层 - inline asm: 覆盖 PTX 内联汇编路径 (仅 CUDA/PPU)
+        # --------------------------------------------------------------
+        TestConfig(
+            # inline_asm_elementwise: shf.l.wrap.b32, 验证 PTX inline asm lowering
+            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
+            test_filter="test_inline_asm[1]",
+        ),
+
+        # --------------------------------------------------------------
+        # 语言层 - 类型转换 (test_conversions): fp16->fp32 upcast
+        # 独立文件, 与 test_core.test_cast 互补
+        # --------------------------------------------------------------
+        TestConfig(
+            # fp16 -> fp32 upcast, 覆盖 FpToFp 独立转换文件路径
+            file_path=os.path.join(test_dir, "python/test/unit/language/test_conversions.py"),
+            test_filter="test_typeconvert_upcast[float16-float32]",
+        ),
+
+        # --------------------------------------------------------------
+        # 语言层 - frontend AST: 覆盖 Python AST -> TTIR 前端解析
+        # --------------------------------------------------------------
+        TestConfig(
+            # 属性赋值: 验证 Python attribute assign AST 翻译
+            file_path=os.path.join(test_dir, "python/test/unit/language/test_frontend.py"),
+            test_filter="test_assign_attribute",
+        ),
+        TestConfig(
+            # constexpr 函数从 JIT 内调用, 验证编译期求值路径
+            file_path=os.path.join(test_dir, "python/test/unit/language/test_frontend.py"),
+            test_filter="test_constexpr_function_from_jit",
+        ),
+
+        # --------------------------------------------------------------
+        # 语言层 - tuple: 覆盖 Triton tuple 类型的索引 / 传递
+        # --------------------------------------------------------------
+        TestConfig(
+            # tuple 索引: size=0 空 tuple 边界 case
+            file_path=os.path.join(test_dir, "python/test/unit/language/test_tuple.py"),
+            test_filter="test_index[0]",
+        ),
+
+        # --------------------------------------------------------------
         # Runtime 层 : kernel reuse (cache 复用), autotuner 基本流程,
         # launch metadata hook
         # --------------------------------------------------------------
@@ -325,6 +422,30 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
         ),
 
         # --------------------------------------------------------------
+        # Runtime 层 - 缓存不变性 / driver lazy init / 编译 / 子进程
+        # --------------------------------------------------------------
+        TestConfig(
+            # 同源码重新编译不产生新 cache, 验证 hash 稳定性
+            file_path=os.path.join(test_dir, "python/test/unit/runtime/test_cache.py"),
+            test_filter="test_nochange",
+        ),
+        TestConfig(
+            # driver lazy init 验证, 确保 backend 初始化不被提前触发
+            file_path=os.path.join(test_dir, "python/test/unit/runtime/test_driver.py"),
+            test_filter="test_is_lazy",
+        ),
+        TestConfig(
+            # 编译 C 扩展模块, 验证 build 基础设施可用
+            file_path=os.path.join(test_dir, "python/test/unit/runtime/test_build.py"),
+            test_filter="test_compile_module",
+        ),
+        TestConfig(
+            # 子进程编译 kernel, 验证 fork/spawn 安全
+            file_path=os.path.join(test_dir, "python/test/unit/runtime/test_subproc.py"),
+            test_filter="test_compile_in_subproc",
+        ),
+
+        # --------------------------------------------------------------
         # 基础设施 / 工具: linear layout 代数, filecheck 框架自检
         # --------------------------------------------------------------
         TestConfig(
@@ -336,6 +457,34 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
             # filecheck 正向 smoke test, 保证 IR 自检框架可用
             file_path=os.path.join(test_dir, "python/test/unit/test_filecheck.py"),
             test_filter="test_filecheck_positive",
+        ),
+
+        # --------------------------------------------------------------
+        # 工具层 - LinearLayout 代数 / IR source 解析
+        # --------------------------------------------------------------
+        TestConfig(
+            # LinearLayout.invert: 逆矩阵计算, 与 compose 互补
+            file_path=os.path.join(test_dir, "python/test/unit/tools/test_linear_layout.py"),
+            test_filter="test_invert",
+        ),
+        TestConfig(
+            # MLIR attribute 解析: 验证 IR source 工具链基础
+            file_path=os.path.join(test_dir, "python/test/unit/tools/test_irsource.py"),
+            test_filter="test_mlir_attribute_parsing",
+        ),
+
+        # --------------------------------------------------------------
+        # 基础设施 - knobs 配置 / 静态断言
+        # --------------------------------------------------------------
+        TestConfig(
+            # triton.knobs 工具函数: 配置系统的基础 smoke test
+            file_path=os.path.join(test_dir, "python/test/unit/test_knobs.py"),
+            test_filter="test_knobs_utils",
+        ),
+        TestConfig(
+            # tl.static_assert: 编译期断言, cond=True 正向验证
+            file_path=os.path.join(test_dir, "python/test/unit/test_debug.py"),
+            test_filter="test_static_assert[True]",
         ),
 
         # --------------------------------------------------------------
@@ -374,6 +523,93 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
             # AIU fp16 flash-attention: 验证 aiu_load + aiu_dot 在完整 attention kernel 中的协作
             file_path=os.path.join(test_dir, "python/test/unit/ppu/perf/06-fused-attention-aiu.py"),
             test_filter="test_op_fp16[True-1-2-1024-64]",
+        ),
+
+        # --------------------------------------------------------------
+        # PPU AIU - addmm: 覆盖 bias + matmul 融合 (alpha*AB + beta*bias)
+        # --------------------------------------------------------------
+        TestConfig(
+            # AIU addmm 最小块 32x32x32, scalar=0.001, 验证 fused bias-matmul
+            file_path=os.path.join(test_dir, "python/test/unit/ppu/aiu/test_aiu_addmm.py"),
+            test_filter="test_aiu_addmm[0.001-32-32-32-1024-1024-1024-1-2]",
+        ),
+
+        # --------------------------------------------------------------
+        # PPU AIU - binary: 覆盖 aiu_load 后的逐元素二元运算
+        # --------------------------------------------------------------
+        TestConfig(
+            # AIU 逐元素加法, 验证 aiu_load + add 路径
+            file_path=os.path.join(test_dir, "python/test/unit/ppu/aiu/test_aiu_binary.py"),
+            test_filter="test_aiu_binary[False-32-32-1024-1024-1-2-+]",
+        ),
+        TestConfig(
+            # AIU 逐元素乘法, 验证 aiu_load + mul 路径
+            file_path=os.path.join(test_dir, "python/test/unit/ppu/aiu/test_aiu_binary.py"),
+            test_filter="test_aiu_binary[False-32-32-1024-1024-1-2-*]",
+        ),
+
+        # --------------------------------------------------------------
+        # PPU AIU - dot fp8 / dot order: 覆盖 AIU fp8 精度和列主序路径
+        # --------------------------------------------------------------
+        TestConfig(
+            # AIU fp8 matmul + column-major order, 最小块 32x32x32
+            file_path=os.path.join(test_dir, "python/test/unit/ppu/aiu/test_aiu_dot_fp8_order.py"),
+            test_filter="test_aiu_matmul_fp8_with_order[32-32-32-512-512-512-2-2]",
+        ),
+        TestConfig(
+            # AIU dot + column-major layout (order=(0,1)), 最小块 32x32x32
+            file_path=os.path.join(test_dir, "python/test/unit/ppu/aiu/test_aiu_dot_order.py"),
+            test_filter="test_aiu_matmul[32-32-32-1024-1024-1024-1-2]",
+        ),
+
+        # --------------------------------------------------------------
+        # PPU AIU - tensor_ptr order: block-pointer + column-major layout
+        # --------------------------------------------------------------
+        TestConfig(
+            # block-pointer matmul + column-major, 验证 tl.make_block_ptr order 参数
+            file_path=os.path.join(test_dir, "python/test/unit/ppu/aiu/test_aiu_tensor_ptr_order.py"),
+            test_filter="test_aiu_matmul[32-32-32-1024-1024-1024-1-2]",
+        ),
+
+        # --------------------------------------------------------------
+        # PPU AIU - dot 扩展: mixed_load 和 small block 变体
+        # --------------------------------------------------------------
+        TestConfig(
+            # AIU matmul mixed_load=True: 普通 tl.load + aiu_load 混合
+            file_path=os.path.join(test_dir, "python/test/unit/ppu/aiu/test_aiu_dot.py"),
+            test_filter="test_aiu_matmul[True-32-32-32-1024-1024-1024-1-2]",
+        ),
+        TestConfig(
+            # AIU matmul small block 16x16x16, 覆盖极小 tile 路径
+            file_path=os.path.join(test_dir, "python/test/unit/ppu/aiu/test_aiu_dot.py"),
+            test_filter="test_aiu_matmul_small_block[False-16-16-16-128-128-128-1-2]",
+        ),
+
+        # --------------------------------------------------------------
+        # PPU models - FLA (Flash Linear Attention): chunk recurrence kernel
+        # --------------------------------------------------------------
+        TestConfig(
+            # FLA gated delta rule fwd kernel, blockdim=64, 端到端 RNN 递推
+            file_path=os.path.join(test_dir, "python/test/unit/ppu/models/test_fla_ops.py"),
+            test_filter="test_chunk_gated_delta_rule_fwd_kernel_h_blockdim64",
+        ),
+
+        # --------------------------------------------------------------
+        # PPU MXFP - blocked-scale MX 浮点 matmul (PPU0015 only)
+        # --------------------------------------------------------------
+        TestConfig(
+            # MXFP4 blocked-scale matmul, 128x128x128 块, PPU0015 特有路径
+            file_path=os.path.join(test_dir, "python/test/unit/ppu/mxfp/test_mxfp_matmul.py"),
+            test_filter="test_blocked_scale_mxfp4[False-1-128-128-128-1024-512-256]",
+        ),
+
+        # --------------------------------------------------------------
+        # PPU 端到端 - fused attention fp8: AIU 加速 fp8 精度 attention
+        # --------------------------------------------------------------
+        TestConfig(
+            # AIU fp8 flash-attention: 覆盖 fp8 量化 + aiu_load/dot 在 attention 中的配合
+            file_path=os.path.join(test_dir, "python/test/unit/ppu/perf/06-fused-attention-aiu.py"),
+            test_filter="test_op_fp8[True-1-2-1024-64]",
         ),
     ]
 
@@ -682,11 +918,6 @@ def collect_env_info() -> dict:
     try:
         import torch
         info["PyTorch"] = torch.__version__
-        if torch.cuda.is_available():
-            info["CUDA"] = torch.version.cuda or "N/A"
-            info["GPU Count"] = str(torch.cuda.device_count())
-            if torch.cuda.device_count() > 0:
-                info["GPU"] = torch.cuda.get_device_name(0)
     except ImportError:
         pass
     # Triton
@@ -699,7 +930,11 @@ def collect_env_info() -> dict:
     try:
         r = subprocess.run(["hgcc", "--version"], capture_output=True, text=True, timeout=10)
         if r.returncode == 0:
-            info["HGCC"] = r.stdout.strip().split("\n")[0]
+            first_line = r.stdout.strip().split("\n")[0]
+            # Extract version number: "hgcc(HGGC C/C++ Compiler) hgcc version X.Y.Z" -> "X.Y.Z"
+            import re
+            m = re.search(r"version\s+([\d][\w.\-]+)", first_line)
+            info["HGCC"] = m.group(1) if m else first_line
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
     # PPU SDK
@@ -707,6 +942,26 @@ def collect_env_info() -> dict:
         sdk_path = os.environ.get("PPU_SDK", "")
         if sdk_path:
             info["PPU SDK"] = sdk_path
+            # Read release.yaml for the actual SDK version/build info.
+            # Parse all top-level `key: value` pairs generically (no yaml dependency)
+            # so we capture whatever fields the SDK provides.
+            release_yaml = os.path.join(sdk_path, "release.yaml")
+            if os.path.isfile(release_yaml):
+                import re
+                with open(release_yaml) as f:
+                    for line in f:
+                        line = line.rstrip("\n")
+                        # skip comments, blank lines, list items and nested keys
+                        if not line.strip() or line.lstrip().startswith("#"):
+                            continue
+                        if line[0] in (" ", "\t", "-"):
+                            continue
+                        m = re.match(r"^([\w.\-]+)\s*:\s*(.+?)\s*$", line)
+                        if m:
+                            k = m.group(1).strip()
+                            v = m.group(2).strip().strip('"').strip("'")
+                            if v:
+                                info[f"PPU SDK {k}"] = v
     except Exception:
         pass
     return info

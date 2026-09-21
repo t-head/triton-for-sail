@@ -2,34 +2,114 @@
 """
 Generate GitHub Step Summary from JUnit XML test results.
 
-Usage:
-    python report_test_results.py --xml <path> [options]
+Supports two mutually-exclusive modes:
 
-Output is Markdown printed to stdout, intended to be appended to $GITHUB_STEP_SUMMARY.
+Mode A — single-board report (--xml):
+    python report_test_results.py --xml <path> [--title T] [--run-number N]
+        [--branch B] [--job-status S] [--duration D] [--pods P]
+        [--docker-image IMG] [--env-info JSON]
+
+    Prints: Title → 环境 table → single-row 概览 table → Failed Test Details
+    → collapsible All Test Cases.  Exit code 1 if any failures, 0 otherwise.
+
+Mode B — combined multi-board report (--result-root):
+    python report_test_results.py --result-root <dir> [--title T]
+        [--run-number N] [--branch B]
+
+    Auto-discovers board subdirs under <dir>, prints: Title → combined 概览
+    table (one row per board) → per-board sections (env + failures +
+    collapsible full list).  Exit code is always 0.
+
+Output is Markdown printed to stdout, intended to be appended to
+$GITHUB_STEP_SUMMARY.
 """
 
 import argparse
+import json
 import os
 import sys
 import xml.etree.ElementTree as ET
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Generate test result summary for GitHub Actions")
-    parser.add_argument("--xml", required=True, help="Path to JUnit XML result file")
-    parser.add_argument("--title", default="Triton PPU Test Results", help="Report title")
-    parser.add_argument("--run-number", default="", help="CI run number")
-    parser.add_argument("--branch", default="", help="Branch name")
-    parser.add_argument("--job-status", default="", help="Job status from ppu-scheduler-action")
-    parser.add_argument("--duration", default="", help="Job duration in seconds")
-    parser.add_argument("--pods", default="", help="Pod names")
-    parser.add_argument("--docker-image", default="", help="Docker image used")
-    parser.add_argument("--env-info", default="", help="Path to env info JSON file (sdk/torch versions)")
-    return parser.parse_args()
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+def _parse_xml(xml_path):
+    """Parse a JUnit XML and return (testcases_list, stats_dict) or None."""
+    if not os.path.isfile(xml_path):
+        return None
+    try:
+        tree = ET.parse(xml_path)
+    except ET.ParseError:
+        return None
+    root = tree.getroot()
+
+    total = fail = err = skip = 0
+    time_s = 0.0
+    for ts in root.findall(".//testsuite"):
+        total += int(ts.get("tests", 0))
+        fail += int(ts.get("failures", 0))
+        err += int(ts.get("errors", 0))
+        skip += int(ts.get("skipped", 0))
+        try:
+            time_s += float(ts.get("time", 0))
+        except (TypeError, ValueError):
+            pass
+
+    passed = total - fail - err - skip
+    stats = {
+        "total": total,
+        "passed": passed,
+        "failed": fail + err,
+        "skipped": skip,
+        "time": round(time_s, 1),
+    }
+
+    testcases = []
+    for tc in root.findall(".//testcase"):
+        f = tc.find("failure")
+        e = tc.find("error")
+        msg = ""
+        if f is not None:
+            status = "fail"
+            msg = (f.text or "")[:200]
+        elif e is not None:
+            status = "error"
+            msg = (e.text or "")[:200]
+        else:
+            status = "pass"
+        testcases.append(
+            {
+                "name": tc.get("name", "unknown"),
+                "classname": tc.get("classname", ""),
+                "time": tc.get("time", "?"),
+                "status": status,
+                "message": msg,
+            }
+        )
+    return testcases, stats
 
 
-def generate_report(args):
-    """Generate Markdown report from JUnit XML."""
+def _escape(text, max_len=120):
+    """Escape a message for use inside a Markdown table cell."""
+    return text.replace("\n", " ").replace("|", "\\|")[:max_len]
+
+
+def _status_icon(status):
+    if status == "fail":
+        return "❌"
+    if status == "error":
+        return "⚠️"
+    return "✅"
+
+
+# ---------------------------------------------------------------------------
+# Mode A — single-board report  (--xml)
+# ---------------------------------------------------------------------------
+
+def _report_single_board(args):
+    """Generate Markdown report from a single JUnit XML.  Returns 0/1."""
     # Title
     title = args.title
     if args.run_number:
@@ -42,7 +122,6 @@ def generate_report(args):
     # Environment info
     env_info = {}
     if args.env_info and os.path.isfile(args.env_info):
-        import json
         try:
             with open(args.env_info) as f:
                 env_info = json.load(f)
@@ -74,49 +153,39 @@ def generate_report(args):
         print("> ⚠️ Test result XML not found — check pod logs in step output above.")
         return 1
 
-    # Parse XML
-    tree = ET.parse(args.xml)
-    root = tree.getroot()
-
-    # Overview table
-    for ts in root.findall(".//testsuite"):
-        total = int(ts.get("tests", 0))
-        fail = int(ts.get("failures", 0))
-        err = int(ts.get("errors", 0))
-        skip = int(ts.get("skipped", 0))
-        passed = total - fail - err - skip
-        time_s = ts.get("time", "?")
-
+    # Parse XML (reuse shared helper)
+    parsed = _parse_xml(args.xml)
+    if parsed is None:
         print("## 概览")
         print()
-        print("| Total Cases | ✅ Passed | ❌ Failed | ⏭️ Skipped | ⏱️ Run Time |")
-        print("|-------------|----------|----------|-----------|------------|")
-        print(f"| {total} | {passed} | {fail + err} | {skip} | {time_s}s |")
-        print()
+        print("> ⚠️ Test result XML could not be parsed.")
+        return 1
+
+    testcases, stats = parsed
+
+    # Overview table — single-row format identical to original
+    print("## 概览")
+    print()
+    print("| Total Cases | ✅ Passed | ❌ Failed | ⏭️ Skipped | ⏱️ Run Time |")
+    print("|-------------|----------|----------|-----------|------------|")
+    print(f"| {stats['total']} | {stats['passed']} | {stats['failed']} | {stats['skipped']} | {stats['time']}s |")
+    print()
 
     # Failed test details
-    failures = []
-    for tc in root.findall(".//testcase"):
-        f = tc.find("failure")
-        e = tc.find("error")
-        if f is not None or e is not None:
-            msg = (f.text if f is not None else e.text) or ""
-            failures.append((tc.get("name", "?"), tc.get("time", "?"), msg[:200]))
+    failures = [tc for tc in testcases if tc["status"] in ("fail", "error")]
 
     print("## Failed Test Details")
     print()
     if failures:
         print("| Test | Time | Error |")
         print("|------|------|-------|")
-        for name, t, msg in failures:
-            msg_oneline = msg.replace("\n", " ").replace("|", "\\|")[:120]
-            print(f"| {name} | {t}s | {msg_oneline} |")
+        for tc in failures:
+            print(f"| {tc['name']} | {tc['time']}s | {_escape(tc['message'])} |")
     else:
         print("🎉 All tests passed — no failures to display.")
     print()
 
     # Full test list (collapsible)
-    testcases = root.findall(".//testcase")
     if testcases:
         print("<details>")
         print(f"<summary>📋 All Test Cases ({len(testcases)} tests)</summary>")
@@ -124,24 +193,168 @@ def generate_report(args):
         print("| Status | Test | Time |")
         print("|--------|------|------|")
         for tc in testcases:
-            f = tc.find("failure")
-            e = tc.find("error")
-            if f is not None:
-                icon = "❌"
-            elif e is not None:
-                icon = "⚠️"
-            else:
-                icon = "✅"
-            print(f'| {icon} | {tc.get("name", "unknown")} | {tc.get("time", "?")}s |')
+            print(f'| {_status_icon(tc["status"])} | {tc["name"]} | {tc["time"]}s |')
         print()
         print("</details>")
 
     return 0 if not failures else 1
 
 
+# ---------------------------------------------------------------------------
+# Mode B — combined multi-board report  (--result-root)
+# ---------------------------------------------------------------------------
+
+def _report_combined(args):
+    """Generate combined multi-board Markdown report.  Always returns 0."""
+    root_dir = args.result_root
+
+    # Title
+    title = args.title
+    if args.run_number:
+        title += f" #{args.run_number}"
+    if args.branch:
+        title += f" @ {args.branch}"
+    print(f"# {title}")
+    print()
+
+    # Discover boards
+    if not os.path.isdir(root_dir):
+        print(f"> ⚠️ No board results found under `{root_dir}`")
+        return 0
+
+    boards = sorted(
+        d
+        for d in os.listdir(root_dir)
+        if os.path.isdir(os.path.join(root_dir, d))
+    )
+    if not boards:
+        print(f"> ⚠️ No board results found under `{root_dir}`")
+        return 0
+
+    # Pre-parse all boards
+    board_data = {}  # board -> (testcases, stats) | None
+    for board in boards:
+        xml_path = os.path.join(root_dir, board, "test_result.xml")
+        board_data[board] = _parse_xml(xml_path)
+
+    # Combined overview table
+    print("## 概览")
+    print()
+    print("| Board | Total | ✅ Passed | ❌ Failed | ⏭️ Skipped | ⏱️ Run Time |")
+    print("|-------|-------|----------|----------|-----------|------------|")
+    for board in boards:
+        parsed = board_data[board]
+        if parsed is None:
+            print(f"| {board} | ⚠️ XML not found | | | | |")
+        else:
+            _, stats = parsed
+            print(
+                f"| {board} | {stats['total']} | {stats['passed']} "
+                f"| {stats['failed']} | {stats['skipped']} | {stats['time']}s |"
+            )
+    print()
+
+    # Per-board detail sections
+    for board in boards:
+        print(f"## {board}")
+        print()
+
+        # Environment info
+        env_path = os.path.join(root_dir, board, "env_info.json")
+        if os.path.isfile(env_path):
+            try:
+                with open(env_path) as f:
+                    env_info = json.load(f)
+                if env_info:
+                    print("| Item | Value |")
+                    print("|------|-------|")
+                    for key, val in env_info.items():
+                        print(f"| {key} | `{val}` |")
+                    print()
+            except Exception:
+                pass
+
+        parsed = board_data[board]
+        if parsed is None:
+            print("> ⚠️ Test result XML not found for this board.")
+            print()
+            continue
+
+        testcases, stats = parsed
+
+        # Failed test details
+        failures = [tc for tc in testcases if tc["status"] in ("fail", "error")]
+        if failures:
+            print("| Test | Time | Error |")
+            print("|------|------|-------|")
+            for tc in failures:
+                print(
+                    f"| {tc['name']} | {tc['time']}s "
+                    f"| {_escape(tc['message'])} |"
+                )
+        else:
+            print("🎉 All tests passed — no failures to display.")
+        print()
+
+        # Collapsible full test list
+        if testcases:
+            print("<details>")
+            print(f"<summary>📋 All Test Cases ({len(testcases)} tests)</summary>")
+            print()
+            print("| Status | Test | Time |")
+            print("|--------|------|------|")
+            for tc in testcases:
+                print(
+                    f"| {_status_icon(tc['status'])} "
+                    f"| {tc['name']} | {tc['time']}s |"
+                )
+            print()
+            print("</details>")
+            print()
+
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Generate test result summary for GitHub Actions (single-board or combined)"
+    )
+    # Mode A args
+    parser.add_argument("--xml", default=None, help="[Mode A] Path to JUnit XML result file")
+    parser.add_argument("--job-status", default="", help="[Mode A] Job status from ppu-scheduler-action")
+    parser.add_argument("--duration", default="", help="[Mode A] Job duration in seconds")
+    parser.add_argument("--pods", default="", help="[Mode A] Pod names")
+    parser.add_argument("--docker-image", default="", help="[Mode A] Docker image used")
+    parser.add_argument("--env-info", default="", help="[Mode A] Path to env info JSON file")
+    # Mode B args
+    parser.add_argument("--result-root", default=None, help="[Mode B] NAS directory containing per-board subdirectories")
+    # Shared args
+    parser.add_argument("--title", default="Triton PPU Test Results", help="Report title")
+    parser.add_argument("--run-number", default="", help="CI run number")
+    parser.add_argument("--branch", default="", help="Branch name")
+    return parser.parse_args()
+
+
 def main():
     args = parse_args()
-    sys.exit(generate_report(args))
+
+    if args.result_root is not None:
+        # Mode B — combined multi-board
+        try:
+            _report_combined(args)
+        except Exception as exc:
+            print(f"> ⚠️ Report generation error: {exc}", file=sys.stderr)
+        sys.exit(0)
+    elif args.xml is not None:
+        # Mode A — single-board
+        sys.exit(_report_single_board(args))
+    else:
+        print("Error: specify either --xml (single-board) or --result-root (combined).", file=sys.stderr)
+        sys.exit(2)
 
 
 if __name__ == "__main__":

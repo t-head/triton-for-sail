@@ -62,6 +62,6 @@ jobs:
             # echo '::set-output name=matrix-NVIDIA::["ubuntu-latest"]'
             # echo '::set-output name=matrix-AMD::["ubuntu-latest"]'
             # echo '::set-output name=matrix-MACOS::["macos-latest"]'
-            # PPU CI enabled
-            echo '::set-output name=matrix-PPU::["ZW-M890P"]'
+            # PPU CI enabled: run in parallel on 890P and 810E boards
+            echo '::set-output name=matrix-PPU::["ZW-M890P", "OAM-810E"]'
           fi
