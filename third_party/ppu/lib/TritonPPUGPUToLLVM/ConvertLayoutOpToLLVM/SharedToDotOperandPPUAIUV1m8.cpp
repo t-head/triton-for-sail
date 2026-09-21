@@ -287,7 +287,10 @@ std::function<void(int, int, int)> getLoadMatrixFnM8(
       Value shMemOffset =
           builder.add(shMemOffsetCopy,
                       builder.add(shMemOffsetAIUWarpW, shMemOffsetAIUWarpC));
-      smemBase = smemObj.getBaseBeforeSlice(order[0], loc, rewriter);
+      Value sliceOffset = smemObj.getOffsets()[order[0]];
+      smemBase = builder.gep(
+          smemObj.getBase().getType(), smemObj.getBaseElemType(),
+          smemObj.getBase(), builder.sub(builder.i32_val(0), sliceOffset));
       smemBase = builder.gep(smemObj.getBase().getType(),
                              smemObj.getBaseElemType(), smemBase, shMemOffset);
 
@@ -382,7 +385,10 @@ std::function<void(int, int, int)> getLoadMatrixFnM8(
           Value shMemOffset =
               builder.add(shMemOffsetCopy,
                           builder.add(shMemOffsetAIUWarpW, shMemOffsetAIUWarpC));
-          smemBase = smemObj.getBaseBeforeSlice(order[0], loc, rewriter);
+          Value sliceOffset = smemObj.getOffsets()[order[0]];
+          smemBase = builder.gep(
+              smemObj.getBase().getType(), smemObj.getBaseElemType(),
+              smemObj.getBase(), builder.sub(builder.i32_val(0), sliceOffset));
           smemBase =
               builder.gep(smemObj.getBase().getType(), smemObj.getBaseElemType(),
                           smemBase, shMemOffset);
@@ -542,7 +548,10 @@ std::function<void(int, int, int)> getLoadMatrixFn(
       Value shMemOffset =
           builder.add(shMemOffsetCopy,
                       builder.add(shMemOffsetAIUWarpW, shMemOffsetAIUWarpC));
-      smemBase = smemObj.getBaseBeforeSlice(order[0], loc, rewriter);
+      Value sliceOffset = smemObj.getOffsets()[order[0]];
+      smemBase = builder.gep(
+          smemObj.getBase().getType(), smemObj.getBaseElemType(),
+          smemObj.getBase(), builder.sub(builder.i32_val(0), sliceOffset));
       smemBase = builder.gep(smemObj.getBase().getType(),
                              smemObj.getBaseElemType(), smemBase, shMemOffset);
     } else {
