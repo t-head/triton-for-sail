@@ -89,7 +89,7 @@ jobs:
             echo "========================================="
             # env_info.json is now produced by run_checkin_tests.py --env-output
             # Copy test results and env info to NAS for runner to pick up
-            NAS_RESULT_DIR="/mnt/wl_nas/devops/triton-ci/${GITHUB_RUN_ID:-0}/${GITHUB_RUN_ATTEMPT:-1}"
+            NAS_RESULT_DIR="/mnt/wl_nas/devops/triton-ci/${{ github.run_id }}/${{ github.run_attempt }}"
             mkdir -p "$NAS_RESULT_DIR"
             cp test_result.xml "$NAS_RESULT_DIR/" 2>/dev/null || true
             cp env_info.json "$NAS_RESULT_DIR/" 2>/dev/null || true
