@@ -189,18 +189,8 @@ std::function<void(int, int, int)> getLoadMatrixFn(
     Value cube_w = builder.i32_val(cubeW);
     Value warp_c = builder.i32_val(aiuWarpCopyC);
 
-    // In order to support prefetch, we recover sememBase to orignal base
-    // before MemDescSubviewOp
-    auto smemObjStrides =
-        mlir::LLVM::PPU::getStrides(smemObj, descTy, loc, rewriter);
-
     auto smemObjOffsets = smemObj.getOffsets();
-    Value baseOffset = dot(rewriter, loc, smemObjOffsets, smemObjStrides);
-    baseOffset = builder.sub(builder.i32_val(0),
-                             baseOffset); // newBase = base - baseOffset
-    Value smemBase =
-        builder.gep(smemObj.getBase().getType(), smemObj.getBaseElemType(),
-                    smemObj.getBase(), baseOffset);
+    Value smemBase = smemObj.getBase();
 
     auto needTrans = kOrder != order[0];
     if (elemBytes == 1) {
