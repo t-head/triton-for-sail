@@ -149,3 +149,37 @@ def test_descriptor_trans_dot(num_stages, num_warps, M, K, N):
                           num_stages=num_stages, num_warps=num_warps)
     ref = A.float() @ B.float().T
     torch.testing.assert_close(C.float(), ref, atol=1.0, rtol=1e-2)
+
+
+@triton.jit
+def _descriptor_padded_stride(
+    input_ptr,
+    output_ptr,
+    ROWS: tl.constexpr,
+    COLS: tl.constexpr,
+    ROW_STRIDE: tl.constexpr,
+    BLOCK_ROWS: tl.constexpr,
+    BLOCK_COLS: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    blocks_per_row = tl.cdiv(COLS, BLOCK_COLS)
+    block_row = pid // blocks_per_row
+    block_col = pid % blocks_per_row
+    desc = tl.make_tensor_descriptor(input_ptr, shape=[ROWS, COLS], strides=[ROW_STRIDE, 1],
+                                     block_shape=[BLOCK_ROWS, BLOCK_COLS])
+    values = desc.load([block_row * BLOCK_ROWS, block_col * BLOCK_COLS])
+    offsets = (block_row * BLOCK_ROWS + tl.arange(0, BLOCK_ROWS))[:, None] * COLS
+    offsets += block_col * BLOCK_COLS + tl.arange(0, BLOCK_COLS)[None, :]
+    tl.store(output_ptr + offsets, values)
+
+
+def test_descriptor_padded_stride():
+    rows, cols, row_stride = 32, 32, 48
+    block_rows, block_cols = 16, 32
+    torch.manual_seed(42)
+    input = torch.randn((rows, row_stride), dtype=torch.bfloat16, device="cuda")
+    output = torch.empty((rows, cols), dtype=torch.bfloat16, device="cuda")
+    grid = (triton.cdiv(rows, block_rows) * triton.cdiv(cols, block_cols), )
+    _descriptor_padded_stride[grid](input, output, ROWS=rows, COLS=cols, ROW_STRIDE=row_stride,
+                                    BLOCK_ROWS=block_rows, BLOCK_COLS=block_cols)
+    torch.testing.assert_close(output, input[:, :cols], atol=0, rtol=0)

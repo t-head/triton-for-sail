@@ -1863,8 +1863,15 @@ class TritonSemantic(Generic[TensorTy]):
 
         promote_use_aiu = self.builder.options.backend_name == "ppu" and ndim == 2 and elem_size == 2
         if promote_use_aiu:
+            contiguous_shape = tl._unwrap_if_constexpr(shape[-1])
+            non_contiguous_stride = tl._unwrap_if_constexpr(strides[-2])
             non_contiguous_extent = tl._unwrap_if_constexpr(block_shape[-2])
-            promote_use_aiu = non_contiguous_extent % 16 == 0 and contig_dim_size * elem_size >= 32
+            has_dense_rows = contiguous_shape is non_contiguous_stride or (
+                isinstance(contiguous_shape, int) and isinstance(non_contiguous_stride, int)
+                and contiguous_shape == non_contiguous_stride
+            )
+            promote_use_aiu = (non_contiguous_extent % 16 == 0 and contig_dim_size * elem_size >= 32
+                               and has_dense_rows)
         if os.getenv("PPU_DISABLE_AIU_PROMOTION", "").upper() in {"ON", "1", "YES", "TRUE", "Y"}:
             promote_use_aiu = False
 
