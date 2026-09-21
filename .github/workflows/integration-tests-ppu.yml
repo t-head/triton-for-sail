@@ -100,7 +100,7 @@ jobs:
           cleanup_policy: on_success
 
       - name: Test summary
-        if: always()
+        if: ${{ !cancelled() }}
         shell: bash
         run: |
           NAS_RESULT_DIR="/wl_nas/devops/triton-ci/${{ github.run_id }}/${{ github.run_attempt }}/${{ matrix.runner }}"
@@ -118,7 +118,7 @@ jobs:
 
   ppu-results-summary:
     needs: integration-tests-ppu
-    if: always()
+    if: ${{ !cancelled() }}
     runs-on: k8s-runner-group-cpu-thead
     container:
       image: ghcr.io/actions/actions-runner:latest
@@ -126,7 +126,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Combined test summary
-        if: always()
+        if: ${{ !cancelled() }}
         shell: bash
         run: |
           NAS_ROOT="/wl_nas/devops/triton-ci/${{ github.run_id }}/${{ github.run_attempt }}"
