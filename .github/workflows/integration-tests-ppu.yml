@@ -35,7 +35,7 @@ jobs:
         id: ppu-test
         uses: t-head/ppu-scheduler-action@main
         with:
-          image: pytorch:2.10.0-ubuntu24.04-hggcrt3-py312-ppu202609181903
+          image: reg.docker.alibaba-inc.com/ai-tmp/pytorch:2.10.0-ubuntu24.04-hggcrt3-py312-ppu202609181903
           nnodes: 0
           nproc_per_node: 1
           node_selector: "board-type=${{ matrix.runner }}"
