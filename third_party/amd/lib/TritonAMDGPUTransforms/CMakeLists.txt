@@ -5,6 +5,7 @@ add_triton_library(TritonAMDGPUTransforms
   CoalesceAsyncCopy.cpp
   ConvertToBufferOps.cpp
   ConvertToTensorOps.cpp
+  OptimizeBufferOpPtr.cpp
   OptimizeEpilogue.cpp
   OptimizeDotOperands.cpp
   HoistLayoutConversions.cpp
@@ -18,6 +19,7 @@ add_triton_library(TritonAMDGPUTransforms
   WmmaGroup.cpp
   InThreadTranspose.cpp
   FoldTrueCmpIOp.cpp
+  FpSanitizer.cpp
   UpdateAsyncWaitCount.cpp
   Utility.cpp
   WarpPipeliner.cpp

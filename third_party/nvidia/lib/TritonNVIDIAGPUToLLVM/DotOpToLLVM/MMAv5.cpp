@@ -22,6 +22,8 @@ DotOpMmaV5TmemLoader mlir::triton::NVIDIA::DotOpMmaV5TmemLoader::build(
     Location loc, RewriterBase &rewriter, gpu::MemDescType memTy,
     Value tmemBase) {
   auto ctx = loc.getContext();
+  // We take the full layout even when it is a subview
+  // We'll just iterate the real shape when calling tmemLoad tho
   auto ll = toLinearLayout(memTy);
   auto layout = cast<ttng::TensorMemoryEncodingAttr>(memTy.getEncoding());
   auto bitwidth = memTy.getElementTypeBitWidth();
@@ -107,7 +109,7 @@ static Value createInstDescriptor(ConversionPatternRewriter &rewriter,
       uint32_t shift : 2;
     };
   };
-  auto getTypeEncoding = [](Type type) {
+  auto getTypeEncoding = [&](Type type) {
     if (type.isF16())
       return 0;
     if (type.isBF16())
@@ -118,6 +120,10 @@ static Value createInstDescriptor(ConversionPatternRewriter &rewriter,
       return 0;
     if (llvm::isa<Float8E5M2Type>(type))
       return 1;
+    // For 8-bit integer types, signed arithmetic is 1, unsigned arithmetic is
+    // 0.
+    if (type.isInteger(8))
+      return op.getIsUnsigned() ? 0 : 1;
     llvm_unreachable("Unsupported type.");
   };
   static_assert(sizeof(TCGen5InstructionDescriptor) == 4,
@@ -131,8 +137,12 @@ static Value createInstDescriptor(ConversionPatternRewriter &rewriter,
   desc.aType = getTypeEncoding(op.getA().getType().getElementType());
   desc.bType = getTypeEncoding(op.getB().getType().getElementType());
   Type dstElType = op.getD().getType().getElementType();
-  assert(dstElType.isF16() || dstElType.isF32());
-  desc.dType = dstElType.isF16() ? 0 : 1;
+  assert(dstElType.isF16() || dstElType.isF32() || dstElType.isInteger(32));
+  if (dstElType.isInteger(32)) {
+    desc.dType = 2;
+  } else {
+    desc.dType = dstElType.isF16() ? 0 : 1;
+  }
   return b.int_val(32, desc.descriptor);
 }
 
@@ -239,14 +249,19 @@ static void createGen5MMA(ConversionPatternRewriter &rewriter, Location loc,
   std::string opcode =
       "tcgen05.mma.cta_group::" + std::to_string(twoCTAs ? 2 : 1) + ".kind::";
   Type srcElementTy = op.getA().getType().getElementType();
-  if (srcElementTy.isF16() || srcElementTy.isBF16())
+  if (srcElementTy.isF16() || srcElementTy.isBF16()) {
     opcode += "f16";
-  else if (srcElementTy.isF32())
+  } else if (srcElementTy.isF32()) {
     opcode += "tf32";
-  else if (llvm::isa<Float8E4M3FNType, Float8E5M2Type>(srcElementTy))
+  } else if (llvm::isa<Float8E4M3FNType, Float8E5M2Type>(srcElementTy)) {
     opcode += "f8f6f4";
-  else
+  } else if (op.getD().getType().getElementType().isInteger(32)) {
+    // PTX uses "i8" for integer operations (both signed and unsigned)
+    // The signed/unsigned distinction is encoded in the instruction descriptor
+    opcode += "i8";
+  } else {
     assert(0 && "Unsupported type.");
+  }
   auto *accOp = ptxBuilder.newAddrOperand(d.base, "r", *d.offset);
   assert(a.offset.has_value() == aInTMem);
   auto *aOp = aInTMem ? ptxBuilder.newAddrOperand(a.base, "r", *a.offset)
@@ -394,9 +409,7 @@ LogicalResult convertDotImpl(const LLVMTypeConverter &typeConverter,
   Value warpId = mlir::triton::gpu::WarpIdOp::create(rewriter, loc);
   Value isWarp0 = tb.icmp_eq(warpId, tb.i32_val(0));
   if (twoCTAs) {
-    Value leftClusterId = nvgpu::ClusterCTAIdOp::create(rewriter, loc);
-    leftClusterId = tb.and_(leftClusterId, tb.i32_val(1));
-    Value cluster0 = tb.icmp_eq(leftClusterId, tb.i32_val(0));
+    Value cluster0 = LLVM::NVIDIA::createLeadCTAPredicate(loc, rewriter);
     pred = tb.and_(pred, cluster0);
   }
   pred = tb.and_(pred, isWarp0);
@@ -429,7 +442,8 @@ LogicalResult convertDotImpl(const LLVMTypeConverter &typeConverter,
   auto tensorMemAttr =
       cast<ttng::TensorMemoryEncodingAttr>(dTensorTy.getEncoding());
   unsigned mmaSizeM = tensorMemAttr.getBlockM();
-  unsigned mmaSizeN = tensorMemAttr.getBlockN();
+  // Account for subslices
+  unsigned mmaSizeN = std::min<unsigned>(tensorMemAttr.getBlockN(), N);
   // Checked in the verifier
   assert(mmaSizeN <= 256 &&
          "The maximum size of an MMA instruction is 128x256");
@@ -622,9 +636,13 @@ LogicalResult convertScaledDot(const LLVMTypeConverter &typeConverter,
 
   DotConversion dot;
 
-  dot.shape.M = op.getBlockM();
-  dot.shape.N = op.getBlockN();
-  dot.shape.K = op.getBlockK();
+  // Use per-CTA shape to correctly handle 2-CTA mode. getBlockM/N() returns
+  // the full block shape (e.g., 256 for 2-CTA), but we need the per-CTA shape
+  // (e.g., 128) to compute the correct number of MMA repetitions.
+  SmallVector<int64_t> dstPerCTA = triton::gpu::getShapePerCTA(dTensorTy);
+  dot.shape.M = dstPerCTA[0];
+  dot.shape.N = dstPerCTA[1];
+  dot.shape.K = op.getBlockK(); // K is not split across CTAs
   dot.mmaSizeK = !opKindIsMXFP4 ? 32 : 64;
 
   dot.shapeA = triton::gpu::getAllocationShapePerCTA(aTensorTy);
@@ -676,9 +694,12 @@ LogicalResult convertScaledDot(const LLVMTypeConverter &typeConverter,
         baseScaleA, tb.i32_val((m + wordIdx * numRepM) * numColPerScaleBlockA));
     Value scaleB = tb.add(
         baseScaleB, tb.i32_val((n + wordIdx * numRepN) * numColPerScaleBlockB));
+    // For 2CTA mode, the M dimension in the instruction descriptor must be
+    // doubled to match the hardware's expectation for cta_group::2 operations.
     Value instDescriptor = createScaleInstDescriptor(
-        rewriter, op, desc.mmaSizeM, desc.mmaSizeN, desc.transA, desc.transB,
-        subWordIdx, subWordIdx, mxfpInstKind);
+        rewriter, op, twoCTAs ? desc.mmaSizeM * 2 : desc.mmaSizeM,
+        desc.mmaSizeN, desc.transA, desc.transB, subWordIdx, subWordIdx,
+        mxfpInstKind);
     createScaledGen5MMA(rewriter, loc, op, a, b, accAddress, scaleA, scaleB,
                         pred, instDescriptor, useInitAcc, desc.aInTmem,
                         mxfpInstKind, twoCTAs);
@@ -746,9 +767,7 @@ struct TCGen5CommitOpConversion
 
     bool twoCTAs = ttng::getModuleTwoCTAs(op);
     if (twoCTAs) {
-      Value leftClusterId = nvgpu::ClusterCTAIdOp::create(rewriter, loc);
-      leftClusterId = b.and_(leftClusterId, b.i32_val(1));
-      Value cluster0 = b.icmp_eq(leftClusterId, b.i32_val(0));
+      Value cluster0 = LLVM::NVIDIA::createLeadCTAPredicate(loc, rewriter);
       pred = b.and_(pred, cluster0);
     }
 

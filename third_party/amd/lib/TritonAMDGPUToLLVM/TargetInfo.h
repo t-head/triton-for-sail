@@ -22,6 +22,8 @@ public:
 
   int getSharedMemorySize() const;
 
+  size_t getSharedMemoryPartitionSize() const override;
+
   bool supportMaximumMinimum() const override;
 
   bool supportDppBroadcast() const;
@@ -33,6 +35,7 @@ public:
 
   void barrier(Location loc, RewriterBase &rewriter,
                triton::gpu::AddrSpace targets) const override;
+  void clusterBarrier(Location loc, RewriterBase &rewriter) const override;
 
   void warpSync(Location loc, RewriterBase &rewriter) const override;
 
@@ -74,8 +77,8 @@ public:
                   ProgramIDDim axis) const override;
 
   bool warpReduce(RewriterBase &rewriter, Location loc, SmallVector<Value> &acc,
-                  triton::ReduceOp op, unsigned numLaneToReduce,
-                  unsigned interleave) const override;
+                  triton::ReduceOp op,
+                  unsigned reduceLaneIdMask) const override;
 
   std::string getMulhiFuncName(Type resultElementTy) const override;
 
@@ -95,6 +98,9 @@ public:
 
   bool supportVectorizedAtomics() const override;
 
+  bool supportBitwidth16Elementwise() const override;
+  bool supportBitwidth32Elementwise() const override;
+
   // Returns true if the target supports per lane addresses into LDS for
   // direct-to-lds loads. Some architectures (e.g. GFX9) do not support
   // scattering and instead have to write warp coalesced into LDS
@@ -107,14 +113,34 @@ public:
   bool requiresAliasInfoForAsyncOps() const;
   bool supportsDirectToLdsLoadBitWidth(int bitWidth) const;
   bool supportsDirectFromLdsStoreBitWidth(int bitWidth) const;
+  bool supportsBufferLoadToLocal() const;
 
   bool supportsMultiCTALaunch() const;
   bool supportsTDM() const;
   bool supportsClusterLoadBitWidth(int biwWidth) const;
 
+  // Whether this target supports buffer atomic read-modify-write (RMW)
+  // operations. This gates all buffer RMW conversions (BUFFER_ATOMIC_ADD,
+  // _AND, _OR, _XOR, _UMIN, _UMAX, _SWAP, _ADD_F32, _PK_ADD_F16, etc.).
+  // CAS (BUFFER_ATOMIC_CMPSWAP) is handled separately.
+  bool supportsBufferAtomicRMW() const;
+  // Additional per-type gate for buffer atomic FADD. Integer RMW ops (ADD,
+  // AND, etc.) work on i32/i64 universally, but float FADD has ISA-specific
+  // type restrictions for BUFFER_ATOMIC_ADD_{F32,F64} and
+  // BUFFER_ATOMIC_PK_ADD_{F16,BF16}:
+  //   - CDNA3 (gfx942): no BUFFER_ATOMIC_PK_ADD_BF16
+  //   - RDNA4: no BUFFER_ATOMIC_ADD_F64
+  //   - CDNA4, GFX1250: all float types supported (GFX1250 adds PK_ADD_BF16)
+  bool supportsBufferAtomicFadd(mlir::Type elementType) const;
+  // Returns the cache policy (cpol) immediate for buffer atomic instructions.
+  // When hasUsers is true, sets SC0/TH_ATOMIC_RETURN to return pre-op value.
+  // On gfx1250, also sets SCOPE_DEV for device-wide visibility.
+  int32_t getBufferAtomicCachePolicy(bool hasUsers) const;
+
   bool supportsWaveId() const;
   bool supportsPermlaneSwap() const;
   bool supportsCvtPkScalePk8() const;
+  bool supportsHwScaledUpcast() const;
 
   void localLoadOpAnnotation(triton::gpu::LocalLoadOp localLoadOp,
                              Operation *llLoadOp) const override;

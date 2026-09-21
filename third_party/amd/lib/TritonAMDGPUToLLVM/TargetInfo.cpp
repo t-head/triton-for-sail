@@ -1,4 +1,5 @@
 #include "TargetInfo.h"
+#include "Dialect/TritonAMDGPU/IR/Dialect.h"
 #include "TritonAMDGPUToLLVM/GCNAsmFormat.h"
 #include "TritonAMDGPUToLLVM/TargetUtils.h"
 #include "Utility.h"
@@ -71,6 +72,7 @@ llvm::AMDGPU::GPUKind TargetInfo::getGPUKind() const {
 
 int TargetInfo::getWarpSize() const {
   switch (getISAFamily()) {
+  case ISAFamily::GCN5_1:
   case ISAFamily::CDNA1:
   case ISAFamily::CDNA2:
   case ISAFamily::CDNA3:
@@ -85,7 +87,7 @@ int TargetInfo::getWarpSize() const {
 }
 
 int TargetInfo::getSharedMemorySize() const {
-  // Should return the maximum capacity in kbyte
+  // Should return the maximum capacity in bytes
   switch (getISAFamily()) {
   case ISAFamily::GFX1250:
     return 320 * 1024;
@@ -93,6 +95,16 @@ int TargetInfo::getSharedMemorySize() const {
     return 160 * 1024;
   default:
     return 64 * 1024;
+  }
+}
+
+size_t TargetInfo::getSharedMemoryPartitionSize() const {
+  switch (getISAFamily()) {
+  case ISAFamily::GFX1250:
+    return 64 * 1024;
+  default:
+    // No partitioning on other targets
+    return 0;
   }
 }
 
@@ -106,10 +118,8 @@ Value TargetInfo::getClusterCTAId(RewriterBase &rewriter, Location loc) const {
     return arith::ConstantIntOp::create(rewriter, loc, 0, 32);
 
   // We dispatch only along x; return the workgroup id x
-  return LLVM::createLLVMIntrinsicCallOp(rewriter, loc,
-                                         "llvm.amdgcn.cluster.workgroup.id.x",
-                                         {rewriter.getI32Type()}, {})
-      .getResult(0);
+  return ROCDL::ClusterWorkgroupIdXOp::create(rewriter, loc,
+                                              rewriter.getI32Type());
 }
 
 Value TargetInfo::ballot(RewriterBase &rewriter, Location loc, Type type,
@@ -121,6 +131,11 @@ void TargetInfo::barrier(Location loc, RewriterBase &rewriter,
                          triton::gpu::AddrSpace targets) const {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   b.barrier(targets);
+}
+
+void TargetInfo::clusterBarrier(Location loc, RewriterBase &rewriter) const {
+  triton::amdgpu::ClusterBarrierArriveOp::create(rewriter, loc);
+  triton::amdgpu::ClusterBarrierWaitOp::create(rewriter, loc);
 }
 
 void TargetInfo::warpSync(Location loc, RewriterBase &rewriter) const {
@@ -303,11 +318,11 @@ static Value permuteAndReduce(RewriterBase &rewriter, Location loc,
 // threads. The output acc has the final accumulated values.
 //
 // Two special cases are supported:
-// When numLaneToReduce == 2 && interleave == 32:
+// When reduceLaneIdMask == 32:
 //   step 1: use permlane32_swap() to swap the row 2 and 3 of acc and
 //           the row 0 and 1 of the copy of acc
 //   step 2: apply reduction to the result values to get final result
-// When numLaneToReduce == 4 && interleave == 16:
+// When reduceLaneIdMask == (16 | 32):
 //   step 1: use permlane32_swap() to swap the row 2 and 3 of acc and
 //           the row 0 and 1 of the copy of acc
 //   step 2: apply reduction to the result values to get the partial result
@@ -316,14 +331,13 @@ static Value permuteAndReduce(RewriterBase &rewriter, Location loc,
 //   step 4: apply reduction to get the final results
 static bool warpReduceSwap16or32(RewriterBase &rewriter, Location loc,
                                  SmallVector<Value> &acc, triton::ReduceOp op,
-                                 unsigned numLaneToReduce,
-                                 unsigned interleave) {
+                                 unsigned reduceLaneIdMask) {
   Operation *reduxOp = op.getSingleCombiner();
   if (!reduxOp)
     return false;
 
-  bool mfma32Case = numLaneToReduce == 2 && interleave == 32;
-  bool mfma16Case = numLaneToReduce == 4 && interleave == 16;
+  bool mfma32Case = reduceLaneIdMask == 32;
+  bool mfma16Case = reduceLaneIdMask == (16 | 32);
   if (!(mfma32Case || mfma16Case))
     return false;
 
@@ -348,12 +362,12 @@ static bool warpReduceSwap16or32(RewriterBase &rewriter, Location loc,
 
 static bool warpReduceSwap16(RewriterBase &rewriter, Location loc,
                              SmallVector<Value> &acc, triton::ReduceOp op,
-                             unsigned numLaneToReduce, unsigned interleave) {
+                             unsigned reduceLaneIdMask) {
   Operation *reduxOp = op.getSingleCombiner();
   if (!reduxOp)
     return false;
 
-  bool mfma16Case = numLaneToReduce == 2 && interleave == 16;
+  bool mfma16Case = reduceLaneIdMask == 16;
   if (!mfma16Case)
     return false;
 
@@ -371,22 +385,21 @@ static bool warpReduceSwap16(RewriterBase &rewriter, Location loc,
 
 bool TargetInfo::warpReduce(RewriterBase &rewriter, Location loc,
                             SmallVector<Value> &acc, triton::ReduceOp op,
-                            unsigned numLaneToReduce,
-                            unsigned interleave) const {
+                            unsigned reduceLaneIdMask) const {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
 
   if (getISAFamily() == ISAFamily::CDNA4 &&
-      warpReduceSwap16or32(rewriter, loc, acc, op, numLaneToReduce, interleave))
+      warpReduceSwap16or32(rewriter, loc, acc, op, reduceLaneIdMask))
     return true;
   if ((getISAFamily() == ISAFamily::GFX1250) &&
-      warpReduceSwap16(rewriter, loc, acc, op, numLaneToReduce, interleave))
+      warpReduceSwap16(rewriter, loc, acc, op, reduceLaneIdMask))
     return true;
-  if (numLaneToReduce != getWarpSize())
+  if (reduceLaneIdMask != (getWarpSize() - 1))
     return false;
-  if (isCDNA(getISAFamily()) && getISAFamily() == ISAFamily::CDNA1)
-    return false;
-  if (isRDNA(getISAFamily()) &&
-      llvm::is_contained({ISAFamily::RDNA1, ISAFamily::RDNA2}, getISAFamily()))
+  // DPP warp reduce requires gfx90a+ (CDNA2+) or gfx11+ (RDNA3+).
+  // Pre-CDNA2 GFX9 (gfx906/gfx908) and GFX10 (RDNA1/2) are excluded.
+  auto v = getIsaVersion();
+  if (!((v.Major == 9 && (v.Minor > 0 || v.Stepping >= 0xa)) || v.Major >= 11))
     return false;
 
   Operation *reduxOp = op.getSingleCombiner();
@@ -496,7 +509,6 @@ bool TargetInfo::warpReduce(RewriterBase &rewriter, Location loc,
           valType, buf, static_cast<uint32_t>(DppCtrl::BCAST31), allRows,
           allBanks);
     } else {
-      // RDNA doesn't have broadcast dpp mode
       Type actualType = castToAndSExtInt(rewriter, loc, buf, valType, 32);
 
       // Lanes 0-15 read from lane 31 and lanes 16-31 read from lane 15.
@@ -662,6 +674,20 @@ bool TargetInfo::supportVectorizedAtomics() const {
   return true;
 }
 
+bool TargetInfo::supportBitwidth16Elementwise() const { return true; }
+
+bool TargetInfo::supportBitwidth32Elementwise() const {
+  switch (getISAFamily()) {
+  case ISAFamily::CDNA2:
+  case ISAFamily::CDNA3:
+  case ISAFamily::CDNA4:
+  case ISAFamily::GFX1250:
+    return true;
+  default:
+    return false;
+  }
+}
+
 bool TargetInfo::supportsDirectToLDSScattering() const {
   switch (getISAFamily()) {
   case ISAFamily::GFX1250:
@@ -722,6 +748,37 @@ bool TargetInfo::supportsDirectFromLdsStoreBitWidth(int bitWidth) const {
   return false;
 }
 
+bool TargetInfo::supportsBufferLoadToLocal() const {
+  return llvm::is_contained({ISAFamily::CDNA3, ISAFamily::CDNA4},
+                            getISAFamily());
+}
+
+bool TargetInfo::supportsBufferAtomicRMW() const {
+  return llvm::is_contained({ISAFamily::CDNA3, ISAFamily::CDNA4,
+                             ISAFamily::RDNA4, ISAFamily::GFX1250},
+                            getISAFamily());
+}
+
+bool TargetInfo::supportsBufferAtomicFadd(mlir::Type elementType) const {
+  auto isaFamily = getISAFamily();
+  if (isaFamily == ISAFamily::CDNA3 && elementType.isBF16())
+    return false;
+  if (isaFamily == ISAFamily::RDNA4 && elementType.isF64())
+    return false;
+  return true;
+}
+
+int32_t TargetInfo::getBufferAtomicCachePolicy(bool hasUsers) const {
+  const int sc0Bit = 0b1;          // TH_ATOMIC_RETURN (cpol bit 0)
+  const int scopeDevBit = 0b10000; // SCOPE_DEV = 2 << 3 (cpol bits [4:3])
+  int32_t aux = 0;
+  if (hasUsers)
+    aux |= sc0Bit;
+  if (getISAFamily() == ISAFamily::GFX1250)
+    aux |= scopeDevBit;
+  return aux;
+}
+
 bool TargetInfo::supportsWaveId() const {
   return getISAFamily() == ISAFamily::RDNA4 ||
          getISAFamily() == ISAFamily::GFX1250;
@@ -736,6 +793,11 @@ bool TargetInfo::supportsCvtPkScalePk8() const {
   return getISAFamily() == ISAFamily::GFX1250;
 }
 
+bool TargetInfo::supportsHwScaledUpcast() const {
+  return getISAFamily() == ISAFamily::CDNA4 ||
+         getISAFamily() == ISAFamily::GFX1250;
+}
+
 void TargetInfo::localLoadOpAnnotation(triton::gpu::LocalLoadOp localLoadOp,
                                        Operation *llLoadOp) const {
   if (requiresAliasInfoForAsyncOps())
@@ -744,6 +806,7 @@ void TargetInfo::localLoadOpAnnotation(triton::gpu::LocalLoadOp localLoadOp,
 
 bool TargetInfo::supportDppBroadcast() const {
   switch (getISAFamily()) {
+  case ISAFamily::GCN5_1:
   case ISAFamily::CDNA1:
   case ISAFamily::CDNA2:
   case ISAFamily::CDNA3:

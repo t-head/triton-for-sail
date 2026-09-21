@@ -362,6 +362,8 @@ def BufferLoadToLocalOp : TT_AMDGPU_Op<"buffer_load_to_local", [
     );
     let results = (outs TTG_AsyncToken:$token);
 
+    let hasVerifier = 1;
+
     let assemblyFormat = [{
       $ptr `[` $offsets `]` (`mask` `=` $mask^)? (`other` `=` $other^)? (`stride` `=` $stride^)?
       oilist(`cacheModifier` `=` $cache) `into` $dest
@@ -505,38 +507,6 @@ def BufferStoreOp : TT_AMDGPU_Op<"buffer_store", [
       (`stride` `=` $stride^)?
       attr-dict `:` type($value)
     }];
-}
-
-//===----------------------------------------------------------------------===//
-// UpcastMXFPOp
-//===----------------------------------------------------------------------===//
-
-def TTG_UpcastMXFPOp : TT_AMDGPU_Op<"upcast_mxfp", [Pure]> {
-  let summary = "Convert an mxfp tensor to bf16/fp16";
-
-  let hasVerifier = 1;
-
-  let description = [{
-    Compute the bf16 encoded in the given mxfp number as per
-    https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf
-  }];
-  let arguments = (
-    ins
-    TT_Tensor:$src,
-    TT_Tensor:$scale,
-    TT_ScaleDotElemTypeAttr:$fp_type,
-    BoolAttr:$fastMath
-  );
-  let results = (outs TT_Tensor:$result);
-
-  let assemblyFormat = [{
-    $src `,` $scale  `fp_type` `=` $fp_type attr-dict `:` type($src) `,` type($scale) `->` type($result)
-  }];
-
-  let extraClassDeclaration = [{
-    static RankedTensorType deduceOutputType(
-        TypedValue<RankedTensorType> inputTensor, ScaleDotElemType inputElemType, Type outputElemType);
-  }];
 }
 
 //===----------------------------------------------------------------------===//
@@ -780,7 +750,7 @@ def AsyncTDMCopyGlobalToLocalOp : TT_AMDGPU_Op<"async_tdm_copy_global_to_local",
     Variadic<I32>:$indices,
     Arg<TTG_MemDescType, "", [MemWrite<SharedMemory>]>:$result,
     I32:$pred,
-    Optional<TTG_MemDescType>:$barrier
+    Arg<Optional<TTG_MemDescType>, "", [MemWrite<SharedMemory>]>:$barrier
   );
 
   let results = (outs TTG_AsyncToken:$token);
@@ -820,7 +790,7 @@ def AsyncTDMCopyLocalToGlobalOp : TT_AMDGPU_Op<"async_tdm_copy_local_to_global",
     Arg<TT_TensorDescType, "", [MemWrite<GlobalMemory>]>:$desc,
     Variadic<I32>:$indices,
     Arg<TTG_MemDescType, "", [MemRead<SharedMemory>]>:$src,
-    Optional<TTG_MemDescType>:$barrier
+    Arg<Optional<TTG_MemDescType>, "", [MemWrite<SharedMemory>]>:$barrier
   );
 
   let assemblyFormat = [{
@@ -859,7 +829,7 @@ def AsyncTDMScatterOp : TT_AMDGPU_Op<"async_tdm_scatter"> {
     TensorOf<[I16, I32]>:$dst_row_indices,
     I32:$dst_col_offset,
     Arg<TTG_MemDescType, "", [MemRead<SharedMemory>]>:$src,
-    Optional<TTG_MemDescType>:$barrier
+    Arg<Optional<TTG_MemDescType>, "", [MemWrite<SharedMemory>]>:$barrier
   );
   let results = (outs TTG_AsyncToken:$retToken);
 
@@ -899,7 +869,7 @@ def AsyncTDMGatherOp : TT_AMDGPU_Op<"async_tdm_gather"> {
     TensorOf<[I16, I32]>:$src_row_indices,
     I32:$src_col_offset,
     Arg<TTG_MemDescType, "", [MemWrite<SharedMemory>]>:$dst,
-    Optional<TTG_MemDescType>:$barrier
+    Arg<Optional<TTG_MemDescType>, "", [MemWrite<SharedMemory>]>:$barrier
   );
   let results = (outs TTG_AsyncToken:$token);
 

@@ -43,8 +43,6 @@ void init_triton_passes_ttir(py::module &&m) {
   using namespace mlir::triton;
   ADD_PASS_WRAPPER_0("add_combine", createTritonCombineOps);
   ADD_PASS_WRAPPER_0("add_reorder_broadcast", createTritonReorderBroadcast);
-  ADD_PASS_WRAPPER_0("add_rewrite_tensor_pointer",
-                     createTritonRewriteTensorPointer);
   ADD_PASS_WRAPPER_0("add_rewrite_tensor_descriptor_to_pointer",
                      createTritonRewriteTensorDescriptorToPointer);
   ADD_PASS_WRAPPER_0("add_loop_unroll", createTritonLoopUnroll);
@@ -95,8 +93,12 @@ void init_triton_passes_ttgpuir(py::module &&m) {
                      createTritonGPUCoalesceAsyncCopy);
   ADD_PASS_WRAPPER_0("add_concurrency_sanitizer",
                      createTritonInstrumentConcurrencySanitizer);
+  ADD_PASS_WRAPPER_0("add_fp_sanitizer", createTritonInstrumentFpSanitizer);
   ADD_PASS_WRAPPER_0("add_optimize_partition_warps",
                      createTritonGPUOptimizePartitionWarps);
+  m.def("add_canonicalize_llvm_ir", [](mlir::PassManager &pm) {
+    pm.addNestedPass<mlir::LLVM::LLVMFuncOp>(createCanonicalizeLLVMIR());
+  });
 }
 
 void init_plugin_passes(py::module &&m) {
@@ -113,13 +115,16 @@ void init_plugin_passes(py::module &&m) {
   for (unsigned i = 0; i < passNames.size(); ++i) {
     const char *passName = passNames.data()[i];
 
-    m.def(passName, [passName](mlir ::PassManager &pm) {
-      std::string filename =
-          mlir::triton::tools::getStrEnv("TRITON_PASS_PLUGIN_PATH");
-      TritonPlugin TP(filename);
-      if (auto result = TP.addPass(&pm, passName); !result)
-        throw TP.err2exp(result.takeError());
-    });
+    m.def(
+        passName,
+        [passName](mlir ::PassManager &pm, std::vector<std::string> args) {
+          std::string filename =
+              mlir::triton::tools::getStrEnv("TRITON_PASS_PLUGIN_PATH");
+          TritonPlugin TP(filename);
+          if (auto result = TP.addPass(&pm, passName, args); !result)
+            throw TP.err2exp(result.takeError());
+        },
+        py::arg("pm"), py::arg("args") = std::vector<std::string>());
   }
 }
 

@@ -30,6 +30,14 @@ namespace gpu {
 
 namespace {
 
+static bool isUnsupportedMMAv5Int8Dot(int computeCapability, DotOp op) {
+  if (computeCapability != 103)
+    return false;
+  auto aElemTy = op.getA().getType().getElementType();
+  auto bElemTy = op.getB().getType().getElementType();
+  return aElemTy.isInteger(8) && bElemTy.isInteger(8);
+}
+
 // Get the highest version supported for the hardware and the dot.
 static int getMMAVersionSafe(int computeCapability, DotOp op) {
   // List supported mma version in order of preference.
@@ -42,7 +50,11 @@ static int getMMAVersionSafe(int computeCapability, DotOp op) {
     versionsSupported = {3, 2};
   } else if (computeCapability < 120) {
     // Exclude consumer Blackwell (sm120)
-    versionsSupported = {5, 2};
+    if (isUnsupportedMMAv5Int8Dot(computeCapability, op)) {
+      versionsSupported = {2};
+    } else {
+      versionsSupported = {5, 2};
+    }
   } else if (computeCapability < 130) {
     versionsSupported = {2};
   } else {
@@ -567,20 +579,19 @@ public:
     MLIRContext *context = dotOp->getContext();
     auto instrShape = mmaVersionToInstrShape(
         versionMajor, retShapePerCTA, oldAType.getElementType(), numWarps);
-    auto CTASplitNum = CGALayout.getCTASplitNum();
     auto bitwidth = oldRetType.getElementType().getIntOrFloatBitWidth();
     unsigned colStride = 32 / bitwidth;
     Attribute accEncoding = triton::nvidia_gpu::TensorMemoryEncodingAttr::get(
-        context, instrShape[0], instrShape[1], colStride, CTASplitNum[0],
-        CTASplitNum[1], useTwoCTAs);
+        context, instrShape[0], instrShape[1], colStride, CGALayout,
+        useTwoCTAs);
     Attribute tensorMemorySpace =
         triton::nvidia_gpu::TensorMemorySpaceAttr::get(context);
     MemDescType accMemDescType =
         MemDescType::get(oldRetType.getShape(), oldRetType.getElementType(),
                          accEncoding, tensorMemorySpace,
                          /*mutableMemory=*/true);
-    auto newDistributedEncoding = nvidia_gpu::getDefaultLayoutForTmemLdSt(
-        accMemDescType, numWarps, CGALayout);
+    auto newDistributedEncoding =
+        nvidia_gpu::getDefaultLayoutForTmemLdSt(accMemDescType, numWarps);
     auto newAccType = oldRetType.cloneWithEncoding(newDistributedEncoding);
     Value cvtAcc =
         ConvertLayoutOp::create(rewriter, loc, newAccType, dotOp.getOperand(2));
@@ -693,10 +704,12 @@ public:
     auto isFP4 = [&](ScaleDotElemType elemType) -> bool {
       return elemType == ScaleDotElemType::E2M1;
     };
-    // mixed precision is not supported
-    if (isFP8(aElemType) && isFP4(bElemType) ||
-        isFP4(aElemType) && isFP8(bElemType)) {
-      return failure();
+
+    // TODO: Enable mixed-precision mxfp for sm120
+    if (!((isFP8(aElemType) && isFP8(bElemType)) ||
+          (isFP4(aElemType) && isFP4(bElemType)))) {
+      return rewriter.notifyMatchFailure(
+          dotOp, "only FP8xFP8 and FP4xFP4 are supported on sm120");
     }
 
     auto scaleElemType = dotOp.getAScale().getType().getElementType();
@@ -822,19 +835,18 @@ public:
     unsigned m = 128;
     unsigned n = retShapePerCTA[1] >= 256 ? 256 : retShapePerCTA[1];
 
-    auto CTASplitNum = CGALayout.getCTASplitNum();
     auto bitwidth = oldRetType.getElementType().getIntOrFloatBitWidth();
     unsigned colStride = 32 / bitwidth;
     Attribute accEncoding = triton::nvidia_gpu::TensorMemoryEncodingAttr::get(
-        context, m, n, colStride, CTASplitNum[0], CTASplitNum[1], false);
+        context, m, n, colStride, CGALayout, false);
     Attribute tensorMemorySpace =
         triton::nvidia_gpu::TensorMemorySpaceAttr::get(context);
     MemDescType accMemDescType =
         MemDescType::get(oldRetType.getShape(), oldRetType.getElementType(),
                          accEncoding, tensorMemorySpace,
                          /*mutableMemory=*/true);
-    auto newDistributedEncoding = nvidia_gpu::getDefaultLayoutForTmemLdSt(
-        accMemDescType, numWarps, CGALayout);
+    auto newDistributedEncoding =
+        nvidia_gpu::getDefaultLayoutForTmemLdSt(accMemDescType, numWarps);
     auto newAccType = oldRetType.cloneWithEncoding(newDistributedEncoding);
     Value cvtAcc =
         ConvertLayoutOp::create(rewriter, loc, newAccType, dotOp.getOperand(2));
@@ -846,8 +858,8 @@ public:
     RankedTensorType oldScaleBType = dotOp.getBScale().getType();
 
     Attribute scaleEncoding =
-        triton::nvidia_gpu::TensorMemoryScalesEncodingAttr::get(
-            context, CTASplitNum[0], CTASplitNum[1]);
+        triton::nvidia_gpu::TensorMemoryScalesEncodingAttr::get(context,
+                                                                CGALayout);
     MemDescType scaleAType = triton::gpu::MemDescType::get(
         oldScaleAType.getShape(), oldScaleAType.getElementType(), scaleEncoding,
         tensorMemorySpace,
@@ -856,10 +868,10 @@ public:
         oldScaleBType.getShape(), oldScaleBType.getElementType(), scaleEncoding,
         tensorMemorySpace,
         /*mutableMemory=*/false);
-    Attribute scaleALayout = nvidia_gpu::getDefaultLayoutForTmemLdSt(
-        scaleAType, numWarps, getCGALayout(oldScaleAType.getEncoding()));
-    Attribute scaleBLayout = nvidia_gpu::getDefaultLayoutForTmemLdSt(
-        scaleBType, numWarps, getCGALayout(oldScaleBType.getEncoding()));
+    Attribute scaleALayout =
+        nvidia_gpu::getDefaultLayoutForTmemLdSt(scaleAType, numWarps);
+    Attribute scaleBLayout =
+        nvidia_gpu::getDefaultLayoutForTmemLdSt(scaleBType, numWarps);
     RankedTensorType newScaleAType =
         oldScaleAType.cloneWithEncoding(scaleALayout);
     RankedTensorType newScaleBType =

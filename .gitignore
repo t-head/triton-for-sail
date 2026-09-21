@@ -15,6 +15,7 @@ python/triton_kernels/triton*.egg-info/
 
 python/triton/_C/*.pyd
 python/triton/_C/*.so
+python/triton/_C/*.so.*
 python/triton/_C/*.dylib
 python/triton/_C/*.pdb
 python/triton/_C/*.exe
@@ -72,6 +73,7 @@ third_party/ppu/backend/bin
 # Third-party include
 third_party/nvidia/backend/include
 third_party/nvidia/backend/lib/cupti
+third_party/nvidia/backend/lib/cupti-blackwell
 
 # Docs
 docs/_build/
@@ -100,3 +102,5 @@ docs/sg_execution_times.rst
 *.csv
 *.png
 *.html
+
+AGENTS.override.md

@@ -12,7 +12,6 @@ add_triton_library(TritonPPUGPUToLLVM
     LoadStoreOpToLLVM.cpp
     TritonGPUToLLVM.cpp
     SPMDOpToLLVM.cpp
-    TensorPtrOpsToLLVM.cpp
     TIXAsmFormat.cpp
     Utility.cpp
     AIUUtility.cpp
