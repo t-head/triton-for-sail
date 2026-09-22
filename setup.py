@@ -159,6 +159,25 @@ def is_offline_build() -> bool:
     return check_env_flag("TRITON_OFFLINE_BUILD", "")
 
 
+def get_llvm_irformatter():
+    binary = "llvm-irformatter"
+    paths = [os.environ.get("TRITON_IR_FORMATTER_PATH", "")]
+    if ppu_sdk := os.environ.get("PPU_SDK"):
+        paths.append(os.path.join(ppu_sdk, "bin", binary))
+    for path in paths:
+        if os.path.isfile(path):
+            return path
+    raise RuntimeError("Cannot find IR Formatter")
+
+
+def copy_llvm_irformatter():
+    binary = "llvm-irformatter"
+    source = get_llvm_irformatter()
+    destination = os.path.join(os.path.dirname(__file__), "third_party", "ppu", "backend", "bin", binary)
+    os.makedirs(os.path.dirname(destination), exist_ok=True)
+    shutil.copy(source, destination)
+
+
 # ---- package data ---
 
 
@@ -223,6 +242,9 @@ class CMakeBuild(build_ext):
         build_ext.finalize_options(self)
 
     def run(self):
+        if os.environ.get("TRITON_IR_FORMATTER_PATH") or os.environ.get("PPU_SDK"):
+            copy_llvm_irformatter()
+
         try:
             out = subprocess.check_output(["cmake", "--version"])
         except OSError:
