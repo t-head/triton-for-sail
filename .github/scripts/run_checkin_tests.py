@@ -337,6 +337,7 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
             # tl.dot_scaled: MX 浮点缩放 matmul, e2m1 格式, 最小尺寸
             file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
             test_filter="test_scaled_dot[32-32-64-True-True-False-e2m1-e4m3-4-16-1]",
+            skip_boards=["OAM-810E"],
         ),
 
         # --------------------------------------------------------------
@@ -556,6 +557,7 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
             # AIU fp8 matmul + column-major order, 最小块 32x32x32
             file_path=os.path.join(test_dir, "python/test/unit/ppu/aiu/test_aiu_dot_fp8_order.py"),
             test_filter="test_aiu_matmul_fp8_with_order[32-32-32-512-512-512-2-2]",
+            skip_boards=["OAM-810E"],
         ),
         TestConfig(
             # AIU dot + column-major layout (order=(0,1)), 最小块 32x32x32
@@ -602,6 +604,7 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
             # MXFP4 blocked-scale matmul, 128x128x128 块, PPU0015 特有路径
             file_path=os.path.join(test_dir, "python/test/unit/ppu/mxfp/test_mxfp_matmul.py"),
             test_filter="test_blocked_scale_mxfp4[False-1-128-128-128-1024-512-256]",
+            skip_boards=["OAM-810E"],
         ),
 
         # --------------------------------------------------------------

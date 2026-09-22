@@ -62,12 +62,34 @@ jobs:
             # mkdir -p /tmp/torch_pkg && tar -xzf /tmp/torch.tar.gz -C /tmp/torch_pkg
             # pip install /tmp/torch_pkg/*.whl || pip install /tmp/torch_pkg/**/*.whl
             # rm -rf /tmp/torch.tar.gz /tmp/torch_pkg
-            # Uninstall any image-bundled triton before building from source
-            pip uninstall -y triton 2>/dev/null || true
+            # Uninstall any image-bundled triton before building from source (double insurance):
+            #   1) dynamically detect and uninstall ALL triton distribution names
+            #   2) assert triton is no longer importable; force-remove leftovers and abort if it persists
+            echo "[INFO] triton-related packages before uninstall:"; pip list 2>/dev/null | grep -i triton || true
+            for pkg in $(pip list --format=freeze 2>/dev/null | grep -iE '^[^=]*triton[^=]*=' | cut -d= -f1); do
+              pip uninstall -y "$pkg" || true
+            done
+            pip uninstall -y triton pytorch-triton triton-nightly 2>/dev/null || true
+            # Post-uninstall assertion: guarantee no image-bundled triton survives into the source build
+            if python -c "import triton" 2>/dev/null; then
+              echo "[FATAL] triton is STILL importable after uninstall:"; python -c "import triton; print(triton.__file__)" || true
+              SP=$(python -c "import sys; print(next((p for p in sys.path if p.endswith('site-packages')), ''))" 2>/dev/null || true)
+              if [ -n "$SP" ]; then
+                rm -rf "$SP"/triton "$SP"/triton-*.dist-info "$SP"/triton-*.egg-info "$SP"/__editable__*triton* "$SP"/*triton*.pth 2>/dev/null || true
+              fi
+              if python -c "import triton" 2>/dev/null; then
+                echo "[FATAL] image-bundled triton could NOT be removed; aborting to guarantee source-only build"; exit 1
+              fi
+              echo "[INFO] leftover triton removed from site-packages"
+            else
+              echo "[INFO] confirmed: no triton importable before source build"
+            fi
             # Build and install Triton (editable install)
             export TRITON_IR_FORMATTER_PATH=$PPU_SDK/bin/llvm-irformatter
             pip install pybind11 setuptools==68.1.2
             pip install -e . || { echo "[FATAL] triton editable build failed"; exit 1; }
+            # Verify the imported triton is the source-built editable one (resolves under /workspace/source)
+            python -c "import triton, sys; f=getattr(triton,'__file__',''); print('[INFO] triton.__file__ =', f); print('[INFO] triton.__version__ =', getattr(triton,'__version__','?')); sys.exit(0 if '/workspace/source' in f else 1)" || { echo "[FATAL] imported triton is NOT the source-built one (expected under /workspace/source)"; exit 1; }
             # Install test dependencies
             pip install -r python/test-requirements.txt pandas
             # Run checkin tests (verbose output so logs are captured by ppu-scheduler-action)
