@@ -689,26 +689,28 @@ bool visit_make_tensordesc_args(PyObject *arg, PyObject *sig,
     if (!key)
       return false;
 
-    // Borrowed ref
-    PyObject *inner_relevant_paths =
+    PyObject *inner_relevant_paths_borrowed =
         PyDict_GetItemWithError(relevant_paths, key.ptr());
     if (PyErr_Occurred())
       return false;
 
-    if (!inner_relevant_paths) {
+    if (!inner_relevant_paths_borrowed) {
       // Short-circuit if tuple doesn't contain any tensordesc args
       if (PyList_Append(result, a) < 0)
         return false;
       continue;
     }
+    auto inner_relevant_paths =
+        from_borrowed_ref(inner_relevant_paths_borrowed);
 
     // Recurse into tuple
     auto inner_res = from_new_ref(PyList_New(0));
     if (!inner_res)
       return false;
     if (!visit_make_tensordesc_args(
-            a, s, inner_relevant_paths, tensordesc_meta, has_tensordesc_meta,
-            base_args, make_tensordesc_arg, tensordesc_idx, inner_res.ptr()))
+            a, s, inner_relevant_paths.ptr(), tensordesc_meta,
+            has_tensordesc_meta, base_args, make_tensordesc_arg,
+            tensordesc_idx, inner_res.ptr()))
       return false;
 
     auto inner_tuple = from_new_ref(PyList_AsTuple(inner_res.ptr()));
