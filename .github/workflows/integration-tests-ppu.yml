@@ -104,24 +104,19 @@ jobs:
             exit $TEST_RC
           cleanup_policy: always
 
-  ppu-results-summary:
-    needs: integration-tests-ppu
-    if: ${{ !cancelled() }}
-    runs-on: k8s-runner-group-cpu-thead
-    timeout-minutes: 10
-    container:
-      image: ghcr.io/actions/actions-runner:latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Combined test summary
+      - name: Test summary
         if: ${{ !cancelled() }}
         shell: bash
         run: |
-          NAS_ROOT="/mnt/wl_nas/devops/triton-ci/${{ github.run_id }}/${{ github.run_attempt }}"
+          NAS_RESULT_DIR="/mnt/wl_nas/devops/triton-ci/${{ github.run_id }}/${{ github.run_attempt }}/${{ matrix.runner }}"
           python3 .github/scripts/report_test_results.py \
-            --result-root "$NAS_ROOT" \
-            --boards '${{ inputs.matrix || '["ZW-M890P", "OAM-810E"]' }}' \
+            --xml "$NAS_RESULT_DIR/test_result.xml" \
+            --env-info "$NAS_RESULT_DIR/env_info.json" \
+            --title "Triton PPU Test Results (${{ matrix.runner }})" \
+            --docker-image "reg.docker.alibaba-inc.com/ai-tmp/pytorch:2.10.0-ubuntu24.04-hggcrt3-py312-ppu202609181903" \
             --run-number "${{ github.run_number }}" \
             --branch "${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}" \
+            --job-status "${{ steps.ppu-test.outputs.job_status }}" \
+            --duration "${{ steps.ppu-test.outputs.duration_seconds }}" \
+            --pods "${{ steps.ppu-test.outputs.pods }}" \
             >> $GITHUB_STEP_SUMMARY || true
