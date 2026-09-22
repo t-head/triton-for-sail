@@ -628,12 +628,11 @@ bool visit_make_tensordesc_args(PyObject *arg, PyObject *sig,
     return false;
   }
 
-  auto arg_fast =
-      from_new_ref(PySequence_Fast(arg, "Expected iterable args node"));
-  if (!arg_fast)
+  auto arg_tuple = from_new_ref(PySequence_Tuple(arg));
+  if (!arg_tuple)
     return false;
 
-  Py_ssize_t arg_len = PySequence_Fast_GET_SIZE(arg_fast.ptr());
+  Py_ssize_t arg_len = PyTuple_GET_SIZE(arg_tuple.ptr());
   Py_ssize_t sig_len = PyTuple_GET_SIZE(sig);
   if (sig_len != arg_len) {
     PyErr_Format(PyExc_ValueError,
@@ -645,7 +644,7 @@ bool visit_make_tensordesc_args(PyObject *arg, PyObject *sig,
   Py_ssize_t len = arg_len;
 
   for (Py_ssize_t i = 0; i < len; ++i) {
-    PyObject *a = PySequence_Fast_GET_ITEM(arg_fast.ptr(), i);
+    PyObject *a = PyTuple_GET_ITEM(arg_tuple.ptr(), i);
     PyObject *s = PyTuple_GET_ITEM(sig, i);
 
     if (PyUnicode_CheckExact(s)) {

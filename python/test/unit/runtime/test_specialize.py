@@ -170,6 +170,21 @@ def test_make_tensordesc_args_input_validation():
     with pytest.raises(TypeError, match="relevant_paths"):
         make_tensordesc_args([1], ("i32", ), [], [], (), make_tensordesc_arg)
 
+    kernel_args = [object(), 1]
+
+    def mutate_kernel_args(*args):
+        kernel_args.clear()
+        return []
+
+    assert make_tensordesc_args(
+        kernel_args,
+        ("tensordesc<fp32[1]>", "i32"),
+        {0: {}},
+        [],
+        (),
+        mutate_kernel_args,
+    ) == [1]
+
 
 @pytest.mark.parametrize("input_generator", [
     native_inputs_to_specialize,
