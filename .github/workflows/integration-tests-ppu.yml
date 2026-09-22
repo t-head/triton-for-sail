@@ -108,7 +108,7 @@ jobs:
         if: ${{ !cancelled() }}
         shell: bash
         run: |
-          NAS_RESULT_DIR="/mnt/wl_nas/devops/triton-ci/${{ github.run_id }}/${{ github.run_attempt }}/${{ matrix.runner }}"
+          NAS_RESULT_DIR="/wl_nas/devops/triton-ci/${{ github.run_id }}/${{ github.run_attempt }}/${{ matrix.runner }}"
           python3 .github/scripts/report_test_results.py \
             --xml "$NAS_RESULT_DIR/test_result.xml" \
             --env-info "$NAS_RESULT_DIR/env_info.json" \
@@ -118,5 +118,5 @@ jobs:
             --branch "${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}" \
             --job-status "${{ steps.ppu-test.outputs.job_status }}" \
             --duration "${{ steps.ppu-test.outputs.duration_seconds }}" \
-            --pods "${{ steps.ppu-test.outputs.pods }}" \
+            --pods "${{ steps.ppu-test.outputs.task_pods }}" \
             >> $GITHUB_STEP_SUMMARY || true
