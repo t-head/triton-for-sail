@@ -111,8 +111,6 @@ jobs:
     timeout-minutes: 10
     container:
       image: ghcr.io/actions/actions-runner:latest
-      volumes:
-        - /wl_nas:/mnt/wl_nas
     steps:
       - name: Checkout
         uses: actions/checkout@v4
