@@ -71,11 +71,12 @@ def get_ppu_llc():
     paths = [
         os.environ.get("TRITON_PPU_LLC_PATH", ""),
         os.path.join(os.path.dirname(__file__), "bin", binary),
-        os.path.join(os.environ.get("PPU_SDK"), "bin", binary)
     ]
-    for bin in paths:
-        if os.path.exists(bin) and os.path.isfile(bin):
-            return bin
+    if ppu_sdk := os.environ.get("PPU_SDK"):
+        paths.append(os.path.join(ppu_sdk, "bin", binary))
+    for path in paths:
+        if os.path.isfile(path):
+            return path
     raise RuntimeError("Cannot find ppu-llc")
 
 
