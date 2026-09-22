@@ -1000,3 +1000,34 @@ def test_module_load_unload(device, fresh_knobs):
     assert pre_compile.module is None
     # turn on garbage collector
     gc.enable()
+
+
+def test_module_unload_survives_hook_error(device, fresh_knobs):
+
+    @triton.jit
+    def kernel(out_ptr, val) -> None:
+        tl.store(out_ptr, val)
+
+    out = torch.randn(1, dtype=torch.float32, device=device)
+    compiled_kernel = kernel.warmup(out, 1, grid=(1, ))
+    compiled_kernel._init_handles()
+
+    unloaded = False
+    unload_module = compiled_kernel._unload_module
+
+    def track_unload(module):
+        nonlocal unloaded
+        unloaded = True
+        unload_module(module)
+
+    def fail_unload_hook(*args, **kwargs):
+        raise RuntimeError("unload hook failed")
+
+    compiled_kernel._unload_module = track_unload
+    triton.knobs.runtime.kernel_unload_hook.add(fail_unload_hook)
+    with pytest.raises(RuntimeError, match="unload hook failed"):
+        compiled_kernel.__del__()
+    triton.knobs.runtime.kernel_unload_hook.remove(fail_unload_hook)
+
+    assert unloaded
+    assert compiled_kernel.module is None

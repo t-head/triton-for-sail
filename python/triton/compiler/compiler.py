@@ -470,15 +470,21 @@ class CompiledKernel:
         self.module = None
         self.function = None
         self._run = None
+        self._unload_module = None
 
     def __del__(self):
+        module = getattr(self, "module", None)
+        if module is None:
+            return
 
-        if self.module is not None:
+        try:
             if knobs.runtime.kernel_unload_hook is not None:
-                knobs.runtime.kernel_unload_hook(self.module, self.function, self.name, self.metadata_group, self.hash)
-
-            driver.active.utils.unload_module(self.module)
-            self.module = None
+                knobs.runtime.kernel_unload_hook(module, self.function, self.name, self.metadata_group, self.hash)
+        finally:
+            try:
+                self._unload_module(module)
+            finally:
+                self.module = None
 
     def _init_handles(self):
         if self.module is not None:
@@ -494,11 +500,12 @@ class CompiledKernel:
             self._run = functools.partial(_raise_error, cloned_err)
             raise err
 
-        device = driver.active.get_current_device()
+        active_driver = driver.active
+        device = active_driver.get_current_device()
         # create launcher
-        self._run = driver.active.launcher_cls(self.src, self.metadata)
+        self._run = active_driver.launcher_cls(self.src, self.metadata)
         # not enough shared memory to run the kernel
-        max_shared = max_shared_mem(device)
+        max_shared = active_driver.utils.get_device_properties(device)["max_shared_mem"]
         if self.metadata.shared > max_shared:
             raise_(OutOfResources(self.metadata.shared, max_shared, "shared memory"))
         if hasattr(self.metadata, "tmem_size") and self.metadata.tmem_size is not None:
@@ -509,9 +516,20 @@ class CompiledKernel:
         if knobs.runtime.kernel_load_start_hook is not None:
             knobs.runtime.kernel_load_start_hook(self.module, self.function, self.name, self.metadata_group, self.hash)
         # TODO: n_regs, n_spills should be metadata generated when calling `ptxas`
-        self.module, self.function, self.n_regs, self.n_spills, self.n_max_threads = driver.active.utils.load_binary(
+        def unload_module(module):
+            current_device = active_driver.get_current_device()
+            try:
+                if current_device != device:
+                    active_driver.set_current_device(device)
+                active_driver.utils.unload_module(module)
+            finally:
+                if current_device != device:
+                    active_driver.set_current_device(current_device)
+
+        self._unload_module = unload_module
+        self.module, self.function, self.n_regs, self.n_spills, self.n_max_threads = active_driver.utils.load_binary(
             self.name, self.kernel, self.metadata.shared, device)
-        warp_size = driver.active.get_current_target().warp_size
+        warp_size = active_driver.get_current_target().warp_size
         if self.metadata.num_warps * warp_size > self.n_max_threads:
             raise_(OutOfResources(self.metadata.num_warps * warp_size, self.n_max_threads, "threads"))
         if knobs.runtime.kernel_load_end_hook is not None:
