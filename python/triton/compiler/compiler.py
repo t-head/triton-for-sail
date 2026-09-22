@@ -471,22 +471,35 @@ class CompiledKernel:
         self.function = None
         self._run = None
         self._unload_module = None
+        self._module_state = "unloaded"
 
     def __del__(self):
-        module = getattr(self, "module", None)
-        if module is None:
+        if getattr(self, "_module_state", "unloaded") != "loaded":
             return
+        module = self.module
+        function = self.function
+        unload_module = self._unload_module
+        self._module_state = "unloading"
         self.module = None
 
         try:
             if knobs.runtime.kernel_unload_hook is not None:
-                knobs.runtime.kernel_unload_hook(module, self.function, self.name, self.metadata_group, self.hash)
+                knobs.runtime.kernel_unload_hook(module, function, self.name, self.metadata_group, self.hash)
         finally:
-            self._unload_module(module)
+            try:
+                unload_module(module)
+            finally:
+                self.function = None
+                self._run = None
+                self._unload_module = None
+                self._module_state = "unloaded"
 
     def _init_handles(self):
-        if self.module is not None:
+        if self._module_state == "loaded":
             return
+        if self._module_state != "unloaded":
+            raise RuntimeError("kernel module lifecycle is already active")
+        self._module_state = "loading"
 
         def raise_(err):
             # clone the exception object so that the one saved in the closure
@@ -499,34 +512,40 @@ class CompiledKernel:
             raise err
 
         active_driver = driver.active
-        device = active_driver.get_current_device()
-        launcher = active_driver.launcher_cls(self.src, self.metadata)
-        # not enough shared memory to run the kernel
-        max_shared = active_driver.utils.get_device_properties(device)["max_shared_mem"]
-        if self.metadata.shared > max_shared:
-            raise_(OutOfResources(self.metadata.shared, max_shared, "shared memory"))
-        if hasattr(self.metadata, "tmem_size") and self.metadata.tmem_size is not None:
-            # Use blackwell max tmem size for now, this should be moved in device properties
-            max_tmem_size = 512  # tmem size in number of columns
-            if self.metadata.tmem_size > max_tmem_size:
-                raise_(OutOfResources(self.metadata.tmem_size, max_tmem_size, "tensor memory"))
-        if knobs.runtime.kernel_load_start_hook is not None:
-            knobs.runtime.kernel_load_start_hook(self.module, self.function, self.name, self.metadata_group, self.hash)
-        # TODO: n_regs, n_spills should be metadata generated when calling `ptxas`
-        def unload_module(module):
-            current_device = active_driver.get_current_device()
-            try:
-                if current_device != device:
-                    active_driver.set_current_device(device)
-                active_driver.utils.unload_module(module)
-            finally:
-                if current_device != device:
-                    active_driver.set_current_device(current_device)
-
-        self._unload_module = unload_module
+        unload_module = None
         try:
+            device = active_driver.get_current_device()
+            launcher = active_driver.launcher_cls(self.src, self.metadata)
+            max_shared = active_driver.utils.get_device_properties(device)["max_shared_mem"]
+            if self.metadata.shared > max_shared:
+                raise_(OutOfResources(self.metadata.shared, max_shared, "shared memory"))
+            if hasattr(self.metadata, "tmem_size") and self.metadata.tmem_size is not None:
+                # Use blackwell max tmem size for now, this should be moved in device properties
+                max_tmem_size = 512  # tmem size in number of columns
+                if self.metadata.tmem_size > max_tmem_size:
+                    raise_(OutOfResources(self.metadata.tmem_size, max_tmem_size, "tensor memory"))
+            if knobs.runtime.kernel_load_start_hook is not None:
+                knobs.runtime.kernel_load_start_hook(self.module, self.function, self.name, self.metadata_group, self.hash)
+
+            load_device = active_driver.get_current_device()
+            if load_device != device:
+                max_shared = active_driver.utils.get_device_properties(load_device)["max_shared_mem"]
+                if self.metadata.shared > max_shared:
+                    raise_(OutOfResources(self.metadata.shared, max_shared, "shared memory"))
+
+            def unload_module(module):
+                current_device = active_driver.get_current_device()
+                try:
+                    if current_device != load_device:
+                        active_driver.set_current_device(load_device)
+                    active_driver.utils.unload_module(module)
+                finally:
+                    if current_device != load_device:
+                        active_driver.set_current_device(current_device)
+
+            self._unload_module = unload_module
             self.module, self.function, self.n_regs, self.n_spills, self.n_max_threads = active_driver.utils.load_binary(
-                self.name, self.kernel, self.metadata.shared, device)
+                self.name, self.kernel, self.metadata.shared, load_device)
             warp_size = active_driver.get_current_target().warp_size
             if self.metadata.num_warps * warp_size > self.n_max_threads:
                 raise_(OutOfResources(self.metadata.num_warps * warp_size, self.n_max_threads, "threads"))
@@ -534,11 +553,17 @@ class CompiledKernel:
                 knobs.runtime.kernel_load_end_hook(self.module, self.function, self.name, self.metadata_group, self.hash)
         except BaseException:
             module = self.module
-            if module is not None:
-                self.module = None
-                self._unload_module(module)
+            self.module = None
+            try:
+                if module is not None and unload_module is not None:
+                    unload_module(module)
+            finally:
+                self.function = None
+                self._unload_module = None
+                self._module_state = "unloaded"
             raise
         self._run = launcher
+        self._module_state = "loaded"
 
     @property
     def run(self):

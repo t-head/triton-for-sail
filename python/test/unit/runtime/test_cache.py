@@ -1044,6 +1044,7 @@ def test_module_load_hook_error_does_not_publish_runner(device, fresh_knobs):
     compiled_kernel = kernel.warmup(out, 1, grid=(1, ))
 
     def fail_load_hook(*args, **kwargs):
+        compiled_kernel.__del__()
         raise RuntimeError("load hook failed")
 
     triton.knobs.runtime.kernel_load_end_hook.add(fail_load_hook)
