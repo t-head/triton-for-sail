@@ -41,13 +41,30 @@ class HookManager:
 
     @staticmethod
     def init_handle(module: Any, function: Any, name: str, metadata_group: Dict[str, str], hash: str) -> None:
-        for hook in HookManager.active_hooks:
-            hook.init_handle(module, function, name, metadata_group, hash)
+        initialized_hooks = []
+        try:
+            for hook in HookManager.active_hooks:
+                hook.init_handle(module, function, name, metadata_group, hash)
+                initialized_hooks.append(hook)
+        except BaseException:
+            for hook in reversed(initialized_hooks):
+                try:
+                    hook.destroy_handle(module, function, name, metadata_group, hash)
+                except BaseException:
+                    pass
+            raise
 
     @staticmethod
     def destroy_handle(module: Any, function: Any, name: str, metadata_group: Dict[str, str], hash: str) -> None:
+        first_error = None
         for hook in reversed(HookManager.active_hooks):
-            hook.destroy_handle(module, function, name, metadata_group, hash)
+            try:
+                hook.destroy_handle(module, function, name, metadata_group, hash)
+            except BaseException as error:
+                if first_error is None:
+                    first_error = error
+        if first_error is not None:
+            raise first_error
 
     @staticmethod
     def enter(metadata: LazyDict) -> None:

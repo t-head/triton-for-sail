@@ -1,3 +1,4 @@
+import threading
 from typing import Any
 from triton._C.libproton import proton as libproton
 import triton.runtime.driver as driver
@@ -5,6 +6,9 @@ import triton.language as tl
 import triton
 from triton import MockTensor
 from .state import exit_state, enter_state, COMPUTE_METADATA_SCOPE_NAME
+
+
+_metric_kernel_owners = threading.local()
 
 
 @triton.jit
@@ -45,7 +49,7 @@ def _get_kernel(kernel_fn, *args):
     if warp_size is None:
         warp_size = driver.active.get_current_target().warp_size
     num_threads = kernel.metadata.num_warps * warp_size
-    return kernel.function, num_threads, kernel.metadata.shared
+    return kernel, num_threads, kernel.metadata.shared
 
 
 def set_metric_kernels():
@@ -53,7 +57,7 @@ def set_metric_kernels():
     mock_metric_id = 0
     mock_size = 1
     mock_metric_value_size = 1
-    tensor_metric_kernel_fn, tensor_metric_kernel_num_threads, tensor_metric_kernel_shared = _get_kernel(
+    tensor_metric_kernel_owner, tensor_metric_kernel_num_threads, tensor_metric_kernel_shared = _get_kernel(
         tensor_metric_kernel,
         mock_ptr,
         mock_ptr,
@@ -62,7 +66,7 @@ def set_metric_kernels():
         mock_ptr,
         mock_metric_value_size,
     )
-    scalar_metric_kernel_fn, scalar_metric_kernel_num_threads, scalar_metric_kernel_shared = _get_kernel(
+    scalar_metric_kernel_owner, scalar_metric_kernel_num_threads, scalar_metric_kernel_shared = _get_kernel(
         scalar_metric_kernel,
         mock_ptr,
         mock_ptr,
@@ -73,14 +77,15 @@ def set_metric_kernels():
     device = driver.active.get_current_device()
     stream = driver.active.get_current_stream(device)
     libproton.set_metric_kernels(
-        tensor_metric_kernel_fn,
-        scalar_metric_kernel_fn,
+        tensor_metric_kernel_owner.function,
+        scalar_metric_kernel_owner.function,
         stream,
         tensor_metric_kernel_num_threads,
         tensor_metric_kernel_shared,
         scalar_metric_kernel_num_threads,
         scalar_metric_kernel_shared,
     )
+    _metric_kernel_owners.kernels = (tensor_metric_kernel_owner, scalar_metric_kernel_owner)
 
 
 class _TensorMetric(libproton.TensorMetric):

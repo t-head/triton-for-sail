@@ -407,9 +407,10 @@ class HookChain(Generic[F]):
     """A chain of hooks of the same type F to be called in order.
     """
 
-    def __init__(self, reversed: bool = False):
+    def __init__(self, reversed: bool = False, continue_on_error: bool = False):
         self.calls: list[F] = []
         self.reversed = reversed
+        self.continue_on_error = continue_on_error
 
     def add(self, func: F) -> None:
         if func not in self.calls:
@@ -420,8 +421,21 @@ class HookChain(Generic[F]):
             self.calls.remove(func)
 
     def __call__(self, *args, **kwargs):
-        for call in self.calls if not self.reversed else reversed(self.calls):
-            call(*args, **kwargs)
+        calls = self.calls if not self.reversed else reversed(self.calls)
+        if not self.continue_on_error:
+            for call in calls:
+                call(*args, **kwargs)
+            return
+
+        first_error = None
+        for call in calls:
+            try:
+                call(*args, **kwargs)
+            except BaseException as error:
+                if first_error is None:
+                    first_error = error
+        if first_error is not None:
+            raise first_error
 
 
 # This is of the form [attr_name, attr_val]
@@ -471,7 +485,7 @@ class runtime_knobs(base_knobs):
     kernel_load_end_hook: HookChain[InitHandleHook] = HookChain(reversed=True)
 
     # hook to unload module when kernel is freed
-    kernel_unload_hook: HookChain[InitHandleHook] = HookChain()
+    kernel_unload_hook: HookChain[InitHandleHook] = HookChain(continue_on_error=True)
 
     # Hook for inspecting compiled functions and modules
     jit_cache_hook: Optional[JITHook] = None

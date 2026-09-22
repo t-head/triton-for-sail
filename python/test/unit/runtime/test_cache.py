@@ -1013,6 +1013,7 @@ def test_module_unload_survives_hook_error(device, fresh_knobs):
     compiled_kernel._init_handles()
 
     unload_count = 0
+    hook_calls = []
     unload_module = compiled_kernel._unload_module
 
     def track_unload(module):
@@ -1021,15 +1022,22 @@ def test_module_unload_survives_hook_error(device, fresh_knobs):
         unload_module(module)
 
     def fail_unload_hook(*args, **kwargs):
+        hook_calls.append("fail")
         compiled_kernel.__del__()
         raise RuntimeError("unload hook failed")
 
+    def final_unload_hook(*args, **kwargs):
+        hook_calls.append("final")
+
     compiled_kernel._unload_module = track_unload
     triton.knobs.runtime.kernel_unload_hook.add(fail_unload_hook)
+    triton.knobs.runtime.kernel_unload_hook.add(final_unload_hook)
     with pytest.raises(RuntimeError, match="unload hook failed"):
         compiled_kernel.__del__()
     triton.knobs.runtime.kernel_unload_hook.remove(fail_unload_hook)
+    triton.knobs.runtime.kernel_unload_hook.remove(final_unload_hook)
 
+    assert hook_calls == ["fail", "final"]
     assert unload_count == 1
     assert compiled_kernel.module is None
 

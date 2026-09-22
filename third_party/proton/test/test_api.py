@@ -7,7 +7,9 @@ Profile correctness tests involving GPU kernels should be placed in `test_profil
 import pytest
 import json
 import triton.profiler as proton
+import triton.profiler.metric as metric
 import pathlib
+from types import SimpleNamespace
 from triton.profiler.hooks.hook import HookManager
 from triton.profiler.hooks.launch import LaunchHook
 from triton.profiler.hooks.instrumentation import InstrumentationHook
@@ -198,6 +200,85 @@ def test_hook_manager(tmp_path: pathlib.Path):
     assert HookManager.session_hooks[2][HookManager.active_hooks[1]] is True
     HookManager.unregister()
     assert len(HookManager.active_hooks) == 0
+
+
+def test_hook_manager_rolls_back_partial_initialization(monkeypatch):
+    events = []
+
+    class TestHook:
+
+        def __init__(self, name, fail_init=False, fail_destroy=False):
+            self.name = name
+            self.fail_init = fail_init
+            self.fail_destroy = fail_destroy
+
+        def init_handle(self, *args):
+            events.append(("init", self.name))
+            if self.fail_init:
+                raise RuntimeError("init failed")
+
+        def destroy_handle(self, *args):
+            events.append(("destroy", self.name))
+            if self.fail_destroy:
+                raise RuntimeError("destroy failed")
+
+    hooks = [TestHook("first"), TestHook("second", fail_destroy=True), TestHook("third", fail_init=True)]
+    monkeypatch.setattr(HookManager, "active_hooks", hooks)
+
+    with pytest.raises(RuntimeError, match="init failed"):
+        HookManager.init_handle(1, 2, "kernel", {}, "hash")
+
+    assert events == [
+        ("init", "first"),
+        ("init", "second"),
+        ("init", "third"),
+        ("destroy", "second"),
+        ("destroy", "first"),
+    ]
+
+
+def test_hook_manager_destroy_continues_after_error(monkeypatch):
+    events = []
+
+    class TestHook:
+
+        def __init__(self, name, fail=False):
+            self.name = name
+            self.fail = fail
+
+        def destroy_handle(self, *args):
+            events.append(self.name)
+            if self.fail:
+                raise RuntimeError("destroy failed")
+
+    hooks = [TestHook("first"), TestHook("second", fail=True), TestHook("third")]
+    monkeypatch.setattr(HookManager, "active_hooks", hooks)
+
+    with pytest.raises(RuntimeError, match="destroy failed"):
+        HookManager.destroy_handle(1, 2, "kernel", {}, "hash")
+
+    assert events == ["third", "second", "first"]
+
+
+def test_metric_kernel_owners_are_retained(monkeypatch):
+    tensor_owner = SimpleNamespace(function=11)
+    scalar_owner = SimpleNamespace(function=22)
+    kernels = iter([(tensor_owner, 32, 4), (scalar_owner, 64, 8)])
+    calls = []
+
+    monkeypatch.setattr(metric, "_get_kernel", lambda *args: next(kernels))
+    monkeypatch.setattr(
+        metric,
+        "driver",
+        SimpleNamespace(active=SimpleNamespace(get_current_device=lambda: 3, get_current_stream=lambda device: 44)),
+    )
+    monkeypatch.setattr(metric.libproton, "set_metric_kernels", lambda *args: calls.append(args))
+    monkeypatch.setattr(metric, "_metric_kernel_owners", type(metric._metric_kernel_owners)())
+
+    metric.set_metric_kernels()
+
+    assert calls == [(11, 22, 44, 32, 4, 64, 8)]
+    assert metric._metric_kernel_owners.kernels == (tensor_owner, scalar_owner)
 
 
 def test_scope_metrics(tmp_path: pathlib.Path):
