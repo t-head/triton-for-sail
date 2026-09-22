@@ -62,10 +62,12 @@ jobs:
             # mkdir -p /tmp/torch_pkg && tar -xzf /tmp/torch.tar.gz -C /tmp/torch_pkg
             # pip install /tmp/torch_pkg/*.whl || pip install /tmp/torch_pkg/**/*.whl
             # rm -rf /tmp/torch.tar.gz /tmp/torch_pkg
+            # Uninstall any image-bundled triton before building from source
+            pip uninstall -y triton 2>/dev/null || true
             # Build and install Triton (editable install)
             export TRITON_IR_FORMATTER_PATH=$PPU_SDK/bin/llvm-irformatter
             pip install pybind11 setuptools==68.1.2
-            pip install -e .
+            pip install -e . || { echo "[FATAL] triton editable build failed"; exit 1; }
             # Install test dependencies
             pip install -r python/test-requirements.txt pandas
             # Run checkin tests (verbose output so logs are captured by ppu-scheduler-action)
