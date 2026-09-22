@@ -1534,7 +1534,9 @@ struct AsyncCopyGlobalToLocalOpConversion
     auto emitCpAsync = [&b, threadPred, ptrTy, hasMask = bool(llMask)](
                            RewriterBase &rewriter, Location loc,
                            ArrayRef<Value> vals, Value shmemAddr, int startIdx,
-                           VectorType vecTy) -> SmallVector<Value> {
+                           VectorType vecTy,
+                           std::optional<Value> ctaId) -> SmallVector<Value> {
+      assert(!ctaId.has_value() && "cp.async does not support cross-cta loads");
       assert(isa<VectorType>(vecTy));
       auto *ctx = rewriter.getContext();
       auto elemTy = vecTy.getElementType();
@@ -1626,7 +1628,7 @@ static LinearLayout getUnswizzledLayout(triton::gpu::MemDescType type) {
   assert(type.getShape() == type.getAllocShape().take_back(type.getRank()));
   return ttg::nvmmaSharedToLinearLayout(
       type.getShape(), cast<NVMMASharedEncodingAttr>(type.getEncoding()),
-      /*disableSwizzle=*/true);
+      ttg::TMAMode::Tiled, /*disableSwizzle=*/true);
 }
 
 

@@ -171,6 +171,10 @@ void TargetInfo::barrier(Location loc, RewriterBase &rewriter,
   b.barrier(targets);
 }
 
+void TargetInfo::clusterBarrier(Location loc, RewriterBase &rewriter) const {
+  barrier(loc, rewriter, triton::gpu::AddrSpace::Local);
+}
+
 void TargetInfo::warpSync(Location loc, RewriterBase &rewriter) const {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   NVVM::SyncWarpOp::create(rewriter, loc, b.i32_val(0xffffffff));
@@ -482,50 +486,38 @@ Value TargetInfo::programId(RewriterBase &rewriter, Location loc,
                             ModuleOp moduleOp, ProgramIDDim axis) const {
   return LLVM::PPU::llGetPid(loc, rewriter, moduleOp, axis);
 }
+
 bool TargetInfo::warpReduce(RewriterBase &rewriter, Location loc,
                             SmallVector<Value> &acc, triton::ReduceOp op,
-                            unsigned numLaneToReduce,
-                            unsigned interleave) const {
+                            unsigned reduceLaneIdMask) const {
+  constexpr unsigned kWarpSize = 32;
+  if (reduceLaneIdMask != kWarpSize - 1)
+    return false;
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   bool useNanQualifier = false;
   if (auto kind = matchReduxKind(op, computeCapability, useNanQualifier)) {
-    // Based on benchmarking on A100 redux op gives a speed up only when doing
-    // a single reduction (not partitioned) and when the mask is static.
-    // Therefore we currently only enable it to reduce across all the lanes.
-    if (numLaneToReduce == 32) {
-      assert(acc.size() == 1);
-      Value mask = b.i32_val(0xFFFFFFFF);
-      // Even though we currently don't use redux for partitioned reduction
-      // the code below supports it in case we want to tweak the heuristic.
-      if (numLaneToReduce < 32) {
-        // For partitioned reduction we need to calculate the mask so that
-        // each group of numLaneToReduce threads has the correct mask.
-        unsigned bitmask = (1 << numLaneToReduce) - 1;
-        Value laneId = getLaneId(rewriter, loc);
-        mask = b.shl(b.i32_val(bitmask),
-                     b.and_(laneId, b.i32_val(~(numLaneToReduce - 1))));
-      }
-      for (unsigned i = 0; i < acc.size(); ++i) {
-        unsigned bitwidth = acc[i].getType().getIntOrFloatBitWidth();
-        if (acc[i].getType().isInteger()) {
-          if (bitwidth < 32) {
-            if (*kind == NVVM::ReductionKind::MIN ||
-                *kind == NVVM::ReductionKind::MAX)
-              acc[i] = b.sext(i32_ty, acc[i]);
-            else
-              acc[i] = b.zext(i32_ty, acc[i]);
-          }
-        }
-        acc[i] = NVVM::ReduxOp::create(rewriter, loc, acc[i].getType(), acc[0],
-                                       *kind, mask, /*abs=*/false,
-                                       /*nan=*/useNanQualifier);
-        if (acc[i].getType().isInteger()) {
-          if (bitwidth < 32)
-            acc[i] = b.trunc(int_ty(bitwidth), acc[i]);
+    assert(acc.size() == 1);
+    Value mask = b.i32_val(0xFFFFFFFF);
+    for (unsigned i = 0; i < acc.size(); ++i) {
+      unsigned bitwidth = acc[i].getType().getIntOrFloatBitWidth();
+      if (acc[i].getType().isInteger()) {
+        if (bitwidth < 32) {
+          if (*kind == NVVM::ReductionKind::MIN ||
+              *kind == NVVM::ReductionKind::MAX)
+            acc[i] = b.sext(i32_ty, acc[i]);
+          else
+            acc[i] = b.zext(i32_ty, acc[i]);
         }
       }
-      return true;
+      acc[i] = NVVM::ReduxOp::create(rewriter, loc, acc[i].getType(), acc[0],
+                                     *kind, mask, /*abs=*/false,
+                                     /*nan=*/useNanQualifier);
+      if (acc[i].getType().isInteger()) {
+        if (bitwidth < 32)
+          acc[i] = b.trunc(int_ty(bitwidth), acc[i]);
+      }
     }
+    return true;
   }
   return false;
 }

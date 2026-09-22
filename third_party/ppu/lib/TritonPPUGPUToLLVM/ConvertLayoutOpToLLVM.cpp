@@ -149,7 +149,10 @@ struct ConvertLayoutOpSwizzlingConversion
     // At this point we have a type that's at least 8-bit
     // and we don't have broadcasting in the registers
     auto bitwidth = llvmElemTy.getIntOrFloatBitWidth();
-    auto [srcTiles, dstTiles] = getSrcDstTiles(targetInfo, bitwidth);
+    auto kBlock = str_attr("block");
+    bool crossCTA =
+        !dstLayout.invertAndCompose(srcLayout).isTrivialOver({kBlock});
+    auto [srcTiles, dstTiles] = getSrcDstTiles(targetInfo, bitwidth, crossCTA);
     auto [smem, instr] =
         optimalSwizzling(srcLayout, dstLayout, srcTiles, dstTiles, bitwidth);
     auto [idxSrc, idxDst] = instr;
@@ -177,7 +180,6 @@ struct ConvertLayoutOpSwizzlingConversion
     auto storeCvt = *divideRight(totalStoreCvt, reps);
     auto loadCvt = *divideRight(totalLoadCvt, reps);
     auto kOffset = str_attr("offset");
-    auto kBlock = str_attr("block");
     auto nBlock = storeCvt.getInDimSize(kBlock);
     storeCvt = storeCvt.reshapeOuts(
         {{kOffset, storeCvt.getTotalOutDimSize() / nBlock}, {kBlock, nBlock}});
@@ -186,29 +188,30 @@ struct ConvertLayoutOpSwizzlingConversion
 
     assert(storeCvt.isTrivialOver({kBlock}));
     assert(loadCvt.isTrivialOver({kBlock}) || idxDst == 0);
-    assert(nBlock == 1);
 
     auto kLane = str_attr("lane");
     auto kWarp = str_attr("warp");
-    auto dropBlock = [&](const LinearLayout &cvt) {
-      SmallVector<StringAttr> inDims = {kReg, kLane, kWarp};
-      SmallVector<StringAttr> outDims = {kOffset};
-      return cvt.sublayout(inDims, outDims);
-    };
-    auto storeCvtNoBlock = dropBlock(storeCvt);
-    auto loadCvtNoBlock = dropBlock(loadCvt);
-    auto tileSize = storeCvtNoBlock.getInDimSize(kReg);
+    auto tileSize = storeCvt.getInDimSize(kReg);
 
     assert(permutedInVals.size() == tileSize * nReps);
     SmallVector<Value> outVals;
     auto affineOffset = b.i32_val(0);
     auto maskSpanAffineOffset = 0;
-    bool isWarpSync = mlir::isCvtWarpSync(srcLayout, dstLayout);
+    bool isWarpSync = mlir::isCvtDimSync(srcLayout, dstLayout, kWarp);
+    bool isBlockSync = mlir::isCvtDimSync(srcLayout, dstLayout, kBlock);
     auto emitBarrier = [&]() {
-      if (isWarpSync)
+      if (isWarpSync) {
         targetInfo.warpSync(loc, rewriter);
-      else
+      } else if (isBlockSync) {
         targetInfo.barrier(loc, rewriter, triton::gpu::AddrSpace::Local);
+      } else {
+        targetInfo.clusterBarrier(loc, rewriter);
+      }
+    };
+    auto dropBlock = [&](const LinearLayout &cvt) {
+      SmallVector<StringAttr> inDims = {kReg, kLane, kWarp};
+      SmallVector<StringAttr> outDims = {kOffset};
+      return cvt.sublayout(inDims, outDims);
     };
     for (int i = 0; i < nReps; ++i) {
       if (i > 0)
@@ -219,12 +222,13 @@ struct ConvertLayoutOpSwizzlingConversion
       // Store
       // idxSrc 0: st.shared, idxSrc 1: stmatrix, idxSrc 2: stmatrix.trans
       if (idxSrc == 0) {
-        lowerLdStShared(loc, ctx, storeCvtNoBlock, tileInVals, llvmElemTy,
-                        smemBase, /*paddingShifts=*/{}, affineOffset,
+        lowerLdStShared(loc, ctx, storeCvt, tileInVals, llvmElemTy, smemBase,
+                        /*paddingShifts=*/{}, affineOffset,
                         maskSpanAffineOffset, rewriter, targetInfo);
       } else {
         assert(idxSrc == 1 || idxSrc == 2);
         bool transpose = idxSrc == 2;
+        auto storeCvtNoBlock = dropBlock(storeCvt);
         auto result = lowerLdStMatrix(
             loc, storeCvtNoBlock, transpose, tileInVals, smemBase, affineOffset,
             maskSpanAffineOffset, llvmElemTy, rewriter, targetInfo);
@@ -236,12 +240,13 @@ struct ConvertLayoutOpSwizzlingConversion
       // idxDst 0: ld.shared, idxDst 1: ldmatrix, idxDst 2: ldmatrix.trans
       if (idxDst == 0) {
         tileOutVals = lowerLdStShared(
-            loc, ctx, loadCvtNoBlock, {}, llvmElemTy, smemBase,
+            loc, ctx, loadCvt, {}, llvmElemTy, smemBase,
             /*paddingShifts=*/{}, affineOffset, maskSpanAffineOffset, rewriter,
             targetInfo);
       } else {
         assert(idxDst == 1 || idxDst == 2);
         bool transpose = idxDst == 2;
+        auto loadCvtNoBlock = dropBlock(loadCvt);
         auto result = lowerLdStMatrix(
             loc, loadCvtNoBlock, transpose, tileOutVals, smemBase, affineOffset,
             maskSpanAffineOffset, llvmElemTy, rewriter, targetInfo);

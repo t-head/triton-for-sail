@@ -762,7 +762,7 @@ struct ClampFOpConversion
 
     auto getSplatInitializer = [](Value v) -> std::optional<double> {
       if (auto constOp = v.getDefiningOp<arith::ConstantOp>()) {
-        if (auto attr = mlir::dyn_cast<DenseIntOrFPElementsAttr>(
+        if (auto attr = mlir::dyn_cast<DenseTypedElementsAttr>(
                 constOp.getValueAttr())) {
           if (attr.isSplat()) {
             return attr.getSplatValue<APFloat>().convertToDouble();

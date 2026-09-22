@@ -74,11 +74,16 @@ static unsigned getNumScratchElemsSwizzledCvt(RankedTensorType srcTy,
   srcLayout = actionRemoveBroadcastedRegs(srcLayout).apply(srcLayout);
   dstLayout = actionRemoveBroadcastedRegs(dstLayout).apply(dstLayout);
   auto bitwidth = getBitwidth(srcTy);
-  auto [srcTiles, dstTiles] = gpu::getSrcDstTiles(targetInfo, bitwidth);
+  auto kBlock = StringAttr::get(ctx, "block");
+  bool crossCTA =
+      !dstLayout.invertAndCompose(srcLayout).isTrivialOver({kBlock});
+  auto [srcTiles, dstTiles] =
+      gpu::getSrcDstTiles(targetInfo, bitwidth, crossCTA);
   auto [smem, _] = triton::gpu::optimalSwizzling(srcLayout, dstLayout, srcTiles,
                                                  dstTiles, bitwidth);
   auto reps = smem.getInDimSize(StringAttr::get(ctx, "reps"));
-  return smem.getTotalOutDimSize() / reps;
+  auto nBlocks = product(triton::gpu::getCTASplitNum(srcTy.getEncoding()));
+  return smem.getTotalOutDimSize() / (reps * nBlocks);
 }
 
 std::function<unsigned(Operation *)>
