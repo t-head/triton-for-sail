@@ -1383,7 +1383,7 @@ void PPUMmaEncodingAttr::print(AsmPrinter &printer) const {
           << ", versionMinor = " << getVersionMinor()
           << ", warpsPerCTA = [" << ArrayRef(getWarpsPerCTA()) << "]";
 
-  maybePrintCGALayout(getContext(), printer, getCGALayout());
+  maybePrintCGALayout(printer, getCGALayout());
 
   printer << ", instrShape = [" << getInstrShape() << "]"
           << ", vecSize = " << getVecSize() << "}>";
@@ -1452,7 +1452,7 @@ void PPUAIUSharedEncodingAttr::print(AsmPrinter &printer) const {
   printer << "<{" << "versionMajor = " << getVersionMajor()
           << ", AIUStrategy = [" << getAIUStrategy() << "]" << ", order = ["
           << getOrder() << "]";
-  maybePrintCGALayout(getContext(), printer, getCGALayout());
+  maybePrintCGALayout(printer, getCGALayout());
   if (getKOffset() != 0) {
     printer << ", kOffset = " << getKOffset();
   }

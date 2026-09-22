@@ -1295,7 +1295,7 @@ bool LayoutRematerialization::hoistConvertDotOperand(
         !(isa<DotOperandEncodingAttr>(newDstLayout) &&
           isa<PPUMmaEncodingAttr>(
               cast<DotOperandEncodingAttr>(newDstLayout).getParent())))
-      return;
+      return false;
 
     auto newConvertOp = ConvertLayoutOp::create(builder, convertOp.getLoc(),
                                                 newType, loadOp->getResult(0));
