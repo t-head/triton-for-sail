@@ -24,6 +24,13 @@ def _is_layout_applicable(layout) -> bool:
         if mma_layout.version[0] >= 3 and not is_hopper_or_newer():
             return False
         return True
+    elif is_ppu():
+        if isinstance(layout, ttgl.NVMMASharedLayout):
+            return True
+        mma_layout = layout.parent if isinstance(layout, ttgl.DotOperandLayout) else layout
+        if not isinstance(mma_layout, ttgl.NVMMADistributedLayout):
+            return False
+        return True
     elif is_hip():
         if layout in ["padded_shared_layout_single_interval", "padded_shared_layout_multi_interval"]:
             return True
@@ -939,7 +946,7 @@ def test_local_load_store_2d_layouts(shape, dtype, dist_layout, shared_layout, d
     y = torch.zeros_like(x)
     obj = kernel[(1, )](x, y, shape, dist_layout, blocked_layout, shared_layout, num_warps=num_warps)
     _assert_close(y, x)
-    if (isinstance(shared_layout, ttgl.NVMMASharedLayout) and dist_layout in _ld_st_mma_layouts
+    if (is_cuda() and isinstance(shared_layout, ttgl.NVMMASharedLayout) and dist_layout in _ld_st_mma_layouts
             and dist_layout.version[0] >= 3 and dtype == "float16"):
         assert "stmatrix" in obj.asm["ptx"]
 

@@ -208,6 +208,7 @@ def test_fp8_compiles_for_multiple_architectures_hip():
     triton.compile(src, target=GPUTarget("hip", "gfx942", 64))
 
 
+@pytest.mark.skipif(is_ppu(), reason="ptxas is not installed on PPU")
 def test_fp8_compiles_for_multiple_architectures_cuda():
     """
     Validate FP8 compilation succeeds for architectures with different

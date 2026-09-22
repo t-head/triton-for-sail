@@ -1021,7 +1021,11 @@ def test_precise_math(expr_prec, expr_ref, num_ctas, device):
     kernel = patch_kernel(kernel, {'PREC_CALC': expr_prec, 'REF_CALC': expr_ref})
 
     kernel[(1, )](x, y, out, out_ref, BLOCK=shape[0], num_ctas=num_ctas)
-    assert torch.all(out == out_ref)  # bitwise exact
+    if expr_prec.count('sqrt') > 0 and is_ppu():
+        # PPU0010 only supports "sqrt.f32"; "sqrt.f64" is approximated.
+        torch.testing.assert_close(out, out_ref)
+    else:
+        assert torch.all(out == out_ref)  # bitwise exact
 
 
 # ----------------
@@ -1040,7 +1044,7 @@ def test_abs(dtype_x, device):
 def test_abs_fp8(in_dtype, device):
     if is_hip():
         pytest.skip('test_abs_fp8 not supported on HIP.')
-    elif is_cuda():
+    elif is_cuda() or is_ppu():
         cc = torch.cuda.get_device_capability()
         if in_dtype == tl.float8e4b15 and cc >= (9, 0):
             pytest.skip("float8e4b15 not supported on CUDA >= 9.0")
@@ -1702,7 +1706,7 @@ def test_tensor_atomic_cas(sem, size, dtype_str, num_ctas, device):
 
 
 @pytest.mark.interpreter
-@pytest.mark.skipif(not is_cuda() or torch.cuda.get_device_capability()[0] < 9,
+@pytest.mark.skipif(not (is_cuda() or is_ppu()) or torch.cuda.get_device_capability()[0] < 9,
                     reason="Requires compute capability >= 9 for NV")
 def test_load_scope_sem_coop_grid_cta_not_one(device):
 
@@ -2905,8 +2909,8 @@ def test_optimize_thread_locality(op, BLOCK_N, N, num_pid_n, device):
 
 def test_no_rematerialization_op():
 
-    if torch.version.hip:
-        pytest.skip("test not supported on AMD")
+    if not is_cuda():
+        pytest.skip("test is only supported on CUDA")
 
     @triton.jit
     def kernel(
@@ -3016,7 +3020,7 @@ def test_generic_reduction(device):
 @pytest.mark.parametrize("num_ctas", num_ctas_list)
 def test_permute(dtype_str, shape, perm, num_ctas, device):
     check_type_supported(dtype_str, device)  # bfloat16 on cc < 80 will not be tested
-    if dtype_str == "float8e4b15" and (is_hip() or (is_cuda() and torch.cuda.get_device_capability() >= (9, 0))):
+    if dtype_str == "float8e4b15" and (is_hip() or ((is_cuda() or is_ppu()) and torch.cuda.get_device_capability() >= (9, 0))):
         pytest.skip("float8e4b15 not supported on ROCm or CUDA >= 9.0")
 
     # triton kernel
@@ -3156,7 +3160,7 @@ def get_test_dot_softmax():
 # M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dtype, out_dtype, kpack, mma_nonk_size
 def get_test_dot_mixed_sizes_cases():
     available_kpack = [1, 2 if (is_hip() and not is_hip_cdna4()) else 1]
-    available_precision = ["tf32" if is_cuda() else "ieee"]
+    available_precision = ["tf32" if (is_cuda() or is_ppu()) else "ieee"]
     return [
         (*shape_nw, col_a, col_b, 'none', input_precision, in_dtype, out_dtype, kpack, None)
         for shape_nw in [[128, 256, 32, 8], [128, 16, 32, 4], [32, 128, 64, 4], [128, 128, 64, 4], [64, 128, 128, 4],
@@ -3239,7 +3243,7 @@ def get_test_dot_vdot2_cases():
 
 
 def get_test_small_dots_cases():
-    if not is_cuda():
+    if not (is_cuda() or is_ppu()):
         return []
     return [(2, 4, 32, 1, False, False, 'None', 'ieee', 'float16', 'float32', 1, None),
             (1, 2, 32, 1, False, False, 'None', 'ieee', 'float8e5', 'float32', 1, None)]
@@ -3271,7 +3275,7 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
     else:
         if not is_hip() and K < 16:
             pytest.skip("small dots are supported only on HIP at the moment")
-        if is_cuda():
+        if is_cuda() or is_ppu():
             capability = torch.cuda.get_device_capability()
 
             if capability[0] < 7:
@@ -3545,7 +3549,7 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
                           for kpack in ([1, 2] if (is_hip() and not (is_hip_cdna4() or is_hip_gfx1250())) else [1])])
 def test_scaled_dot(M, N, K, col_a, col_b, rhs_scale, mxfp_type, normal_type, num_warps, mma, kpack, device):
     is_SM120 = False
-    if is_cuda():
+    if is_cuda() or is_ppu():
         cc = torch.cuda.get_device_capability()
         if cc < (8, 9):
             pytest.skip("float8e4nv not supported on CUDA < 8.9")
@@ -3786,7 +3790,7 @@ def test_scaled_dot(M, N, K, col_a, col_b, rhs_scale, mxfp_type, normal_type, nu
     # CDNA2 devices use reduced precision fp16 and bf16 and flush input and output denormal values
     # to zero. Detailed info is at:
     # https://pytorch.org/docs/stable/notes/numerical_accuracy.html#reduced-precision-fp16-and-bf16-gemms-and-convolutions-on-amd-instinct-mi200-devices
-    large_tolerance = is_hip_cdna2()
+    large_tolerance = is_hip_cdna2() or (is_ppu() and mxfp_type == "e4m3" and normal_type == "e4m3")
     # For e4m3, RDNA3 can slightly exceed the default tolerances in isolated cases
     if is_hip_rdna3() and mxfp_type == "e4m3" and normal_type == "fp16":
         large_tolerance = True
@@ -3842,7 +3846,7 @@ def test_dot3d(B, num_warps, M, N, K, BLOCK_M, BLOCK_N, in_dtype_str, out_dtype_
         if in_dtype_str == "float64":
             pytest.skip("float64 not supported on HIP yet")
     else:
-        input_precision = "tf32" if is_cuda() and in_dtype_str == 'float32' else "ieee"
+        input_precision = "tf32" if (is_cuda() or is_ppu()) and in_dtype_str == 'float32' else "ieee"
         if not is_interpreter() and (BLOCK_M < 16 or BLOCK_N < 16):
             pytest.skip("small dots are supported only on HIP at the moment")
 
@@ -3950,7 +3954,7 @@ def test_dot3d(B, num_warps, M, N, K, BLOCK_M, BLOCK_N, in_dtype_str, out_dtype_
 
 @pytest.mark.parametrize('in_dtype', ['float32'])
 def test_dot_mulbroadcasted(in_dtype, device):
-    if is_cuda():
+    if is_cuda() or is_ppu():
         capability = torch.cuda.get_device_capability()
         if capability[0] < 8:
             pytest.skip("Requires sm >= 80 to run")
@@ -3990,7 +3994,7 @@ def test_dot_mulbroadcasted(in_dtype, device):
     z_ref = np.matmul(x, y)
     np.testing.assert_allclose(z_ref, to_numpy(z_tri), atol=0.01)
 
-    if not is_cuda():
+    if not (is_cuda() or is_ppu()):
         return
     assert "tt.dot" in h.asm['ttir']
     assert re.search(r"ttg.async_wait %.* {num = 2 : i32}", h.asm["ttgir"]) is not None
@@ -4901,7 +4905,7 @@ def test_num_warps_pow2(device):
 
 @pytest.mark.parametrize("num_ctas", num_ctas_list)
 def test_inline_asm(num_ctas, device):
-    if not is_cuda():
+    if not (is_cuda() or is_ppu()):
         pytest.skip("test_inline_asm is only supported in CUDA")
 
     @triton.jit
@@ -4929,7 +4933,7 @@ def test_inline_asm(num_ctas, device):
 
 @pytest.mark.parametrize("num_ctas", num_ctas_list)
 def test_inline_asm_packed(num_ctas, device):
-    if not is_cuda():
+    if not (is_cuda() or is_ppu()):
         pytest.skip("test_inline_asm is only supported in CUDA")
 
     @triton.jit
@@ -4956,7 +4960,7 @@ def test_inline_asm_packed(num_ctas, device):
 
 @pytest.mark.parametrize('num_ctas', num_ctas_list)
 def test_inline_asm_with_pointers(num_ctas, device):
-    if not is_cuda():
+    if not (is_cuda() or is_ppu()):
         pytest.skip('test_inline_asm is only supported in CUDA')
 
     @triton.jit
@@ -4981,7 +4985,7 @@ def test_inline_asm_with_pointers(num_ctas, device):
 
 
 def test_inline_asm_multiple_outputs(device):
-    if not is_cuda():
+    if not (is_cuda() or is_ppu()):
         pytest.skip('test_inline_asm is only supported in CUDA')
 
     @triton.jit
@@ -5027,7 +5031,7 @@ def test_inline_asm_multiple_outputs(device):
 
 
 def test_inline_asm_packed_multiple_outputs(device):
-    if not is_cuda():
+    if not (is_cuda() or is_ppu()):
         pytest.skip('test_inline_asm is only supported in CUDA')
 
     @triton.jit
@@ -5595,12 +5599,14 @@ def test_globaltimer(device):
 
     out1 = to_triton(np.zeros((128, ), dtype=np.int64), device=device)
     out2 = to_triton(np.zeros((2, ), dtype=np.int64), device=device)
-    if is_cuda():
+    if is_cuda() or is_ppu():
         func = tl.extra.cuda.globaltimer
     else:
         func = tl.extra.hip.memrealtime
     h = kernel[(1, )](out1, out2, func)
     assert out2[1] - out2[0] > 0
+    if is_ppu():
+        return
     if is_cuda():
         assert h.asm["ptx"].count("%globaltimer") == 2
     else:
@@ -5753,7 +5759,7 @@ def matmul_kernel(  #
 @pytest.mark.parametrize("low_precision_acc", [0, 32, 64, 128])
 def test_dot_max_num_imprecise_acc(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, in_type_str, low_precision_acc, device):
     num_stages = 3
-    if is_cuda():
+    if is_cuda() or is_ppu():
         cc = torch.cuda.get_device_capability()
         if cc[0] >= 9 and in_type_str == "float8e4b15":
             pytest.skip("Dot op does not support fp8e4b15 on CUDA arch >= 90")
@@ -5846,7 +5852,7 @@ def test_enable_reflect_ftz(enable_reflect_ftz, device, fresh_knobs):
 @pytest.mark.parametrize("arch", ["sm70", "sm80", "sm90", "gfx942", "gfx950", "gfx1200"])
 @pytest.mark.parametrize("env_var_override", [False, True])
 def test_override_arch(arch, env_var_override, device, fresh_knobs):
-    if arch.startswith("sm") and not is_cuda():
+    if arch.startswith("sm") and not (is_cuda() or is_ppu()):
         pytest.skip(f"{arch} arch only for CUDA")
     elif arch.startswith("gfx") and not is_hip():
         pytest.skip(f"{arch} arch only for HIP")
@@ -5868,6 +5874,14 @@ def test_override_arch(arch, env_var_override, device, fresh_knobs):
             h = simple.warmup(data, out, arch=arch, grid=(1, ))
         ttgir_cc = re.search(r'cuda:(\d+)', h.asm["ttgir"])
         assert ttgir_cc.group(1) == arch[2:]
+    elif is_ppu():
+        if env_var_override:
+            fresh_knobs.runtime.override_arch = str(arch)
+            h = simple.warmup(data, out, grid=(1, ))
+        else:
+            h = simple.warmup(data, out, arch=arch, grid=(1, ))
+        ttgir_cc = re.search(r'ppu:(\d+)', h.asm["ttgir"])
+        assert ttgir_cc.group(1) == arch[2:]
     elif is_hip():
         # For HIP, the generated kernel is a binary containing the final ISA. So we cannot run
         # them like CUDA side if the chip doesn't match. Here we just check generated ISA.
@@ -5885,8 +5899,8 @@ def test_override_arch(arch, env_var_override, device, fresh_knobs):
 
 
 def test_num_ctas_pre_sm90(device, fresh_knobs):
-    if not is_cuda() and not is_hip():
-        pytest.skip("Only supported on CUDA and HIP")
+    if not is_cuda() and not is_ppu() and not is_hip():
+        pytest.skip("Only supported on CUDA, PPU, and HIP")
 
     @triton.jit
     def _kernel(src):
@@ -5896,6 +5910,9 @@ def test_num_ctas_pre_sm90(device, fresh_knobs):
     if is_cuda():
         arch = "sm80"
         msg = r"num_ctas > 1 requires NVIDIA SM90\+ \(Hopper\)"
+    elif is_ppu():
+        arch = "sm80"
+        msg = r"num_ctas > 1 requires SM90\+"
     else:
         arch = "gfx942"
         msg = r"num_ctas > 1 not supported"
@@ -6060,6 +6077,8 @@ def test_tl_range_num_stages(device):
         torch.testing.assert_close(ref_out, c, rtol=1e-3, atol=1e-3)
         if device in ['cuda']:
             capability = torch.cuda.get_device_capability()
+            if is_ppu():
+                return
             if capability[0] >= 8:
                 ptx = pgm.asm['ptx']
                 # check that the loop got pipelined with the right number of stages.

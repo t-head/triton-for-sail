@@ -9,7 +9,9 @@ from triton._internal_testing import is_cuda
 
 
 def test_nvidia_kernel_dispatch_without_torch():
-    if not is_cuda() and torch.cuda.get_device_capability()[0] >= 9:
+    if not is_cuda():
+        pytest.skip("Requires CUDA and TMAs")
+    if torch.cuda.get_device_capability()[0] < 9:
         pytest.skip("Requires CUDA and TMAs")
 
     env = os.environ.copy()
