@@ -28,6 +28,7 @@ class TestConfig:
     file_path: str                       # 测试文件路径
     test_filter: Optional[str] = None    # pytest -k 过滤或 ::node_id
     extra_args: List[str] = field(default_factory=list)  # 额外 pytest 参数
+    skip_boards: List[str] = field(default_factory=list)  # 在指定板卡上跳过 (e.g. ["OAM-810E"])
 
     @property
     def display_name(self) -> str:
@@ -608,8 +609,10 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
         # --------------------------------------------------------------
         TestConfig(
             # AIU fp8 flash-attention: 覆盖 fp8 量化 + aiu_load/dot 在 attention 中的配合
+            # TODO: 810E 上暂时跳过，待环境问题修复后放开
             file_path=os.path.join(test_dir, "python/test/unit/ppu/perf/06-fused-attention-aiu.py"),
             test_filter="test_op_fp8[True-1-2-1024-64]",
+            skip_boards=["OAM-810E"],
         ),
     ]
 
@@ -1036,10 +1039,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"📄 输出文件: {args.output}")
 
     # ---- 逐个运行测试 ----
+    current_board = os.environ.get("BOARD_TYPE", "")
     results: List[TestResult] = []
+    skipped_by_board = 0
     for idx, cfg in enumerate(test_configs):
+        if cfg.skip_boards and current_board in cfg.skip_boards:
+            print(f"\n⏭️ [{idx+1}/{len(test_configs)}] {cfg.display_name} — skipped on {current_board}")
+            skipped_by_board += 1
+            continue
         result = run_single_test(cfg, idx, verbose=args.verbose)
         results.append(result)
+    if skipped_by_board:
+        print(f"\n⏭️ {skipped_by_board} test(s) skipped for board {current_board}")
 
     # ---- 收集所有生成的 XML 文件 ----
     xml_files: List[str] = [

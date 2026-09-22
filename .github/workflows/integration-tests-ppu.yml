@@ -43,6 +43,7 @@ jobs:
           # Mount NAS so the pod can hand test results back to the runner:
           #   host /wl_nas -> pod /mnt/wl_nas (both PPU pod and runner pod access NAS at /mnt/wl_nas)
           host_volumes: /nas_aisw:/nas_aisw,/wl_nas:/mnt/wl_nas
+          extra_env: BOARD_TYPE=${{ matrix.runner }}
           timeout_minutes: 300
           command: |
             cd /workspace/source
@@ -107,8 +108,11 @@ jobs:
     needs: integration-tests-ppu
     if: ${{ !cancelled() }}
     runs-on: k8s-runner-group-cpu-thead
+    timeout-minutes: 10
     container:
       image: ghcr.io/actions/actions-runner:latest
+      volumes:
+        - /wl_nas:/mnt/wl_nas
     steps:
       - name: Checkout
         uses: actions/checkout@v4
