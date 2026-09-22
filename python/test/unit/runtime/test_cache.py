@@ -1012,15 +1012,16 @@ def test_module_unload_survives_hook_error(device, fresh_knobs):
     compiled_kernel = kernel.warmup(out, 1, grid=(1, ))
     compiled_kernel._init_handles()
 
-    unloaded = False
+    unload_count = 0
     unload_module = compiled_kernel._unload_module
 
     def track_unload(module):
-        nonlocal unloaded
-        unloaded = True
+        nonlocal unload_count
+        unload_count += 1
         unload_module(module)
 
     def fail_unload_hook(*args, **kwargs):
+        compiled_kernel.__del__()
         raise RuntimeError("unload hook failed")
 
     compiled_kernel._unload_module = track_unload
@@ -1029,5 +1030,30 @@ def test_module_unload_survives_hook_error(device, fresh_knobs):
         compiled_kernel.__del__()
     triton.knobs.runtime.kernel_unload_hook.remove(fail_unload_hook)
 
-    assert unloaded
+    assert unload_count == 1
     assert compiled_kernel.module is None
+
+
+def test_module_load_hook_error_does_not_publish_runner(device, fresh_knobs):
+
+    @triton.jit
+    def kernel(out_ptr, val) -> None:
+        tl.store(out_ptr, val)
+
+    out = torch.randn(1, dtype=torch.float32, device=device)
+    compiled_kernel = kernel.warmup(out, 1, grid=(1, ))
+
+    def fail_load_hook(*args, **kwargs):
+        raise RuntimeError("load hook failed")
+
+    triton.knobs.runtime.kernel_load_end_hook.add(fail_load_hook)
+    with pytest.raises(RuntimeError, match="load hook failed"):
+        compiled_kernel._init_handles()
+    triton.knobs.runtime.kernel_load_end_hook.remove(fail_load_hook)
+
+    assert compiled_kernel.module is None
+    assert compiled_kernel._run is None
+    compiled_kernel._init_handles()
+    assert compiled_kernel.module is not None
+    assert compiled_kernel._run is not None
+    compiled_kernel.__del__()
