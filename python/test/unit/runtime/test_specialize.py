@@ -2,7 +2,7 @@ import numpy
 import pytest
 import torch
 from collections import namedtuple
-from triton._C.libtriton import native_specialize_impl
+from triton._C.libtriton import make_tensordesc_args, native_specialize_impl
 from triton.runtime.jit import MockTensor, JITCallable
 from triton._utils import canonicalize_dtype
 from triton.backends.nvidia.compiler import CUDABackend
@@ -156,6 +156,19 @@ def gluon_tensordescriptors_to_specialize():
 
 def mock_tensors_to_specialize():
     return [mock_tensor_from_tensor(tensor) for tensor in tensors_to_specialize()]
+
+
+def test_make_tensordesc_args_input_validation():
+
+    def make_tensordesc_arg(*args):
+        return []
+
+    with pytest.raises(TypeError, match="tuple signature"):
+        make_tensordesc_args([], [], {}, [], (), make_tensordesc_arg)
+    with pytest.raises(ValueError, match="length mismatch"):
+        make_tensordesc_args([1], (), {}, [], (), make_tensordesc_arg)
+    with pytest.raises(TypeError, match="relevant_paths"):
+        make_tensordesc_args([1], ("i32", ), [], [], (), make_tensordesc_arg)
 
 
 @pytest.mark.parametrize("input_generator", [

@@ -617,7 +617,17 @@ bool visit_make_tensordesc_args(PyObject *arg, PyObject *sig,
                                 bool has_tensordesc_meta, PyObject *base_args,
                                 PyObject *make_tensordesc_arg,
                                 Py_ssize_t *tensordesc_idx, PyObject *result) {
-  assert(PyTuple_Check(sig));
+  if (!PyTuple_Check(sig)) {
+    PyErr_SetString(PyExc_TypeError,
+                    "make_tensordesc_args expected a tuple signature");
+    return false;
+  }
+  if (!PyDict_Check(relevant_paths)) {
+    PyErr_SetString(PyExc_TypeError,
+                    "make_tensordesc_args expected relevant_paths to be a dict");
+    return false;
+  }
+
   auto arg_fast =
       from_new_ref(PySequence_Fast(arg, "Expected iterable args node"));
   if (!arg_fast)
@@ -625,7 +635,13 @@ bool visit_make_tensordesc_args(PyObject *arg, PyObject *sig,
 
   Py_ssize_t arg_len = PySequence_Fast_GET_SIZE(arg_fast.ptr());
   Py_ssize_t sig_len = PyTuple_GET_SIZE(sig);
-  assert(sig_len == arg_len || !"Invalid signature");
+  if (sig_len != arg_len) {
+    PyErr_Format(PyExc_ValueError,
+                 "make_tensordesc_args argument/signature length mismatch: %zd "
+                 "!= %zd",
+                 arg_len, sig_len);
+    return false;
+  }
   Py_ssize_t len = arg_len;
 
   for (Py_ssize_t i = 0; i < len; ++i) {
