@@ -310,7 +310,7 @@ static PyObject *unloadModule(PyObject *self, PyObject *args) {
   CUDA_CHECK_AND_RETURN_NULL_ALLOW_THREADS(cuModuleUnload(mod));
   Py_END_ALLOW_THREADS;
 
-  return Py_None;
+  Py_RETURN_NONE;
 }
 
 typedef CUresult (*cuOccupancyMaxActiveClusters_t)(

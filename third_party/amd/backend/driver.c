@@ -502,7 +502,7 @@ static PyObject *unloadModule(PyObject *self, PyObject *args) {
 
   HIP_CHECK_AND_RETURN_NULL(hipSymbolTable.hipModuleUnload(mod))
 
-  return Py_None;
+  Py_RETURN_NONE;
 }
 
 static PyObject *createTDMDescriptor(PyObject *self, PyObject *args) {
