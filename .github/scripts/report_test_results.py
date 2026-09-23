@@ -73,10 +73,10 @@ def _parse_xml(xml_path):
         msg = ""
         if f is not None:
             status = "fail"
-            msg = (f.text or "")[:200]
+            msg = (f.text or f.get("message", "") or "")[:200]
         elif e is not None:
             status = "error"
-            msg = (e.text or "")[:200]
+            msg = (e.text or e.get("message", "") or "")[:200]
         else:
             status = "pass"
         testcases.append(
