@@ -53,18 +53,7 @@ jobs:
             git config --global --unset-all url.https://ai-gerrit.eng.t-head.cn/Public/Github/.insteadOf 2>/dev/null || true
             # PPU SDK and torch are pre-installed in the docker image
             source /usr/local/PPU_SDK/envsetup.sh
-            # TODO: Uncomment when using base image without pre-installed SDK/torch
-            # wget -nv -O /tmp/ppu_sdk.run $SDK_URL
-            # bash /tmp/ppu_sdk.run --prefix=/usr/local/ --silent
-            # rm -f /tmp/ppu_sdk.run
-            # source /usr/local/PPU_SDK/envsetup.sh
-            # wget -nv -O /tmp/torch.tar.gz $TORCH_URL
-            # mkdir -p /tmp/torch_pkg && tar -xzf /tmp/torch.tar.gz -C /tmp/torch_pkg
-            # pip install /tmp/torch_pkg/*.whl || pip install /tmp/torch_pkg/**/*.whl
-            # rm -rf /tmp/torch.tar.gz /tmp/torch_pkg
-            # Uninstall any image-bundled triton before building from source (double insurance):
-            #   1) dynamically detect and uninstall ALL triton distribution names
-            #   2) assert triton is no longer importable; force-remove leftovers and abort if it persists
+            # Uninstall any image-bundled triton before building from source
             echo "[INFO] triton-related packages before uninstall:"; pip list 2>/dev/null | grep -i triton || true
             for pkg in $(pip list --format=freeze 2>/dev/null | grep -iE '^[^=]*triton[^=]*=' | cut -d= -f1); do
               pip uninstall -y "$pkg" || true
@@ -92,11 +81,9 @@ jobs:
             python -c "import triton, sys; f=getattr(triton,'__file__',''); print('[INFO] triton.__file__ =', f); print('[INFO] triton.__version__ =', getattr(triton,'__version__','?')); sys.exit(0 if '/workspace/source' in f else 1)" || { echo "[FATAL] imported triton is NOT the source-built one (expected under /workspace/source)"; exit 1; }
             # Install test dependencies
             pip install -r python/test-requirements.txt pandas
-            # Run checkin tests (verbose output so logs are captured by ppu-scheduler-action)
-            # Capture exit code so NAS copy always runs (even on test failure)
-            python .github/scripts/run_checkin_tests.py -o test_result.xml --test-dir /workspace/source --env-output env_info.json -v || TEST_RC=$?
+            # Run checkin tests; capture exit code so NAS copy always runs on failure
+            python .github/ppu-ci/run_checkin_tests.py -o test_result.xml --test-dir /workspace/source --env-output env_info.json -v || TEST_RC=$?
             TEST_RC=${TEST_RC:-0}
-            # Print test summary to stdout (captured in pod logs)
             echo "========== TEST RESULT SUMMARY =========="
             python3 << 'PYEOF'
             import xml.etree.ElementTree as ET
@@ -117,14 +104,11 @@ jobs:
                 print(f'  [{status}] {name} ({tc.get("time", "?")}s)')
             PYEOF
             echo "========================================="
-            # env_info.json is now produced by run_checkin_tests.py --env-output
-            # Copy test results and env info to NAS for runner to pick up.
-            # Per-runner subdir avoids collision between parallel matrix boards (890P / 810E).
+            # Copy test results and env info to NAS (per-board subdir avoids collision)
             NAS_RESULT_DIR="/mnt/wl_nas/devops/triton-ci/${{ github.run_id }}/${{ github.run_attempt }}/${{ matrix.runner }}"
             mkdir -p "$NAS_RESULT_DIR"
             cp test_result.xml "$NAS_RESULT_DIR/" 2>/dev/null || true
             cp env_info.json "$NAS_RESULT_DIR/" 2>/dev/null || true
-            # Propagate original test exit code so the action reports failure correctly
             exit $TEST_RC
           cleanup_policy: always
 
@@ -133,7 +117,7 @@ jobs:
         shell: bash
         run: |
           NAS_RESULT_DIR="/wl_nas/devops/triton-ci/${{ github.run_id }}/${{ github.run_attempt }}/${{ matrix.runner }}"
-          python3 .github/scripts/report_test_results.py \
+          python3 .github/ppu-ci/report_test_results.py \
             --xml "$NAS_RESULT_DIR/test_result.xml" \
             --env-info "$NAS_RESULT_DIR/env_info.json" \
             --title "Triton PPU Test Results (${{ matrix.runner }})" \
