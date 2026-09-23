@@ -1,7 +1,7 @@
 #include "mlir/IR/BuiltinOps.h" // mlir::ModuleOp
 #include "mlir/Target/LLVMIR/LLVMTranslationInterface.h"
 #include "mlir/Target/LLVMIR/ModuleTranslation.h"
-#include "triton/Tools/Sys/GetEnv.hpp"
+#include "triton/Tools/Sys/GetEnv.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Analysis/ScopedNoAliasAA.h"
 #include "llvm/CodeGen/MIRParser/MIRParser.h"
@@ -49,6 +49,8 @@ struct BreakStructPhiNodesPass : PassInfoMixin<BreakStructPhiNodesPass> {
 } // namespace llvm
 
 using namespace llvm;
+
+namespace {
 
 // Set an LLVM command-line option using addOccurrence (simulates command-line)
 // and return its original value. Using addOccurrence instead of setValue is
@@ -507,6 +509,8 @@ translateMIRToASM(const std::string &mirPath, const std::string &triple,
 
 using ret = py::return_value_policy;
 
+} // namespace
+
 void init_triton_llvm(py::module &&m) {
 
   py::class_<llvm::LLVMContext>(m, "context", py::module_local())
@@ -565,8 +569,15 @@ void init_triton_llvm(py::module &&m) {
       .def_property_readonly(
           "name", [](llvm::Function *fn) { return fn->getName().str(); })
       .def("set_calling_conv", &llvm::Function::setCallingConv)
-      .def("add_fn_attr", [](llvm::Function *fn, std::string &name,
-                             std::string &val) { fn->addFnAttr(name, val); })
+      .def(
+          "add_fn_attr",
+          [](llvm::Function *fn, std::string &name, std::string &val) {
+            if (val.empty())
+              fn->addFnAttr(name);
+            else
+              fn->addFnAttr(name, val);
+          },
+          py::arg("name"), py::arg("val") = "")
       .def("remove_fn_attr", [](llvm::Function *fn,
                                 std::string &name) { fn->removeFnAttr(name); })
       .def("add_fn_asan_attr",
@@ -916,7 +927,7 @@ void init_triton_llvm(py::module &&m) {
   });
 }
 
-void triton_stacktrace_signal_handler(void *) {
+static void triton_stacktrace_signal_handler(void *) {
   llvm::sys::PrintStackTrace(llvm::errs());
   raise(SIGABRT);
 }

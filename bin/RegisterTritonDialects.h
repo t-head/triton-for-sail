@@ -53,7 +53,7 @@
 #include "ppu/include/TritonPPUGPUTransforms/Passes.h"
 
 #include "triton/Tools/PluginUtils.h"
-#include "triton/Tools/Sys/GetEnv.hpp"
+#include "triton/Tools/Sys/GetEnv.h"
 
 namespace mlir {
 namespace test {
