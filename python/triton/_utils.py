@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from functools import reduce
+import shutil
+from functools import lru_cache, reduce
 from typing import Any, Callable, TYPE_CHECKING, Union, List, Dict
 
 if TYPE_CHECKING:
@@ -155,3 +156,8 @@ def _tuple_create(arg, contents):
     # between them, but only NamedTuple has "_fields" and apparently this is how
     # everyone does the check.
     return type(arg)(*contents) if hasattr(arg, "_fields") else type(arg)(contents)
+
+
+@lru_cache(maxsize=1)
+def is_ppu_device() -> bool:
+    return shutil.which("ppu-smi") is not None

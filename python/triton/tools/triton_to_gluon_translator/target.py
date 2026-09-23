@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from enum import Enum
 
+from triton._utils import is_ppu_device
+
 
 class TranslatorTarget(str, Enum):
     """Target architecture for the Triton-to-Gluon translator.
@@ -13,6 +15,7 @@ class TranslatorTarget(str, Enum):
 
     GENERIC = "generic"
     SM80 = "sm80"
+    SM89 = "sm89"
     SM90 = "sm90"
     SM100 = "sm100"
     SM103 = "sm103"
@@ -46,7 +49,11 @@ class TranslatorTarget(str, Enum):
             TranslatorTarget.SM90,
             TranslatorTarget.SM100,
             TranslatorTarget.SM103,
-        )
+        ) and not is_ppu_device()
+
+    @property
+    def is_ppu(self) -> bool:
+        return self in (TranslatorTarget.SM80, TranslatorTarget.SM89) and is_ppu_device()
 
     @property
     def tensor_descriptor_import(self) -> str:
@@ -59,6 +66,9 @@ class TranslatorTarget(str, Enum):
 
         if self.is_amd:
             return f"{base}.amd_helpers"
+
+        if self.is_ppu:
+            return f"{base}.ppu_helpers"
 
         if self.is_nvidia:
             if self in (TranslatorTarget.SM100, TranslatorTarget.SM103):
