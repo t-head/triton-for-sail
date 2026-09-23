@@ -24,6 +24,8 @@ def test_compile_only_sm100() -> None:
 
 
 def test_compile_only_expect_zero() -> None:
+    if is_ppu() and torch.cuda.get_device_capability(0) < (9, 0):
+        pytest.skip("PPU 1.0/1.5 toolchain cannot compile sm100 targets")
 
     @triton.jit
     def expect_zero_kernel(x_ptr, out_ptr, BLOCK_SIZE: tl.constexpr):
