@@ -11,6 +11,7 @@ import pytest
 import torch
 import inspect
 from numpy.random import RandomState
+from packaging.version import Version
 
 import triton
 import triton.language as tl
@@ -3416,7 +3417,7 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
     else:
         if not is_hip() and K < 16:
             tf32_n8 = (in_dtype == 'float32' and N == 8 and K == 8 and input_precision == 'tf32')
-            if in_dtype != 'float64' and not tf32_n8:
+            if is_ppu() or (in_dtype != 'float64' and not tf32_n8):
                 pytest.skip("small dots are supported only on HIP at the moment")
         if is_cuda() or is_ppu():
             capability = torch.cuda.get_device_capability()
@@ -7011,6 +7012,8 @@ def test_dot_multidim(rank, trans_a, trans_b, device):
     assert torch.allclose(c, d, rtol=1e-3, atol=1e-2)
 
 
+@pytest.mark.skipif(Version(np.__version__) < Version("2.0.0"),
+                    reason="test uses np.concat which requires numpy >= 2.0.0")
 @pytest.mark.parametrize("dtype_str", ["float32", "float64"])
 def test_libdevice_rint(dtype_str, device):
     iinfo32 = np.iinfo(np.int32)
@@ -7019,7 +7022,7 @@ def test_libdevice_rint(dtype_str, device):
     x0_np = np.random.uniform(iinfo32.min, iinfo32.max + 1, size)
     x1_np = np.random.uniform(iinfo64.min, iinfo64.max + 1, size)
     x2_np = np.array([-2.5, -1.5, -0.5, -0., 0., 0.5, 1.5, 2.5, float("inf"), -float("inf"), float("nan")])
-    x_np = np.concat((x0_np, x1_np, x2_np))
+    x_np = np.concatenate((x0_np, x1_np, x2_np)).astype(dtype_str)
     x_tri = to_triton(x_np, device=device, dst_type=dtype_str)
 
     @triton.jit
