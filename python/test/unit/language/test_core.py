@@ -1062,7 +1062,7 @@ def test_precise_math(expr_prec, expr_ref, num_ctas, device):
     kernel = patch_kernel(kernel, {'PREC_CALC': expr_prec, 'REF_CALC': expr_ref})
 
     kernel[(1, )](x, y, out, out_ref, BLOCK=shape[0], num_ctas=num_ctas)
-    if expr_prec.count('sqrt') > 0 and is_ppu():
+    if expr_prec.count('sqrt') > 0 and is_ppu() and torch.cuda.get_device_capability() < (8, 9):
         # PPU0010 only supports "sqrt.f32"; "sqrt.f64" is approximated.
         torch.testing.assert_close(out, out_ref)
     else:
@@ -4076,7 +4076,10 @@ def test_scaled_dot(M, N, K, col_a, col_b, rhs_scale, mxfp_type, normal_type, nu
     # CDNA2 devices use reduced precision fp16 and bf16 and flush input and output denormal values
     # to zero. Detailed info is at:
     # https://pytorch.org/docs/stable/notes/numerical_accuracy.html#reduced-precision-fp16-and-bf16-gemms-and-convolutions-on-amd-instinct-mi200-devices
-    large_tolerance = is_hip_cdna2() or (is_ppu() and mxfp_type == "e4m3" and normal_type == "e4m3")
+    large_tolerance = is_hip_cdna2()
+    if (is_ppu() and torch.cuda.get_device_capability() < (9, 0) and mxfp_type == "e4m3"
+            and normal_type == "e4m3"):
+        large_tolerance = True
     # For e4m3, RDNA3 can slightly exceed the default tolerances in isolated cases
     if is_hip_rdna3() and mxfp_type == "e4m3" and normal_type == "fp16":
         large_tolerance = True
