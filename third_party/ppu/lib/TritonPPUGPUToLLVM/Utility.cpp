@@ -339,7 +339,7 @@ LogicalResult lowerLdStMatrix(
   // Compute the bits that are moved by one instruction
   // Compute elements for which we can swap the xor by an add
   auto [nAdditive, permStrides] =
-      actionAdditiveStrides(reps, addrLayout, maskSpanAffineOffset);
+      actionAdditiveStrides(reps, addrLayout, maskSpanAffineOffset, vec);
   reps = permStrides.apply(reps);
   if (isStore) {
     vals = permStrides.apply(vals);
