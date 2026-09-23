@@ -277,6 +277,7 @@ struct ConvertTritonGPUToLLVMPPU
                                                         benefit);
     mlir::triton::populateInstrumentationToLLVMPatterns(typeConverter, patterns,
                                                         targetInfo);
+    mlir::triton::populateFpSanToLLVMPatterns(typeConverter, patterns);
 
     TritonLLVMConversionTarget convTarget(*context);
     if (failed(applyPartialConversion(mod, convTarget, std::move(patterns))))
