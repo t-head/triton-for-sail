@@ -1,0 +1,146 @@
+name: Integration Tests PPU
+
+on:
+  workflow_call:
+    inputs:
+      matrix:
+        required: true
+        type: string
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SDK_URL: https://art-pub.eng.t-head.cn/artifactory/apackage/daily/ppu.2v2_release/latest/PPU_SDK/ppu_1.0.0_Ubuntu2404_v13_release.run
+  TORCH_URL: https://art-pub.eng.t-head.cn/artifactory/apackage/daily/ppu.2v2_release/latest/PPU_SDK_PYPI/pytorch/ppu_sdk_hggcrt3-pytorch2.10.0-ubuntu2404-py312.tar.gz
+
+jobs:
+  integration-tests-ppu:
+    runs-on: k8s-runner-group-cpu-thead
+    container:
+      image: ghcr.io/actions/actions-runner:latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: ${{ fromJson(inputs.matrix || '["ZW-M890P", "OAM-810E"]') }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: "true"
+
+      - name: Build and Test on PPU
+        id: ppu-test
+        uses: t-head/ppu-scheduler-action@main
+        with:
+          image: reg.docker.alibaba-inc.com/ai-tmp/pytorch:2.10.0-ubuntu24.04-hggcrt3-py312-ppu202609181903
+          nnodes: 0
+          nproc_per_node: 1
+          node_selector: "board-type=${{ matrix.runner }}"
+          namespace: ppu-sched
+          # Mount NAS so the pod can hand test results back to the runner:
+          #   host /wl_nas -> pod /mnt/wl_nas (both PPU pod and runner pod access NAS at /mnt/wl_nas)
+          host_volumes: /nas_aisw:/nas_aisw,/wl_nas:/mnt/wl_nas
+          extra_env: BOARD_TYPE=${{ matrix.runner }}
+          timeout_minutes: 300
+          command: |
+            cd /workspace/source
+            # Fix: image bakes in PIP_INDEX_URL pointing to unreachable internal server
+            unset PIP_INDEX_URL
+            # Fix: image bakes in git insteadOf redirecting github.com to unreachable internal gerrit
+            git config --global --unset-all url.https://ai-gerrit.eng.t-head.cn/Public/Github/.insteadOf 2>/dev/null || true
+            # PPU SDK and torch are pre-installed in the docker image
+            source /usr/local/PPU_SDK/envsetup.sh
+            # TODO: Uncomment when using base image without pre-installed SDK/torch
+            # wget -nv -O /tmp/ppu_sdk.run $SDK_URL
+            # bash /tmp/ppu_sdk.run --prefix=/usr/local/ --silent
+            # rm -f /tmp/ppu_sdk.run
+            # source /usr/local/PPU_SDK/envsetup.sh
+            # wget -nv -O /tmp/torch.tar.gz $TORCH_URL
+            # mkdir -p /tmp/torch_pkg && tar -xzf /tmp/torch.tar.gz -C /tmp/torch_pkg
+            # pip install /tmp/torch_pkg/*.whl || pip install /tmp/torch_pkg/**/*.whl
+            # rm -rf /tmp/torch.tar.gz /tmp/torch_pkg
+            # Uninstall any image-bundled triton before building from source (double insurance):
+            #   1) dynamically detect and uninstall ALL triton distribution names
+            #   2) assert triton is no longer importable; force-remove leftovers and abort if it persists
+            echo "[INFO] triton-related packages before uninstall:"; pip list 2>/dev/null | grep -i triton || true
+            for pkg in $(pip list --format=freeze 2>/dev/null | grep -iE '^[^=]*triton[^=]*=' | cut -d= -f1); do
+              pip uninstall -y "$pkg" || true
+            done
+            pip uninstall -y triton pytorch-triton triton-nightly 2>/dev/null || true
+            # Post-uninstall assertion: guarantee no image-bundled triton survives into the source build
+            if python -c "import triton" 2>/dev/null; then
+              echo "[FATAL] triton is STILL importable after uninstall:"; python -c "import triton; print(triton.__file__)" || true
+              SP=$(python -c "import sys; print(next((p for p in sys.path if p.endswith('site-packages')), ''))" 2>/dev/null || true)
+              if [ -n "$SP" ]; then
+                rm -rf "$SP"/triton "$SP"/triton-*.dist-info "$SP"/triton-*.egg-info "$SP"/__editable__*triton* "$SP"/*triton*.pth 2>/dev/null || true
+              fi
+              if python -c "import triton" 2>/dev/null; then
+                echo "[FATAL] image-bundled triton could NOT be removed; aborting to guarantee source-only build"; exit 1
+              fi
+              echo "[INFO] leftover triton removed from site-packages"
+            else
+              echo "[INFO] confirmed: no triton importable before source build"
+            fi
+            # Build and install Triton (editable install)
+            export TRITON_IR_FORMATTER_PATH=$PPU_SDK/bin/llvm-irformatter
+            pip install pybind11 setuptools==68.1.2
+            pip install -e . -v || { echo "[FATAL] triton editable build failed"; exit 1; }
+            # Verify the imported triton is the source-built editable one (resolves under /workspace/source)
+            python -c "import triton, sys; f=getattr(triton,'__file__',''); print('[INFO] triton.__file__ =', f); print('[INFO] triton.__version__ =', getattr(triton,'__version__','?')); sys.exit(0 if '/workspace/source' in f else 1)" || { echo "[FATAL] imported triton is NOT the source-built one (expected under /workspace/source)"; exit 1; }
+            # Install test dependencies
+            pip install -r python/test-requirements.txt pandas
+            # Run checkin tests (verbose output so logs are captured by ppu-scheduler-action)
+            # Capture exit code so NAS copy always runs (even on test failure)
+            python .github/scripts/run_checkin_tests.py -o test_result.xml --test-dir /workspace/source --env-output env_info.json -v || TEST_RC=$?
+            TEST_RC=${TEST_RC:-0}
+            # Print test summary to stdout (captured in pod logs)
+            echo "========== TEST RESULT SUMMARY =========="
+            python3 << 'PYEOF'
+            import xml.etree.ElementTree as ET
+            tree = ET.parse('test_result.xml')
+            root = tree.getroot()
+            for ts in root.findall('.//testsuite'):
+                total = int(ts.get('tests', 0))
+                fail = int(ts.get('failures', 0))
+                err = int(ts.get('errors', 0))
+                skip = int(ts.get('skipped', 0))
+                time_s = ts.get('time', '?')
+                print(f'Total: {total}, Passed: {total-fail-err-skip}, Failed: {fail}, Errors: {err}, Skipped: {skip}, Time: {time_s}s')
+            for tc in root.findall('.//testcase'):
+                failure = tc.find('failure')
+                error = tc.find('error')
+                status = 'FAIL' if failure is not None else ('ERROR' if error is not None else 'PASS')
+                name = tc.get('classname', '') + '.' + tc.get('name', '')
+                print(f'  [{status}] {name} ({tc.get("time", "?")}s)')
+            PYEOF
+            echo "========================================="
+            # env_info.json is now produced by run_checkin_tests.py --env-output
+            # Copy test results and env info to NAS for runner to pick up.
+            # Per-runner subdir avoids collision between parallel matrix boards (890P / 810E).
+            NAS_RESULT_DIR="/mnt/wl_nas/devops/triton-ci/${{ github.run_id }}/${{ github.run_attempt }}/${{ matrix.runner }}"
+            mkdir -p "$NAS_RESULT_DIR"
+            cp test_result.xml "$NAS_RESULT_DIR/" 2>/dev/null || true
+            cp env_info.json "$NAS_RESULT_DIR/" 2>/dev/null || true
+            # Propagate original test exit code so the action reports failure correctly
+            exit $TEST_RC
+          cleanup_policy: always
+
+      - name: Test summary
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          NAS_RESULT_DIR="/wl_nas/devops/triton-ci/${{ github.run_id }}/${{ github.run_attempt }}/${{ matrix.runner }}"
+          python3 .github/scripts/report_test_results.py \
+            --xml "$NAS_RESULT_DIR/test_result.xml" \
+            --env-info "$NAS_RESULT_DIR/env_info.json" \
+            --title "Triton PPU Test Results (${{ matrix.runner }})" \
+            --docker-image "reg.docker.alibaba-inc.com/ai-tmp/pytorch:2.10.0-ubuntu24.04-hggcrt3-py312-ppu202609181903" \
+            --run-number "${{ github.run_number }}" \
+            --branch "${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}" \
+            --job-status "${{ steps.ppu-test.outputs.job_status }}" \
+            --duration "${{ steps.ppu-test.outputs.duration_seconds }}" \
+            --pods "${{ steps.ppu-test.outputs.task_pods }}" \
+            >> $GITHUB_STEP_SUMMARY || true
