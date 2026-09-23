@@ -46,10 +46,11 @@ class TranslatorTarget(str, Enum):
     def is_nvidia(self) -> bool:
         return self in (
             TranslatorTarget.SM80,
+            TranslatorTarget.SM89,
             TranslatorTarget.SM90,
             TranslatorTarget.SM100,
             TranslatorTarget.SM103,
-        ) and not is_ppu_device()
+        ) and not self.is_ppu
 
     @property
     def is_ppu(self) -> bool:
@@ -75,7 +76,7 @@ class TranslatorTarget(str, Enum):
                 return f"{base}.blackwell_helpers"
             if self in (TranslatorTarget.SM90):
                 return f"{base}.hopper_helpers"
-            if self in (TranslatorTarget.SM80):
+            if self in (TranslatorTarget.SM80, TranslatorTarget.SM89):
                 return f"{base}.nvidia_helpers"
 
         return f"{base}.common_helpers"
