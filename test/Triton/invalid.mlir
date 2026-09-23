@@ -657,3 +657,10 @@ module attributes {"ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32,
     tt.return
   }
 }
+
+// -----
+
+// expected-error @below {{pointer types must point to integer or floating-point types}}
+tt.func @invalid_pointer_pointee(%ptr: !tt.ptr<index>) {
+  tt.return
+}
