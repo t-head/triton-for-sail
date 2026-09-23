@@ -1,13 +1,18 @@
 import functools
+import multiprocessing
 import os
+import queue
 import re
 import shutil
+import tempfile
 import numpy as np
+import sys
 import torch
 import triton
 import triton.language as tl
 from triton import knobs
 from typing import Optional, Set, Union
+from dataclasses import dataclass
 import pytest
 
 from numpy.random import RandomState
@@ -107,6 +112,10 @@ def is_hip_rdna4():
 def is_hip_gfx1250():
     target = get_current_target()
     return target is not None and target.backend == 'hip' and 'gfx1250' in target.arch
+
+
+def is_hip_cdna3_or_newer():
+    return is_hip_cdna3() or is_hip_cdna4()
 
 
 def is_hip_cdna():
@@ -244,6 +253,57 @@ def unwrap_tensor(t: Union[torch.Tensor, triton.runtime.jit.TensorWrapper]) -> t
     if isinstance(t, triton.runtime.jit.TensorWrapper):
         return t.base
     return t
+
+
+@dataclass
+class ProcessResult:
+    exc: None | BaseException
+    driver_stderr_output: str
+
+
+def _run_in_process_worker(client_fn, q, args, kwargs, env, stderr_file):
+    if env is not None:
+        os.environ.update(env)
+
+    # Capture driver/runtime writes to stderr that bypass Python's file objects.
+    with open(stderr_file, "w+b") as tmp_stderr:
+        saved_stderr_fd = os.dup(2)
+        os.dup2(tmp_stderr.fileno(), 2)
+        exc = None
+
+        try:
+            client_fn(*args, **kwargs)
+            # Raise any CUDA errors
+            torch.cuda.synchronize()
+        except Exception as e:
+            exc = e
+        finally:
+            sys.stderr.flush()
+            os.dup2(saved_stderr_fd, 2)
+            os.close(saved_stderr_fd)
+            q.put(exc)
+
+
+def run_in_process(client_fn, args=(), kwargs=None, env=None):
+    if kwargs is None:
+        kwargs = {}
+
+    ctx = multiprocessing.get_context("forkserver")
+    q = ctx.Queue()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        stderr_file = os.path.join(tmpdir, "err.log")
+        process = ctx.Process(target=_run_in_process_worker, args=(client_fn, q, args, kwargs, env, stderr_file))
+        process.start()
+        process.join()
+        with open(stderr_file, "r") as f:
+            stderr = f.read()
+    exc = None
+    try:
+        exc = q.get(timeout=1)
+    except queue.Empty:
+        print(stderr, file=sys.stderr)
+        raise RuntimeError(f"child process exited with code {process.exitcode} without returning a result") from None
+    return ProcessResult(exc, stderr)
 
 
 def _fresh_knobs_impl(skipped_attr: Optional[Set[str]] = None):

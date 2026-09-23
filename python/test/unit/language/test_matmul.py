@@ -1000,7 +1000,8 @@ def uint8_padding(scale_uint8: torch.Tensor) -> torch.Tensor:
                                      (128, 128, 256), (128, 128, 128), (16, 16, 64), (64, 64, 64)])
 @pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K", [(128, 128, 128), (256, 128, 128), (128, 256, 128),
                                                        (128, 256, 256), (128, 128, 64), (128, 64, 128),
-                                                       (16, 16, 64), (64, 64, 64)])
+                                                       (16, 16, 64), (64, 64, 64), (16, 256, 256),
+                                                       (32, 256, 256), (64, 256, 256)])
 @pytest.mark.parametrize("with_a_scale", [True, False])
 @pytest.mark.parametrize("with_b_scale", [True, False])
 @pytest.mark.parametrize("pack_along_k", [True, False])
@@ -1026,6 +1027,8 @@ def test_block_scale_fp4(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, VEC_SIZE, with_a_sc
         if not (with_a_scale and with_b_scale):
             pytest.skip("None aScale/bScale is only tested on AMD backend for now")
     elif is_cuda():
+        if BLOCK_M < 128 and not pack_along_k:
+            pytest.skip("Packing along M/N with BLOCK_M < 128 is not supported on CUDA")
         if scale_type == "float8_e4m3fn" and not pack_along_k:
             pytest.skip("Packing along K is required for float8_e4m3fn")
         if torch.cuda.get_device_capability()[0] != 10 and torch.cuda.get_device_capability()[0] != 12:
@@ -1138,7 +1141,8 @@ def test_block_scale_fp4(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, VEC_SIZE, with_a_sc
                                      BLOCK_N, BLOCK_K, NUM_STAGES=NUM_STAGES, PACK_ALONG_K=pack_along_k, num_warps=warps,
                                      **kernel_kwargs)
     torch.testing.assert_close(ref_out, output, atol=atol, rtol=rtol)
-    if is_cuda():
+    nvfp4_fallback = BLOCK_M < 128
+    if is_cuda() and not nvfp4_fallback:
         ptx = k.asm["ptx"]
         if pack_along_k:
             assert "kind::mxf4" in ptx
