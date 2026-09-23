@@ -11,7 +11,6 @@ import pytest
 import torch
 import inspect
 from numpy.random import RandomState
-from packaging.version import Version
 
 import triton
 import triton.language as tl
@@ -7012,8 +7011,6 @@ def test_dot_multidim(rank, trans_a, trans_b, device):
     assert torch.allclose(c, d, rtol=1e-3, atol=1e-2)
 
 
-@pytest.mark.skipif(Version(np.__version__) < Version("2.0.0"),
-                    reason="test uses np.concat which requires numpy >= 2.0.0")
 @pytest.mark.parametrize("dtype_str", ["float32", "float64"])
 def test_libdevice_rint(dtype_str, device):
     iinfo32 = np.iinfo(np.int32)

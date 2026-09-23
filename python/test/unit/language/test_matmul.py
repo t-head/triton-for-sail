@@ -5,7 +5,7 @@ import triton
 import triton.language as tl
 from test_mxfp import MXFP4Tensor, MXScaleTensor
 import re
-from triton._internal_testing import is_cuda, is_ppu, is_hip, is_hip_cdna3, is_hip_cdna4, is_hip_cdna, is_hip_gfx1250
+from triton._internal_testing import is_cuda, is_ppu, is_hip, is_hip_cdna3, is_hip_cdna4, is_hip_cdna, is_hip_gfx1250, is_interpreter
 
 
 def f8_to_f16(x, dtype):
@@ -1001,20 +1001,29 @@ def uint8_padding(scale_uint8: torch.Tensor) -> torch.Tensor:
 
     return scale_uint8
 
+_block_scale_shapes = [(1024, 512, 256)] if is_interpreter() else [
+    (2048, 2048, 512), (1024, 512, 256), (512, 512, 512),
+    (128, 128, 256), (128, 128, 128), (16, 16, 64), (64, 64, 64),
+]
+_block_scale_tiles = [
+    (128, 128, 128), (256, 128, 128), (128, 256, 128),
+    (128, 256, 256), (128, 128, 64), (128, 64, 128),
+    (16, 256, 256), (32, 256, 256), (64, 256, 256),
+]
+if not is_interpreter():
+    _block_scale_tiles.extend([(16, 16, 64), (64, 64, 64)])
+
+
 @pytest.mark.interpreter
-@pytest.mark.parametrize("M, N, K", [(2048, 2048, 512), (1024, 512, 256), (512, 512, 512),
-                                     (128, 128, 256), (128, 128, 128), (16, 16, 64), (64, 64, 64)])
-@pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K", [(128, 128, 128), (256, 128, 128), (128, 256, 128),
-                                                       (128, 256, 256), (128, 128, 64), (128, 64, 128),
-                                                       (16, 16, 64), (64, 64, 64), (16, 256, 256),
-                                                       (32, 256, 256), (64, 256, 256)])
+@pytest.mark.parametrize("M, N, K", _block_scale_shapes)
+@pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K", _block_scale_tiles)
 @pytest.mark.parametrize("with_a_scale", [True, False])
 @pytest.mark.parametrize("with_b_scale", [True, False])
 @pytest.mark.parametrize("pack_along_k", [True, False])
 @pytest.mark.parametrize(("scale_type", "VEC_SIZE"), [("float8_e8m0fnu", 32), ("float8_e4m3fn", 16)],
                          ids=["mxfp4", "nvfp4"])
 @pytest.mark.parametrize("nonKDim", ([0, 16, 32] if (is_hip_cdna() or is_hip_gfx1250()) else [0]))
-@pytest.mark.parametrize("warps", ([1, 2, 4, 8]))
+@pytest.mark.parametrize("warps", ([4] if is_interpreter() else [1, 2, 4, 8]))
 @pytest.mark.parametrize("compare_cutlass", ([False]))
 def test_block_scale_fp4(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, VEC_SIZE, with_a_scale, with_b_scale, pack_along_k,
                          scale_type, nonKDim, warps, compare_cutlass, device):
