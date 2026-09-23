@@ -7,7 +7,7 @@ on:
     branches: [main, 'dev-**']
     types: [checks_requested]
   push:
-    branches: [main]
+    branches: [main, 'feature/ci-testing-main']
 concurrency:
   group: ${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
@@ -34,6 +34,12 @@ jobs:
     uses: ./.github/workflows/integration-tests-amd.yml
     with:
       matrix: ${{ needs.runner-preparation.outputs.matrix-AMD }}
+
+  integration-tests-ppu:
+    needs: runner-preparation
+    uses: ./.github/workflows/integration-tests-ppu.yml
+    with:
+      matrix: '["ZW-M890P", "OAM-810E"]'
 
   build-macos:
     needs: runner-preparation
