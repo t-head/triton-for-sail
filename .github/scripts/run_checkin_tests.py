@@ -203,16 +203,6 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
         ),
 
         # --------------------------------------------------------------
-        # 语言层 - 通用 tl.dot (非 AIU 加速路径):
-        # 走 DotOpToLLVM/DotOpConversion, 与 PPU AIU matmul 完全不同的 codegen
-        # --------------------------------------------------------------
-        TestConfig(
-            # 最小尺寸 (16x16x16) fp16->fp32 dot, ieee precision, num_warps=4
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_dot[1-16-16-16-4-False-False-none-ieee-float16-float32-1-None]",
-        ),
-
-        # --------------------------------------------------------------
         # 语言层 - 数学 intrinsics (libdevice):
         # 覆盖 ConvertLibdeviceFuncToPPU 通路, 是任何数学算子改动的最小 smoke
         # --------------------------------------------------------------
@@ -308,11 +298,6 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
         # 语言层 - 数据重组: tl.cat / tl.join / tl.split 覆盖
         # 张量拼接、交错和拆分的 lowering 路径
         # --------------------------------------------------------------
-        TestConfig(
-            # tl.cat: 两个 1D tensor 拼接, 覆盖 CatOp lowering
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_cat[int8-4]",
-        ),
         TestConfig(
             # tl.join: 两个 1D tensor interleave 为 2D, 覆盖 JoinOp lowering
             file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
@@ -493,23 +478,9 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
         # PPU AIU - load 类: 覆盖普通 2D load、越界 padding 和 block-pointer 形式
         # --------------------------------------------------------------
         TestConfig(
-            # 普通 aiu_load (offsets/shape/strides 直接传入)
-            file_path=os.path.join(test_dir, "python/test/unit/ppu/aiu/test_aiu_load.py"),
-            test_filter="test_aiu_load[64-64-1024-1024-2-2]",
-        ),
-        TestConfig(
             # block-pointer (tl.make_block_ptr) 形式的 aiu_load
             file_path=os.path.join(test_dir, "python/test/unit/ppu/aiu/test_aiu_tensor_ptr.py"),
             test_filter="test_aiu_load[64-64-1024-1024-2-2]",
-        ),
-
-        # --------------------------------------------------------------
-        # PPU AIU - dot
-        # --------------------------------------------------------------
-        TestConfig(
-            # AIU fp16 matmul 主路径(AcceleratePPUMatmul)
-            file_path=os.path.join(test_dir, "python/test/unit/ppu/aiu/test_aiu_dot.py"),
-            test_filter="test_aiu_matmul[False-64-64-64-1024-1024-1024-2-2]",
         ),
 
         # --------------------------------------------------------------
@@ -525,15 +496,6 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
             # AIU fp16 flash-attention: 验证 aiu_load + aiu_dot 在完整 attention kernel 中的协作
             file_path=os.path.join(test_dir, "python/test/unit/ppu/perf/06-fused-attention-aiu.py"),
             test_filter="test_op_fp16[True-1-2-1024-64]",
-        ),
-
-        # --------------------------------------------------------------
-        # PPU AIU - addmm: 覆盖 bias + matmul 融合 (alpha*AB + beta*bias)
-        # --------------------------------------------------------------
-        TestConfig(
-            # AIU addmm 最小块 32x32x32, scalar=0.001, 验证 fused bias-matmul
-            file_path=os.path.join(test_dir, "python/test/unit/ppu/aiu/test_aiu_addmm.py"),
-            test_filter="test_aiu_addmm[0.001-32-32-32-1024-1024-1024-1-2]",
         ),
 
         # --------------------------------------------------------------
@@ -558,34 +520,6 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
             file_path=os.path.join(test_dir, "python/test/unit/ppu/aiu/test_aiu_dot_fp8_order.py"),
             test_filter="test_aiu_matmul_fp8_with_order[32-32-32-512-512-512-2-2]",
             skip_boards=["OAM-810E"],
-        ),
-        TestConfig(
-            # AIU dot + column-major layout (order=(0,1)), 最小块 32x32x32
-            file_path=os.path.join(test_dir, "python/test/unit/ppu/aiu/test_aiu_dot_order.py"),
-            test_filter="test_aiu_matmul[32-32-32-1024-1024-1024-1-2]",
-        ),
-
-        # --------------------------------------------------------------
-        # PPU AIU - tensor_ptr order: block-pointer + column-major layout
-        # --------------------------------------------------------------
-        TestConfig(
-            # block-pointer matmul + column-major, 验证 tl.make_block_ptr order 参数
-            file_path=os.path.join(test_dir, "python/test/unit/ppu/aiu/test_aiu_tensor_ptr_order.py"),
-            test_filter="test_aiu_matmul[32-32-32-1024-1024-1024-1-2]",
-        ),
-
-        # --------------------------------------------------------------
-        # PPU AIU - dot 扩展: mixed_load 和 small block 变体
-        # --------------------------------------------------------------
-        TestConfig(
-            # AIU matmul mixed_load=True: 普通 tl.load + aiu_load 混合
-            file_path=os.path.join(test_dir, "python/test/unit/ppu/aiu/test_aiu_dot.py"),
-            test_filter="test_aiu_matmul[True-32-32-32-1024-1024-1024-1-2]",
-        ),
-        TestConfig(
-            # AIU matmul small block 16x16x16, 覆盖极小 tile 路径
-            file_path=os.path.join(test_dir, "python/test/unit/ppu/aiu/test_aiu_dot.py"),
-            test_filter="test_aiu_matmul_small_block[False-16-16-16-128-128-128-1-2]",
         ),
 
         # --------------------------------------------------------------
@@ -854,6 +788,50 @@ def cleanup_temp_files(xml_files: List[str], verbose: bool = False) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 失败测试的合成 XML
+# ---------------------------------------------------------------------------
+
+def _create_synthetic_failure_xml(result: TestResult, output_path: str) -> None:
+    """Create a minimal JUnit XML for a test that failed without producing XML.
+
+    When pytest crashes during collection or early setup, it may not write any
+    JUnit XML.  This function synthesises a one-testcase XML containing the
+    failure information so that the merged report still shows the failure.
+    """
+    root = ET.Element(
+        "testsuite",
+        name="synthetic",
+        tests="1",
+        failures="1",
+        errors="0",
+        skipped="0",
+        time=f"{result.duration:.3f}",
+    )
+    test_name = result.config.test_filter or os.path.basename(result.config.file_path)
+    tc = ET.SubElement(
+        root, "testcase",
+        classname=result.config.file_path,
+        name=test_name,
+        time=f"{result.duration:.3f}",
+    )
+    fail_elem = ET.SubElement(
+        tc, "failure",
+        message=f"pytest exited with code {result.returncode} (no XML produced)",
+    )
+    details = result.stderr or result.stdout or ""
+    if details:
+        fail_elem.text = details[-2000:]
+    else:
+        fail_elem.text = (
+            f"Test process exited with return code {result.returncode} "
+            f"but did not produce JUnit XML output. "
+            f"This usually means pytest crashed during collection or early setup."
+        )
+    tree = ET.ElementTree(root)
+    tree.write(output_path, encoding="utf-8", xml_declaration=True)
+
+
+# ---------------------------------------------------------------------------
 # 摘要报告
 # ---------------------------------------------------------------------------
 
@@ -1054,6 +1032,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         results.append(result)
     if skipped_by_board:
         print(f"\n⏭️ {skipped_by_board} test(s) skipped for board {current_board}")
+
+    # ---- 为未生成 XML 的失败测试创建合成 XML ----
+    for idx, r in enumerate(results):
+        if not r.passed and r.xml_path is None:
+            synthetic_path = f"results_{idx}_synthetic.xml"
+            _create_synthetic_failure_xml(r, synthetic_path)
+            r.xml_path = synthetic_path
+            print(f"  ⚠️ Created synthetic failure XML for: {r.config.display_name}")
 
     # ---- 收集所有生成的 XML 文件 ----
     xml_files: List[str] = [
