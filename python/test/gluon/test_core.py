@@ -19,6 +19,7 @@ from triton._internal_testing import (
     is_hip_cdna4,
     is_hopper_or_newer,
     is_hopper,
+    is_ppu,
 )
 from triton.compiler import max_shared_mem
 from triton.tools.mxfp import MXFP4Tensor, MXScaleTensor
@@ -3399,6 +3400,47 @@ def test_shared_atomic_scatter_rmw_broadcast():
     expected = values[:, None].expand(N, M).contiguous()
     torch.testing.assert_close(final, expected, atol=0, rtol=0)
     torch.testing.assert_close(old, torch.zeros_like(old), atol=0, rtol=0)
+
+
+@gluon.jit
+def shared_atomic_unused_result_kernel(
+    values_ptr,
+    indices_ptr,
+    out_ptr,
+    op: ttgl.constexpr,
+    layout: ttgl.constexpr,
+    shared_layout: ttgl.constexpr,
+):
+    n: ttgl.constexpr = 32
+    offsets = ttgl.arange(0, n, layout=layout)
+    values = ttgl.load(values_ptr + offsets)
+    indices = ttgl.load(indices_ptr + offsets)
+    smem = ttgl.allocate_shared_memory(ttgl.int32, [n], layout=shared_layout)
+    smem.store(ttgl.zeros([n], ttgl.int32, layout=layout))
+    if op == "add":
+        smem.atomic_scatter_add(values, indices, axis=0)
+    else:
+        old = smem.atomic_scatter_xchg(values, indices, axis=0)
+        ttgl.store(out_ptr + offsets, old)
+    final = smem.load(layout=layout)
+    ttgl.store(out_ptr + n + offsets, final)
+
+
+def test_shared_atomic_scatter_rmw_unused_result_codegen():
+    layout = ttgl.BlockedLayout([1], [THREADS_PER_WARP], [1], [0])
+    shared_layout = ttgl.SwizzledSharedLayout(vec=1, per_phase=1, max_phase=1, order=[0])
+    values = torch.arange(1, 33, dtype=torch.int32, device="cuda")
+    indices = torch.arange(32, dtype=torch.int32, device="cuda")
+    out = torch.empty((64,), dtype=torch.int32, device="cuda")
+    add = shared_atomic_unused_result_kernel[(1, )](
+        values, indices, out, op="add", layout=layout, shared_layout=shared_layout, num_warps=1)
+    torch.testing.assert_close(out[32:], values, atol=0, rtol=0)
+    if is_ppu():
+        assert "ppu.red.shared.cta.relaxed.add.u32" in add.asm["llir"]
+    xchg = shared_atomic_unused_result_kernel[(1, )](
+        values, indices, out, op="xchg", layout=layout, shared_layout=shared_layout, num_warps=1)
+    if is_ppu():
+        assert "ppu.atom.shared.cta.relaxed.exch.b32" in xchg.asm["llir"]
 
 
 # ============================================================================
