@@ -566,6 +566,7 @@ def test_ppu_uses_sdk_cupti_path(monkeypatch, fresh_knobs):
 
     profile_module = importlib.import_module("triton.profiler.profile")
     monkeypatch.setattr(profile_module, "is_ppu_device", lambda: True)
+    monkeypatch.setattr(triton.runtime.driver.active, "get_current_target", lambda: SimpleNamespace(arch=100))
     fresh_knobs.proton.cupti_lib_dir = "/ppu/cupti"
     fresh_knobs.proton.cupti_lib_blackwell_dir = "/nvidia/blackwell/cupti"
     monkeypatch.delenv("TRITON_CUPTI_LIB_PATH", raising=False)
