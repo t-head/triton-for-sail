@@ -3,6 +3,7 @@ import triton
 
 from triton._C.libproton import proton as libproton  # type: ignore
 from triton._C.libtriton import getenv  # type: ignore
+from triton._utils import is_ppu_device
 from .flags import flags
 from .hooks import HookManager, LaunchHook, InstrumentationHook
 from .hooks.hook import Hook
@@ -33,7 +34,8 @@ def _check_env(backend: str) -> None:
                     f"Proton does not work when the environment variable {env} is set on AMD GPUs. Please unset it and use `ROCR_VISIBLE_DEVICES` instead"
                 )
 
-    use_blackwell_cupti = backend == "cupti" and triton.runtime.driver.active.get_current_target().arch >= 100
+    use_blackwell_cupti = (backend == "cupti" and not is_ppu_device()
+                           and triton.runtime.driver.active.get_current_target().arch >= 100)
 
     # Ensure default envs are set for Proton knobs if not already set by the user.
     for attr, desc in triton.knobs.proton.knob_descriptors.items():

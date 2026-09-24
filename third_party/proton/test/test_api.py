@@ -558,3 +558,16 @@ def test_data_api(tmp_path: pathlib.Path):
     proton.data.clear(session_id, phase=2, clear_up_to_phase=True)
 
     proton.finalize()
+
+
+def test_ppu_uses_sdk_cupti_path(monkeypatch, fresh_knobs):
+    import importlib
+    import os
+
+    profile_module = importlib.import_module("triton.profiler.profile")
+    monkeypatch.setattr(profile_module, "is_ppu_device", lambda: True)
+    fresh_knobs.proton.cupti_lib_dir = "/ppu/cupti"
+    fresh_knobs.proton.cupti_lib_blackwell_dir = "/nvidia/blackwell/cupti"
+    monkeypatch.delenv("TRITON_CUPTI_LIB_PATH", raising=False)
+    profile_module._check_env("cupti")
+    assert os.environ["TRITON_CUPTI_LIB_PATH"] == "/ppu/cupti"
