@@ -642,6 +642,9 @@ static LogicalResult getSharedAtomicOpcode(RMWOp rmwOp, Type valueElemTy,
                                            std::string &opStr,
                                            std::string &tyStr) {
   unsigned bits = valueElemTy.getIntOrFloatBitWidth();
+  // The PPU ISA only supports 16-bit shared atomics for floating-point add.
+  if (bits == 16 && rmwOp != RMWOp::FADD)
+    return failure();
   std::string sBits = std::to_string(bits);
   switch (rmwOp) {
   case RMWOp::AND:
