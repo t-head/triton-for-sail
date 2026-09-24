@@ -1,5 +1,6 @@
 autopep8
 cloudpickle
+einops
 isort
 numpy
 pytest
