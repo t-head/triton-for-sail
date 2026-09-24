@@ -1062,8 +1062,8 @@ def test_precise_math(expr_prec, expr_ref, num_ctas, device):
     kernel = patch_kernel(kernel, {'PREC_CALC': expr_prec, 'REF_CALC': expr_ref})
 
     kernel[(1, )](x, y, out, out_ref, BLOCK=shape[0], num_ctas=num_ctas)
-    if expr_prec.count('sqrt') > 0 and is_ppu() and torch.cuda.get_device_capability() < (8, 9):
-        # PPU0010 only supports "sqrt.f32"; "sqrt.f64" is approximated.
+    if expr_prec.count('sqrt') > 0 and is_ppu() and torch.cuda.get_device_capability() < (9, 0):
+        # PPU 1.x approximates f64 sqrt through its f32 instruction.
         torch.testing.assert_close(out, out_ref)
     else:
         assert torch.all(out == out_ref)  # bitwise exact
