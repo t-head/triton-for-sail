@@ -3346,6 +3346,25 @@ def test_shared_atomic_scatter_rmw(op, init_value, use_mask, torch_dtype, gluon_
     torch.testing.assert_close(final, expected, atol=0, rtol=0)
 
 
+@pytest.mark.parametrize(
+    "op,init_value,torch_dtype,gluon_dtype",
+    [
+        ("add", 0, torch.bfloat16, ttgl.bfloat16),
+        ("add", 0, torch.float64, ttgl.float64),
+        ("add", 0, torch.int64, ttgl.int64),
+        ("max", 0, torch.int64, ttgl.int64),
+        ("min", 99, torch.int64, ttgl.int64),
+        ("and", 15, torch.int64, ttgl.int64),
+        ("or", 0, torch.int64, ttgl.int64),
+        ("xor", 0, torch.int64, ttgl.int64),
+        ("xchg", 0, torch.int64, ttgl.int64),
+    ],
+)
+def test_shared_atomic_scatter_rmw_extended_types(op, init_value, torch_dtype, gluon_dtype):
+    test_shared_atomic_scatter_rmw(
+        op, init_value, False, torch_dtype, gluon_dtype, False, 16, 32, 1, (16, 2))
+
+
 @gluon.jit
 def shared_atomic_scatter_rmw_broadcast_kernel(
     values_ptr,
