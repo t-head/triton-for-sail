@@ -233,7 +233,7 @@ pip install -r python/requirements.txt
 pip install -e .
 ```
 
-> Build options (custom LLVM, `ccache`, limiting memory usage with `MAX_JOBS`, etc.) are identical to upstream Triton; see "Building with a custom LLVM" and "Tips for building" in the [upstream Triton README](README.triton.md).
+> Build options (custom LLVM, `ccache`, limiting memory usage with `MAX_JOBS`, etc.) are identical to upstream Triton; see "Building with a custom LLVM" and "Tips for building" in the [upstream Triton README](README.triton.md). For a custom LLVM build, find the required revision in the `llvm_hash` field of `cmake/llvm-info.json`.
 
 ### 4.3 Verify the installation
 

@@ -37,7 +37,7 @@ except ImportError:
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from python.build_helpers import get_base_dir, get_cmake_dir
+from python.build_helpers import check_env_flag, get_base_dir, get_cmake_dir
 
 
 def is_git_repo() -> bool:
@@ -124,11 +124,6 @@ class BackendInstaller:
             BackendInstaller.prepare(backend_name, backend_src_dir=backend_src_dir, is_external=True)
             for backend_name, backend_src_dir in zip(backend_names, backend_dirs)
         ]
-
-
-# Taken from https://github.com/pytorch/pytorch/blob/master/tools/setup_helpers/env.py
-def check_env_flag(name: str, default: str = "") -> bool:
-    return os.getenv(name, default).upper() in ["ON", "1", "YES", "TRUE", "Y"]
 
 
 def get_build_type():
@@ -286,6 +281,9 @@ class CMakeBuild(build_ext):
         if rocm_include_dir == "":
             rocm_include_dir = os.path.join(get_base_dir(), "third_party", "amd", "backend", "include")
         cmake_args += ["-DROCM_INCLUDE_DIR=" + rocm_include_dir]
+        rocprofiler_sdk_include_dir = get_env_with_keys(["TRITON_ROCPROFILER_SDK_INCLUDE_PATH"])
+        if rocprofiler_sdk_include_dir:
+            cmake_args += ["-DROCPROFILER_SDK_INCLUDE_DIR=" + rocprofiler_sdk_include_dir]
         return cmake_args
 
     def build_extension(self, ext):
@@ -377,6 +375,8 @@ class CMakeBuild(build_ext):
             "TRITON_CUPTI_INCLUDE_PATH",
             "TRITON_CUPTI_LIB_PATH",
             "TRITON_CUPTI_LIB_BLACKWELL_PATH",
+            "TRITON_ROCPROFILER_SDK_INCLUDE_PATH",
+            "TRITON_ROCPROFILER_SDK_LIB_PATH",
             "TRITON_NVDISASM_PATH",
             "TRITON_PTXAS_PATH",
             "TRITON_PTXAS_BLACKWELL_PATH",
@@ -586,7 +586,7 @@ def get_triton_version_suffix():
 
 
 # keep it separate for easy substitution
-TRITON_VERSION = "3.7.0" + get_triton_version_suffix()
+TRITON_VERSION = "3.8.0" + get_triton_version_suffix()
 
 # Dynamically define supported Python versions and classifiers
 MIN_PYTHON = (3, 10)

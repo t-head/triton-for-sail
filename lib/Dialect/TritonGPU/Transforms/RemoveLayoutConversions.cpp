@@ -202,8 +202,8 @@ bool isLayoutAnchor(Operation *op) {
     return true;
   if (isa<LoadOp, StoreOp>(op))
     return isExpensiveLoadOrStore(op);
-  if (isa<DotOp, DotScaledOp, nvidia_gpu::WarpGroupDotOp, AtomicRMWOp,
-          AtomicCASOp, triton::nvidia_gpu::TMEMLoadOp>(op))
+  if (isa<DotOpInterface, AtomicRMWOp, AtomicCASOp,
+          triton::nvidia_gpu::TMEMLoadOp>(op))
     return true;
   if (auto gatherOp = dyn_cast<GatherOp>(op))
     return gatherOp.getEfficientLayout();
@@ -653,7 +653,7 @@ void LayoutPropagation::rewriteOp(Operation *op) {
 bool canBeRemat(Operation *op) {
   if (isa<LoadOp, StoreOp>(op))
     return !isExpensiveLoadOrStore(op);
-  if (isa<AtomicRMWOp, AtomicCASOp, DotOp>(op))
+  if (isa<AtomicRMWOp, AtomicCASOp, DotOpInterface>(op))
     return false;
   if (auto gather = dyn_cast<GatherOp>(op))
     return !gather.getEfficientLayout();
@@ -846,8 +846,10 @@ void LayoutRematerialization::rewriteSlice(
       addRematValue(old, it->second, newV);
     }
   }
-  // Check mapping and see if there are existing convertOps on the old Argument
-  convertOp.replaceAllUsesWith(mapping.lookup(convertOp.getSrc()));
+  // Add the rewritten convert to the replacements so it is removed from the
+  // remat maps and has its uses replaced like the other ops we delete.
+  replacements.emplace_back(convertOp.getResult(),
+                            mapping.lookup(convertOp.getSrc()));
 
   updateRematMapping(replacements);
   for (auto &kv : replacements) {
