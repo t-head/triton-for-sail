@@ -207,6 +207,32 @@ tt.func public @local_atomic_scatter_rmw_bad_value_kind(%values: tensor<32x!tt.p
 
 // -----
 
+#linear = #ttg.linear<{register = [], lane = [[1], [2], [4], [8], [16]], warp = [], block = []}>
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0]}>
+#smem = #ttg.shared_memory
+tt.func public @local_atomic_scatter_rmw_fadd_integer(%values: tensor<32xi32, #linear>,
+                                                       %indices: tensor<32xi32, #linear>,
+                                                       %dst: !ttg.memdesc<32xi32, #shared, #smem, mutable>) attributes {"ttg.num-warps" = 1 : i32} {
+    // expected-error @+1 {{fadd requires floating-point values}}
+    %0 = ttg.local_atomic_scatter_rmw fadd, %dst[%indices], %values {axis = 0 : i32} : (!ttg.memdesc<32xi32, #shared, #smem, mutable>, tensor<32xi32, #linear>, tensor<32xi32, #linear>) -> tensor<32xi32, #linear>
+    tt.return
+}
+
+// -----
+
+#linear = #ttg.linear<{register = [], lane = [[1], [2], [4], [8], [16]], warp = [], block = []}>
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0]}>
+#smem = #ttg.shared_memory
+tt.func public @local_atomic_scatter_rmw_integer_op_float(%values: tensor<32xf32, #linear>,
+                                                          %indices: tensor<32xi32, #linear>,
+                                                          %dst: !ttg.memdesc<32xf32, #shared, #smem, mutable>) attributes {"ttg.num-warps" = 1 : i32} {
+    // expected-error @+1 {{integer atomic operation requires integer values}}
+    %0 = ttg.local_atomic_scatter_rmw max, %dst[%indices], %values {axis = 0 : i32} : (!ttg.memdesc<32xf32, #shared, #smem, mutable>, tensor<32xf32, #linear>, tensor<32xi32, #linear>) -> tensor<32xf32, #linear>
+    tt.return
+}
+
+// -----
+
 #shared = #ttg.swizzled_shared<{vec = 8, perPhase = 1, maxPhase = 4, order = [0, 1]}>
 #shared1d = #ttg.swizzled_shared<{vec = 8, perPhase = 1, maxPhase = 4, order = [0]}>
 #smem = #ttg.shared_memory

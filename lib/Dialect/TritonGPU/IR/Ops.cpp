@@ -960,10 +960,15 @@ LogicalResult LocalAtomicScatterRMWOp::verify() {
     return emitError("destination must have shared memory encoding");
   }
 
-  // Match Triton's existing atomic add type support.
-  if (!valuesEltTy.isIntOrFloat()) {
+  if (!valuesEltTy.isIntOrFloat())
     return emitError("values must have integer or floating element type");
-  }
+
+  RMWOp rmwOp = getAtomicRmwOp();
+  if (rmwOp == RMWOp::FADD && !isa<FloatType>(valuesEltTy))
+    return emitError("fadd requires floating-point values");
+  if (rmwOp != RMWOp::FADD && rmwOp != RMWOp::XCHG &&
+      !valuesEltTy.isInteger())
+    return emitError("integer atomic operation requires integer values");
 
   // Verify indices tensor has integer element type
   if (!indicesTy.getElementType().isInteger()) {
