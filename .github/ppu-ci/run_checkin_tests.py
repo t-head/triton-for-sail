@@ -59,497 +59,85 @@ class TestResult:
 
 
 # ---------------------------------------------------------------------------
-# 默认测试配置（保留原脚本的测试用例作为示例）
+# 默认测试配置
 # ---------------------------------------------------------------------------
 
 def get_default_test_configs(test_dir: str) -> List[TestConfig]:
-    """
-    返回默认的测试配置列表。
-    保留原脚本中的测试用例配置，可按需修改或扩展。
-    """
+    unit = os.path.join(test_dir, "python", "test", "unit")
+
+    # 主跑批的 --ignore 列表 (绝对路径, 对应 Makefile test-unit 的排除项)
+    main_ignored = [
+        "language/test_line_info.py",
+        "language/test_subprocess.py",
+        "test_debug.py",
+        "plugins/test_dialect_plugin.py",
+        "plugins/test_plugin.py",
+        "ppu/perf",
+        "ppu/aiu/test_aiu_binary.py",
+        "ppu/aiu/test_aiu_chained_dot.py",
+        "ppu/aiu/test_aiu_load_padding.py",
+        "ppu/aiu/test_aiu_block_ptr_load.py",
+    ]
+    main_args = ["--tb=short", "-n", "8"]
+    for rel in main_ignored:
+        main_args.append(f"--ignore={os.path.join(unit, rel)}")
+
     return [
-        # --------------------------------------------------------------
-        # 语言层 - frontend / TTIR / TTGIR:
-        # block pointer / 算术 / 位运算 / 比较 / broadcast / slice 错误 /
-        # reduce / where / random / print
-        # --------------------------------------------------------------
+        # ------------------------ test-unit ----------------------
+        # 1) 主跑批: 整个 python/test/unit，但是ignore一部分文件
         TestConfig(
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_block_pointer.py"),
-            test_filter="test_block_copy[dtypes_str36-1024-None-None]",
+            file_path=unit,
+            extra_args=main_args,
         ),
+        # 2) subprocess 测试会 spawn 子进程, 单独跑
         TestConfig(
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_bin_op[1-int32-int8-+]",
+            file_path=os.path.join(unit, "language", "test_subprocess.py"),
+            extra_args=["--tb=short", "-n", "8"],
         ),
+        # 3) test_debug 需要进程隔离 (--forked)
         TestConfig(
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_floordiv[1-uint8-uint32]",
+            file_path=os.path.join(unit, "test_debug.py"),
+            extra_args=["--tb=short", "-n", "8", "--forked"],
         ),
+        # 4) line info 测试
         TestConfig(
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_bitwise_op[1-int8-int8-&0]",
+            file_path=os.path.join(unit, "language", "test_line_info.py"),
+            extra_args=["--tb=short"],
         ),
+        # ------------------------ test-regression ----------------------
+        # 5) regression 回归测试
         TestConfig(
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_compare_op[1-int8-int8-==-real-real]",
+            file_path=os.path.join(test_dir, "python", "test", "regression"),
+            extra_args=["--tb=short", "-s", "-n", "8"],
         ),
+        # ------------------------ test-gsan ----------------------
+        # gsan 测试套件 (triton-for-sail 暂无 python/test/gsan 目录, 先注释)
+        # TestConfig(
+        #     file_path=os.path.join(test_dir, "python", "test", "gsan"),
+        #     extra_args=["--tb=short", "-s", "-m", "xdist_group"],
+        # ),
+        # ------------------------ test-gluon ----------------------
+        # 7) gluon 教程
         TestConfig(
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_broadcast[float64]",
+            file_path=os.path.join(test_dir, "python", "tutorials", "gluon"),
+            extra_args=["--tb=short", "-v"],
         ),
+        # 8) gluon 前端测试套件
         TestConfig(
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_invalid_slice",
+            file_path=os.path.join(test_dir, "python", "test", "gluon"),
+            extra_args=["--tb=short", "-n", "1"],
         ),
+        # ------------------------ test-triton-kernels ----------------------
+        # 9) triton_kernels 套件
         TestConfig(
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_reduce1d[1-min-int8-32]",
+            file_path=os.path.join(test_dir, "python", "triton_kernels", "tests"),
+            extra_args=["--tb=short", "-n", "6"],
         ),
+        # ------------------------ test-proton ----------------------
+        # 10) proton 全部测试
         TestConfig(
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_value_specialization_overflow[-9223372036854775808-False]",
-        ),
-        TestConfig(
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_where[1-bfloat16]",
-        ),
-        TestConfig(
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_random.py"),
-            test_filter="test_randint[10-0-int32-True]",
-        ),
-        TestConfig(
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_subprocess.py"),
-            test_filter="test_print[device_print-int8]",
-        ),
-
-        # --------------------------------------------------------------
-        # 语言层 - 类型转换: 覆盖 FpToFp 上/下转换 (fp8 双向)、
-        # FpToInt narrow (fp64->u8), 以及 identity cast (int8->int8)
-        # --------------------------------------------------------------
-        TestConfig(
-            # bf16 -> fp8_e5m2 (FpToFp downcast 到 fp8)
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_cast[1-bfloat16-float8_e5m2-False-32]",
-        ),
-        TestConfig(
-            # fp8_e5m2 -> bf16 (fp8 -> 高精度浮点 upcast)
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_cast[1-float8_e5m2-bfloat16-False-1024]",
-        ),
-        TestConfig(
-            # fp64 -> uint8 (FpToInt, narrowing to unsigned)
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_cast[1-float64-uint8-False-1024]",
-        ),
-        TestConfig(
-            # int8 -> int8 (同类型 cast, identity 路径)
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_cast[1-int8-int8-False-1024]",
-        ),
-
-        # --------------------------------------------------------------
-        # 语言层 - reduce / scan / sort / flip: 覆盖 tl.standard 工具函数
-        # 以及 ReduceOp / ScanOp 的 layout 处理
-        # --------------------------------------------------------------
-        TestConfig(
-            # 多维 reduce + permute 串联, 压力测试 slice layout 在 reduce 链中的传播
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_chained_reductions[in_shape0-perm0-red_dims0]",
-        ),
-        TestConfig(
-            # 2D reduce min, shape=(2,32) float32 axis=0
-            # 验证 ReduceOp 2D + axis lowering (与 1D reduce 路径不同)
-            # NOTE: shape60 为 reduce_configs1+configs2 拼接列表中的索引,
-            # 上游若插入/重排 reduce_configs 会失效, 上线后请观察
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_reduce[1-min-float32-shape60-0-False]",
-        ),
-        TestConfig(
-            # tl.cumsum 1D scan, 覆盖 ScanOp 主路径
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_scan_1d[8-8]",
-        ),
-        TestConfig(
-            # tl.sort: bitonic sort lowering, 简单 1x1 case
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_standard.py"),
-            test_filter="test_sort[int32-False-None-1-1]",
-        ),
-        TestConfig(
-            # tl.flip: 反向排列, 验证 ReverseOp lowering
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_standard.py"),
-            test_filter="test_flip[0-int32-1-16-64]",
-        ),
-
-        # --------------------------------------------------------------
-        # 语言层 - transpose / permute / histogram:
-        # 覆盖 TransOp / PermuteOp / HistogramOp lowering
-        # --------------------------------------------------------------
-        TestConfig(
-            # 2D transpose (.T), 覆盖 TransOp + layout 转换
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_transpose[int32]",
-        ),
-        TestConfig(
-            # tl.permute (1,0), fp16 64x64; 走 ConvertLayout 路径, 与 .T 不同入口
-            # NOTE: shape2/perm2 为按 parametrize 行号生成的索引, 对应
-            # (dtype=float16, shape=(64,64), perm=(1,0)) 这一组
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_permute[1-float16-shape2-perm2]",
-        ),
-        TestConfig(
-            # tl.histogram: bin 计数, 覆盖 HistogramOp lowering
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_histogram[8-2]",
-        ),
-
-        # --------------------------------------------------------------
-        # 语言层 - 数学 intrinsics (libdevice):
-        # 覆盖 ConvertLibdeviceFuncToPPU 通路, 是任何数学算子改动的最小 smoke
-        # --------------------------------------------------------------
-        TestConfig(
-            # tl.exp(x) on float32, 验证 libdevice -> PPU lowering 闭环
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_math_op[float32-exp-x]",
-        ),
-
-        # --------------------------------------------------------------
-        # 语言层 - tl.range / pipelining: 覆盖软件流水线 (LoopPipeliner)
-        # 的 num_stages / async_copy / vec-add / matmul / epilogue 路径
-        # --------------------------------------------------------------
-        TestConfig(
-            # tl.range(num_stages=...) + matmul, 编译期检查 pipeline 是否生效
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_tl_range_num_stages",
-        ),
-        TestConfig(
-            # 简单 vecadd, 检查 async_copy_global_to_local 数量与 NUM_STAGES 一致
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_pipeliner.py"),
-            test_filter="test_pipeline_vecadd",
-        ),
-        TestConfig(
-            # matmul 在 pipeliner 下的多 stage 调度 (非 scaled 路径)
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_pipeliner.py"),
-            test_filter="test_pipeline_matmul[False]",
-        ),
-        TestConfig(
-            # tl.range + epilogue, 覆盖 store 在 pipeline 之外的处理
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_pipeliner.py"),
-            test_filter="test_pipeline_epilogue[1-0]",
-        ),
-
-        # --------------------------------------------------------------
-        # 语言层 - 原子操作: atomic CAS / tensor 上 atomic RMW
-        # 覆盖 AtomicCASOp / AtomicRMWOp lowering
-        # --------------------------------------------------------------
-        TestConfig(
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_atomic_cas[int32-1-None]",
-        ),
-        TestConfig(
-            # 8x8 tensor 上的 atomic_min, 覆盖 AtomicRMWOp 张量路径
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_tensor_atomic_rmw_block[1]",
-        ),
-
-        # --------------------------------------------------------------
-        # 语言层 - 控制流: scf.if / scf.while / scf.for(反向迭代)
-        # --------------------------------------------------------------
-        TestConfig(
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_if_else",
-        ),
-        TestConfig(
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_while",
-        ),
-        TestConfig(
-            # 反向 for-loop (iv<0), 验证有符号归纳变量 lowering
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_for_iv[22-18--1]",
-        ),
-
-        # --------------------------------------------------------------
-        # 语言层 - load 语义: masked load + padding (other=0)
-        # --------------------------------------------------------------
-        TestConfig(
-            # size_diff=2 触发 mask, other=0 走 padding 路径
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_masked_load[1-float32-128-2-0]",
-        ),
-
-        # --------------------------------------------------------------
-        # 语言层 - shape op: expand_dims (覆盖 ExpandDimsOp 多种形态)
-        # --------------------------------------------------------------
-        TestConfig(
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_expand_dims",
-        ),
-
-        # --------------------------------------------------------------
-        # 语言层 - noinline 函数调用: 验证调用约定 lowering
-        # --------------------------------------------------------------
-        TestConfig(
-            # call_graph 模式: 完整调用链 (kernel -> noinline_fn -> 普通 fn)
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_noinline[call_graph]",
-        ),
-
-        # --------------------------------------------------------------
-        # 语言层 - 数据重组: tl.cat / tl.join / tl.split 覆盖
-        # 张量拼接、交错和拆分的 lowering 路径
-        # --------------------------------------------------------------
-        TestConfig(
-            # tl.join: 两个 1D tensor interleave 为 2D, 覆盖 JoinOp lowering
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_join",
-        ),
-        TestConfig(
-            # tl.split: 2D tensor 按最后一维拆为两个 1D, 覆盖 SplitOp lowering
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_split",
-        ),
-
-        # --------------------------------------------------------------
-        # 语言层 - 3D dot / scaled dot: 覆盖批量矩阵乘法和
-        # MX 浮点缩放 dot (dot_scaled) 路径
-        # --------------------------------------------------------------
-        TestConfig(
-            # 3D batched dot, B=1, 最小块 32x32, int8 精度
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_dot3d[1-1-64-64-64-32-32-int8-int8]",
-        ),
-        TestConfig(
-            # tl.dot_scaled: MX 浮点缩放 matmul, e2m1 格式, 最小尺寸
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_scaled_dot[32-32-64-True-True-False-e2m1-e4m3-4-16-1]",
-            skip_boards=["OAM-810E"],
-        ),
-
-        # --------------------------------------------------------------
-        # 语言层 - 构造 / 索引: tl.full 常量填充, tl.arange 序列生成,
-        # tl.gather 跨轴索引
-        # --------------------------------------------------------------
-        TestConfig(
-            # tl.full: 常量填充, shape=(128,) int32, 覆盖 SplatOp lowering
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_full[shape2-int32]",
-        ),
-        TestConfig(
-            # tl.arange: 连续序列, start=0, 覆盖 MakeRangeOp lowering
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_arange[1-0]",
-        ),
-        TestConfig(
-            # tl.gather: 1D/2D 跨轴索引, 覆盖 GatherOp lowering (全参数)
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_gather",
-        ),
-
-        # --------------------------------------------------------------
-        # 语言层 - inline asm: 覆盖 PTX 内联汇编路径 (仅 CUDA/PPU)
-        # --------------------------------------------------------------
-        TestConfig(
-            # inline_asm_elementwise: shf.l.wrap.b32, 验证 PTX inline asm lowering
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_core.py"),
-            test_filter="test_inline_asm[1]",
-        ),
-
-        # --------------------------------------------------------------
-        # 语言层 - 类型转换 (test_conversions): fp16->fp32 upcast
-        # 独立文件, 与 test_core.test_cast 互补
-        # --------------------------------------------------------------
-        TestConfig(
-            # fp16 -> fp32 upcast, 覆盖 FpToFp 独立转换文件路径
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_conversions.py"),
-            test_filter="test_typeconvert_upcast[float16-float32]",
-        ),
-
-        # --------------------------------------------------------------
-        # 语言层 - frontend AST: 覆盖 Python AST -> TTIR 前端解析
-        # --------------------------------------------------------------
-        TestConfig(
-            # 属性赋值: 验证 Python attribute assign AST 翻译
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_frontend.py"),
-            test_filter="test_assign_attribute",
-        ),
-        TestConfig(
-            # constexpr 函数从 JIT 内调用, 验证编译期求值路径
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_frontend.py"),
-            test_filter="test_constexpr_function_from_jit",
-        ),
-
-        # --------------------------------------------------------------
-        # 语言层 - tuple: 覆盖 Triton tuple 类型的索引 / 传递
-        # --------------------------------------------------------------
-        TestConfig(
-            # tuple 索引: size=0 空 tuple 边界 case
-            file_path=os.path.join(test_dir, "python/test/unit/language/test_tuple.py"),
-            test_filter="test_index[0]",
-        ),
-
-        # --------------------------------------------------------------
-        # Runtime 层 : kernel reuse (cache 复用), autotuner 基本流程,
-        # launch metadata hook
-        # --------------------------------------------------------------
-        TestConfig(
-            # 同一 kernel 多次 launch 只编译一次 (jit_cache_hook 计数)
-            # 覆盖 cache hit 路径; 与 test_nochange 功能重合, 保留更强 hook 版本
-            file_path=os.path.join(test_dir, "python/test/unit/runtime/test_cache.py"),
-            test_filter="test_reuse",
-        ),
-        TestConfig(
-            # @triton.autotune + 多 Config 选择, 验证 cache 按 key 区分
-            file_path=os.path.join(test_dir, "python/test/unit/runtime/test_autotuner.py"),
-            test_filter="test_kwargs[False]",
-        ),
-        TestConfig(
-            # launch_enter_hook + launch_metadata, 验证 launcher 元数据回调
-            file_path=os.path.join(test_dir, "python/test/unit/runtime/test_launch.py"),
-            test_filter="test_metadata",
-        ),
-
-        # --------------------------------------------------------------
-        # Runtime 层 - 缓存不变性 / driver lazy init / 编译 / 子进程
-        # --------------------------------------------------------------
-        TestConfig(
-            # 同源码重新编译不产生新 cache, 验证 hash 稳定性
-            file_path=os.path.join(test_dir, "python/test/unit/runtime/test_cache.py"),
-            test_filter="test_nochange",
-        ),
-        TestConfig(
-            # driver lazy init 验证, 确保 backend 初始化不被提前触发
-            file_path=os.path.join(test_dir, "python/test/unit/runtime/test_driver.py"),
-            test_filter="test_is_lazy",
-        ),
-        TestConfig(
-            # 编译 C 扩展模块, 验证 build 基础设施可用
-            file_path=os.path.join(test_dir, "python/test/unit/runtime/test_build.py"),
-            test_filter="test_compile_module",
-        ),
-        TestConfig(
-            # 子进程编译 kernel, 验证 fork/spawn 安全
-            file_path=os.path.join(test_dir, "python/test/unit/runtime/test_subproc.py"),
-            test_filter="test_compile_in_subproc",
-        ),
-
-        # --------------------------------------------------------------
-        # 基础设施 / 工具: linear layout 代数, filecheck 框架自检
-        # --------------------------------------------------------------
-        TestConfig(
-            # LinearLayout.compose 基础代数, 验证 layout 推导工具
-            file_path=os.path.join(test_dir, "python/test/unit/tools/test_linear_layout.py"),
-            test_filter="test_compose",
-        ),
-        TestConfig(
-            # filecheck 正向 smoke test, 保证 IR 自检框架可用
-            file_path=os.path.join(test_dir, "python/test/unit/test_filecheck.py"),
-            test_filter="test_filecheck_positive",
-        ),
-
-        # --------------------------------------------------------------
-        # 工具层 - LinearLayout 代数 / IR source 解析
-        # --------------------------------------------------------------
-        TestConfig(
-            # LinearLayout.invert: 逆矩阵计算, 与 compose 互补
-            file_path=os.path.join(test_dir, "python/test/unit/tools/test_linear_layout.py"),
-            test_filter="test_invert",
-        ),
-        TestConfig(
-            # MLIR attribute 解析: 验证 IR source 工具链基础
-            file_path=os.path.join(test_dir, "python/test/unit/tools/test_irsource.py"),
-            test_filter="test_mlir_attribute_parsing",
-        ),
-
-        # --------------------------------------------------------------
-        # 基础设施 - knobs 配置 / 静态断言
-        # --------------------------------------------------------------
-        TestConfig(
-            # triton.knobs 工具函数: 配置系统的基础 smoke test
-            file_path=os.path.join(test_dir, "python/test/unit/test_knobs.py"),
-            test_filter="test_knobs_utils",
-        ),
-        TestConfig(
-            # tl.static_assert: 编译期断言, cond=True 正向验证
-            file_path=os.path.join(test_dir, "python/test/unit/test_debug.py"),
-            test_filter="test_static_assert[True]",
-        ),
-
-        # --------------------------------------------------------------
-        # PPU AIU - load 类: 覆盖普通 2D load、越界 padding 和 block-pointer 形式
-        # --------------------------------------------------------------
-        TestConfig(
-            # block-pointer (tl.make_block_ptr) 形式的 aiu_load
-            file_path=os.path.join(test_dir, "python/test/unit/ppu/aiu/test_aiu_tensor_ptr.py"),
-            test_filter="test_aiu_load[64-64-1024-1024-2-2]",
-        ),
-
-        # --------------------------------------------------------------
-        # PPU 端到端 - fused attention: flash-attention 完整 kernel,
-        # 覆盖 causal mask + 通用 tl.dot 路径与 AIU 加速路径
-        # --------------------------------------------------------------
-        TestConfig(
-            # 通用 (非 AIU) flash-attention: causal=True, Z=1 H=2 N_CTX=1024 HEAD_DIM=64
-            file_path=os.path.join(test_dir, "python/test/unit/ppu/perf/06-fused-attention.py"),
-            test_filter="test_op[True-1-2-1024-64]",
-        ),
-        TestConfig(
-            # AIU fp16 flash-attention: 验证 aiu_load + aiu_dot 在完整 attention kernel 中的协作
-            file_path=os.path.join(test_dir, "python/test/unit/ppu/perf/06-fused-attention-aiu.py"),
-            test_filter="test_op_fp16[True-1-2-1024-64]",
-        ),
-
-        # --------------------------------------------------------------
-        # PPU AIU - binary: 覆盖 aiu_load 后的逐元素二元运算
-        # --------------------------------------------------------------
-        TestConfig(
-            # AIU 逐元素加法, 验证 aiu_load + add 路径
-            file_path=os.path.join(test_dir, "python/test/unit/ppu/aiu/test_aiu_binary.py"),
-            test_filter="test_aiu_binary[False-32-32-1024-1024-1-2-+]",
-        ),
-        TestConfig(
-            # AIU 逐元素乘法, 验证 aiu_load + mul 路径
-            file_path=os.path.join(test_dir, "python/test/unit/ppu/aiu/test_aiu_binary.py"),
-            test_filter="test_aiu_binary[False-32-32-1024-1024-1-2-*]",
-        ),
-
-        # --------------------------------------------------------------
-        # PPU AIU - dot fp8 / dot order: 覆盖 AIU fp8 精度和列主序路径
-        # --------------------------------------------------------------
-        TestConfig(
-            # AIU fp8 matmul + column-major order, 最小块 32x32x32
-            file_path=os.path.join(test_dir, "python/test/unit/ppu/aiu/test_aiu_dot_fp8_order.py"),
-            test_filter="test_aiu_matmul_fp8_with_order[32-32-32-512-512-512-2-2]",
-            skip_boards=["OAM-810E"],
-        ),
-
-        # --------------------------------------------------------------
-        # PPU models - FLA (Flash Linear Attention): chunk recurrence kernel
-        # --------------------------------------------------------------
-        TestConfig(
-            # FLA gated delta rule fwd kernel, blockdim=64, 端到端 RNN 递推
-            file_path=os.path.join(test_dir, "python/test/unit/ppu/models/test_fla_ops.py"),
-            test_filter="test_chunk_gated_delta_rule_fwd_kernel_h_blockdim64",
-        ),
-
-        # --------------------------------------------------------------
-        # PPU MXFP - blocked-scale MX 浮点 matmul (PPU0015 only)
-        # --------------------------------------------------------------
-        TestConfig(
-            # MXFP4 blocked-scale matmul, 128x128x128 块, PPU0015 特有路径
-            file_path=os.path.join(test_dir, "python/test/unit/ppu/mxfp/test_mxfp_matmul.py"),
-            test_filter="test_blocked_scale_mxfp4[False-1-128-128-128-1024-512-256]",
-            skip_boards=["OAM-810E"],
-        ),
-
-        # --------------------------------------------------------------
-        # PPU 端到端 - fused attention fp8: AIU 加速 fp8 精度 attention
-        # --------------------------------------------------------------
-        TestConfig(
-            # AIU fp8 flash-attention: 覆盖 fp8 量化 + aiu_load/dot 在 attention 中的配合
-            # TODO: 810E 上暂时跳过，待环境问题修复后放开
-            file_path=os.path.join(test_dir, "python/test/unit/ppu/perf/06-fused-attention-aiu.py"),
-            test_filter="test_op_fp8[True-1-2-1024-64]",
-            skip_boards=["OAM-810E"],
+            file_path=os.path.join(test_dir, "third_party", "proton", "test"),
+            extra_args=["--tb=short", "-s", "-n", "8"],
         ),
     ]
 
@@ -1015,7 +603,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not test_configs:
         print("⚠️ 没有配置任何测试用例")
 
-    print(f"📋 共 {len(test_configs)} 个测试用例待运行")
+    print(f"📋 共 {len(test_configs)} 个测试组待运行")
     print(f"📂 测试基础目录: {os.path.abspath(args.test_dir)}")
     print(f"📄 输出文件: {args.output}")
 
