@@ -555,11 +555,19 @@ ttg::SharedEncodingTrait mlir::triton::getSharedEncoding(Operation *op) {
     assert(mod && "Parent ModuleOp not found for AIULoadOp");
     auto computeCapability = getPPUComputeCapability(mod);
     unsigned version = (computeCapability == 80) ? 1 : 2;
-    SmallVector<unsigned> aiuLoad = mlir::LLVM::PPU::AIULoadStrategy(
+    auto aiuLoad = mlir::LLVM::PPU::AIULoadStrategy(
         numWarps, tileW, tileC, elemBytes, version);
+    if (failed(aiuLoad)) {
+      op->emitError() << "unsupported AIU load tile for PPU AIU version "
+                      << version << ": channel width is "
+                      << tileC * elemBytes
+                      << " bytes and contiguous width is " << tileW
+                      << " elements";
+      return {};
+    }
 
     return ttg::PPUAIUSharedEncodingAttr::get(
-        ty.getContext(), version, aiuLoad, aiuOrder, cgaLayout);
+        ty.getContext(), version, *aiuLoad, aiuOrder, cgaLayout);
   }
 
   if (localAllocEnc)

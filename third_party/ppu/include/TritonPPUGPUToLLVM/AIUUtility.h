@@ -24,6 +24,7 @@
 #ifndef TRITON_CONVERSION_TRITONPPUGPU_TO_LLVM_AIU_UTILITY_H
 #define TRITON_CONVERSION_TRITONPPUGPU_TO_LLVM_AIU_UTILITY_H
 
+#include "mlir/Support/LogicalResult.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 
 namespace mlir {
@@ -55,86 +56,83 @@ DenseMap<unsigned, Value> getAIUSwizzledSharedPtrs(
     SharedMemoryObject smemObj, RewriterBase &rewriter,
     SmallVectorImpl<Value> &offsetVals);
 
-inline llvm::SmallVector<unsigned>
+inline FailureOr<llvm::SmallVector<unsigned>>
 AIULoadStrategy(unsigned numWarps, unsigned xElems, unsigned channelElems,
                 unsigned elemBytes, unsigned version = 1) {
+  constexpr unsigned minXElems = 16;
+  constexpr unsigned maxCubeW = 2048;
+  if (numWarps == 0 || xElems < minXElems || channelElems == 0 ||
+      elemBytes == 0)
+    return failure();
+  if ((version == 1 && elemBytes != 1 && elemBytes != 2) ||
+      (version == 2 && elemBytes != 1 && elemBytes != 2 && elemBytes != 4))
+    return failure();
+
   if (version == 1) {
-    unsigned sliceByte = 32;
-    unsigned maxSliceBytes = 128;
+    constexpr unsigned sliceByte = 32;
+    constexpr unsigned maxSliceBytes = 128;
     unsigned channelBytes = channelElems * elemBytes;
-    unsigned minXElems = 16;
-    unsigned maxCubeW = 2048;
-    auto sliceTotal = channelBytes / sliceByte;
-    unsigned numSlice, cubeC, cubeW, warpC, warpW;
+    if (channelBytes < sliceByte)
+      return failure();
 
-    assert(channelBytes >= sliceByte && "channelBytes must be greater than or equal to sliceByte(32B)");
-
+    unsigned sliceTotal = channelBytes / sliceByte;
+    unsigned numSlice;
     if (channelBytes <= maxSliceBytes) {
-      numSlice = channelBytes / sliceByte;
+      numSlice = sliceTotal;
+    } else if (sliceTotal % 4 == 0) {
+      numSlice = 4;
+    } else if (sliceTotal % 2 == 0) {
+      numSlice = 2;
     } else {
-      if (sliceTotal % 4 == 0) {
-        numSlice = 4;
-      } else if (sliceTotal % 2 == 0) {
-        numSlice = 2;
-      } else {
-        numSlice = 1;
-      }
+      numSlice = 1;
     }
-    unsigned channelCopy = sliceTotal / numSlice;
-    warpC = 1;
-    warpW = 1;
-    unsigned maxWarpW = xElems / 16;
 
+    unsigned channelCopy = sliceTotal / numSlice;
+    unsigned warpC;
+    unsigned warpW;
+    unsigned maxWarpW = xElems / minXElems;
     if (numWarps % channelCopy == 0) {
       warpC = channelCopy;
-      warpW = numWarps / channelCopy;
-      warpW = std::min<unsigned>(warpW, maxWarpW);
+      warpW = std::min<unsigned>(numWarps / channelCopy, maxWarpW);
+    } else if (channelCopy % numWarps == 0) {
+      warpC = numWarps;
+      warpW = 1;
     } else {
-      if (channelCopy % numWarps == 0) {
-        warpC = numWarps;
-        warpW = 1;
-      } else {
-        warpC = 1;
-        warpW = std::min<unsigned>(numWarps, maxWarpW);
-      }
-    }
-    cubeW = xElems / warpW;
-    cubeC = numSlice * sliceByte / elemBytes;
-    // TODO: should split copy in W
-    assert(cubeW <= maxCubeW && "cubeW exceed the limitation");
-    return {cubeC, cubeW, warpC, warpW, numSlice};
-  } else if (version == 2) {
-    assert(channelElems % 64 == 0 || channelElems % 32 == 0 ||
-           channelElems % 16 == 0);
-
-    unsigned swizzledBytes;
-    if (channelElems * elemBytes <= 64) {
-      swizzledBytes = 64;
-    } else {
-      swizzledBytes = 128;
+      warpC = 1;
+      warpW = std::min<unsigned>(numWarps, maxWarpW);
     }
 
+    unsigned cubeW = xElems / warpW;
+    if (cubeW > maxCubeW)
+      return failure();
+    unsigned cubeC = numSlice * sliceByte / elemBytes;
+    return llvm::SmallVector<unsigned>{cubeC, cubeW, warpC, warpW,
+                                       numSlice};
+  }
+
+  if (version == 2) {
+    if (channelElems % 64 != 0 && channelElems % 32 != 0 &&
+        channelElems % 16 != 0)
+      return failure();
+
+    unsigned swizzledBytes = channelElems * elemBytes <= 64 ? 64 : 128;
     unsigned channelBytes = elemBytes * channelElems;
-    unsigned cubeC;
-    if (channelBytes < swizzledBytes) {
-      cubeC = channelElems;
-    } else {
-      cubeC = swizzledBytes / elemBytes;
-    }
+    unsigned cubeC = channelBytes < swizzledBytes
+                         ? channelElems
+                         : swizzledBytes / elemBytes;
     unsigned warpCMax = (channelElems + cubeC - 1) / cubeC;
     unsigned warpC = std::min<unsigned>(numWarps, warpCMax);
-    unsigned warpWMax = xElems / 16;
+    unsigned warpWMax = xElems / minXElems;
     unsigned warpW = std::min<unsigned>(numWarps / warpC, warpWMax);
     unsigned cubeW = xElems / warpW;
-    unsigned maxCubeW = 2048;
-    // TODO: should split copy in W
-    assert(cubeW <= maxCubeW && "cubeW exceed the limitation");
+    if (cubeW > maxCubeW)
+      return failure();
 
-    return {cubeC, cubeW, warpC, warpW, swizzledBytes};
-  } else {
-    assert(false && "Unknown PPU AIU version");
+    return llvm::SmallVector<unsigned>{cubeC, cubeW, warpC, warpW,
+                                       swizzledBytes};
   }
-  return {};
+
+  return failure();
 }
 
 } // namespace PPU

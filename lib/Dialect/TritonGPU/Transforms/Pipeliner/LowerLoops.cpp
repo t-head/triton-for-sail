@@ -487,8 +487,9 @@ bool loadRequiresAdditionalBuffer(Operation *loadOp) {
   return false;
 }
 
-scf::ForOp lowerLoads(scf::ForOp forOp, CoarseSchedule &schedule,
-                      triton::ModuleAxisInfoAnalysis &axisInfoAnalysis) {
+FailureOr<scf::ForOp>
+lowerLoads(scf::ForOp forOp, CoarseSchedule &schedule,
+           triton::ModuleAxisInfoAnalysis &axisInfoAnalysis) {
   llvm::MapVector<Operation *, AsyncLoad> asyncLoads;
   llvm::MapVector<int, LoadGroupInfo> loadGroups;
   llvm::SmallVector<Operation *> scalarLoads;
@@ -509,6 +510,8 @@ scf::ForOp lowerLoads(scf::ForOp forOp, CoarseSchedule &schedule,
       if (isAIULoad(&op)) {
         canUseAsyncCp = true;
         sharedEncoding = getSharedEncoding(&op);
+        if (!sharedEncoding)
+          return failure();
       } else {
         if (!isa<RankedTensorType>(op.getResultTypes()[0])) {
           canUseAsyncCp = op.getResultTypes()[0].getIntOrFloatBitWidth() >= 32;
@@ -1109,29 +1112,31 @@ scf::ForOp lowerMMAs(scf::ForOp forOp, CoarseSchedule &schedule) {
 // LOWER LOOP
 /////////////////////////////
 
-void lowerLoop(scf::ForOp forOp,
-               triton::ModuleAxisInfoAnalysis &axisInfoAnalysis) {
+LogicalResult lowerLoop(scf::ForOp forOp,
+                        triton::ModuleAxisInfoAnalysis &axisInfoAnalysis) {
   CoarseSchedule schedule;
-  if (failed(schedule.deSerialize(forOp))) {
-    return;
-  }
+  if (failed(schedule.deSerialize(forOp)))
+    return success();
   scf::ForOp newForOp = lowerMMAs(forOp, schedule);
-  newForOp = lowerLoads(newForOp, schedule, axisInfoAnalysis);
-  newForOp = lowerTMADescriptors(newForOp, schedule);
+  auto loweredForOp = lowerLoads(newForOp, schedule, axisInfoAnalysis);
+  if (failed(loweredForOp))
+    return failure();
+  newForOp = lowerTMADescriptors(*loweredForOp, schedule);
   schedule.serialize(newForOp);
+  return success();
 }
 
 } // namespace
 
-void lowerLoops(ModuleOp moduleOp) {
+LogicalResult lowerLoops(ModuleOp moduleOp) {
   triton::ModuleAxisInfoAnalysis axisInfoAnalysis(moduleOp);
   SmallVector<scf::ForOp> loops;
   moduleOp->walk([&](scf::ForOp forOp) { loops.push_back(forOp); });
-  if (loops.empty())
-    return;
   for (auto forOp : loops) {
-    lowerLoop(forOp, axisInfoAnalysis);
+    if (failed(lowerLoop(forOp, axisInfoAnalysis)))
+      return failure();
   }
+  return success();
 }
 
 } // namespace gpu
