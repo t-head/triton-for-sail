@@ -7,6 +7,7 @@ Profile correctness tests involving GPU kernels should be placed in `test_profil
 import pytest
 import json
 import torch
+import triton
 import triton.profiler as proton
 import triton.profiler.metric as metric
 import pathlib
