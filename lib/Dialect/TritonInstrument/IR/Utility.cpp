@@ -501,6 +501,17 @@ AuxDataMap::ThreadLayout getThreadLayout(ModuleOp module,
   return layout;
 }
 
+Region *getClusterBarrierGroupRegion(Operation *op) {
+  Region *region = op->getParentRegion();
+  while (region) {
+    Operation *parent = region->getParentOp();
+    if (isa<WarpSpecializeOp, WarpSpecializePartitionsOp, FuncOp>(parent))
+      return region;
+    region = parent->getParentRegion();
+  }
+  llvm_unreachable("cluster barrier must be nested in a Triton function");
+}
+
 Region *AuxDataMap::RegionToValueMap::getEnclosingParitionOrFunctionRegion(
     Operation *op) {
   Region *region = op->getParentRegion();
@@ -532,15 +543,30 @@ LogicalResult AuxDataMap::populateAndPassToWarpSpecialize(
     ModuleOp module, FunctionBuilder &fb, const ConSanTargetHooks *hooks) {
   SmallVector<SmallVector<BufferRegion>, numMemTypes> bufRegions(numMemTypes);
   SmallVector<BufferRegion> barrierRegions;
-  getBuffersAndBarriers(module, bufRegions, barrierRegions);
+  if (failed(getBuffersAndBarriers(module, bufRegions, barrierRegions, hooks)))
+    return failure();
   int numCTAs = lookupNumCTAs(module);
   threadLayout = getThreadLayout(module, hooks);
+  hasAsyncProxyFenceTracking = hooks &&
+                               hooks->needsAsyncProxyFenceTracking(module) &&
+                               !bufRegions[(int)MemType::SHARED_MEM].empty();
   int captureCounter = 0;
   int64_t captureBytes = 0;
 
   FuncOp entryPoint = getEntryPoint(module);
   assert(entryPoint);
   Region *entryRegion = &entryPoint.getBody();
+
+  int numMBarriers = barrierRegions.size();
+  entryPoint.walk([&](ClusterBarrierOp op) {
+    Region *group = getClusterBarrierGroupRegion(op);
+    clusterBarrierSlots.try_emplace(group,
+                                    numMBarriers + clusterBarrierSlots.size());
+  });
+  int numTrackedBarriers = numMBarriers + clusterBarrierSlots.size();
+  if (numTrackedBarriers > 0)
+    barrierRegions.resize(llvm::NextPowerOf2(numTrackedBarriers - 1),
+                          BufferRegion{0, 0});
 
   ImplicitLocOpBuilder b(entryPoint.getLoc(), entryPoint);
   b.setInsertionPointToStart(&entryPoint.getBody().front());
@@ -600,9 +626,20 @@ LogicalResult AuxDataMap::populateAndPassToWarpSpecialize(
             64, fb));
     passValueToWarpSpecialize(readVisibility[iMemType].at(entryRegion),
                               readVisibility[iMemType]);
+
+    if (memType == MemType::SHARED_MEM && hasAsyncProxyFenceTracking) {
+      proxyAccessVisibility.insert(
+          entryRegion,
+          createZeroInitStateTensor(b,
+                                    {numCTAs, numBufs, numCTAs,
+                                     threadLayout.numBaseThreadSlots, numCTAs},
+                                    64, fb));
+      passValueToWarpSpecialize(proxyAccessVisibility.at(entryRegion),
+                                proxyAccessVisibility);
+    }
   }
 
-  if (!barrierRegions.empty()) {
+  if (numTrackedBarriers > 0) {
     // Barriers allocations are in shared memory
     barriers.insert(entryRegion, createBufferDescriptorsTensor(
                                      b, MemType::SHARED_MEM, barrierRegions));
@@ -632,7 +669,7 @@ LogicalResult AuxDataMap::populateAndPassToWarpSpecialize(
       int iMemType = (int)memType;
       // Create state tensors:
       int numBufs = bufRegions[iMemType].size();
-      if (numBufs > 0) {
+      if (numMBarriers > 0 && numBufs > 0) {
         writeTracking[iMemType].insert(
             entryRegion,
             createZeroInitStateTensor(
@@ -647,6 +684,16 @@ LogicalResult AuxDataMap::populateAndPassToWarpSpecialize(
                                   readTracking[iMemType]);
       }
     }
+    if (numMBarriers > 0 && hasAsyncProxyFenceTracking &&
+        !bufRegions[(int)MemType::SHARED_MEM].empty()) {
+      int numBufs = bufRegions[(int)MemType::SHARED_MEM].size();
+      proxyAccessTracking.insert(
+          entryRegion,
+          createZeroInitStateTensor(
+              b, {numCTAs, numBufs, numCTAs, numBarriers, numCTAs}, 64, fb));
+      passValueToWarpSpecialize(proxyAccessTracking.at(entryRegion),
+                                proxyAccessTracking);
+    }
   }
 
   // Create lock variable allocation
@@ -659,8 +706,10 @@ LogicalResult AuxDataMap::populateAndPassToWarpSpecialize(
       arith::CmpIOp::create(b, arith::CmpIPredicate::eq, ctaId, zero);
   ExperimentalLockReleaseOp::create(b, lockVal, isCTA0);
   if (numCTAs > 1) {
-    auto clusterBarrier = ClusterBarrierOp::create(b, b.getLoc());
-    nonPublishingClusterBarriers.push_back(clusterBarrier.getOperation());
+    auto clusterBarriers = hooks->createInitClusterBarrier(b);
+    assert(!clusterBarriers.empty() &&
+           "target must provide a cluster initialization barrier");
+    llvm::append_range(internalClusterBarriers, clusterBarriers);
   } else {
     BarrierOp::create(b, b.getLoc(), AddrSpace::Local);
   }
@@ -701,7 +750,8 @@ LogicalResult AuxDataMap::populateAndPassToWarpSpecialize(
     for (int i = 0; i < CommitKind::NumCommitKinds; ++i)
       numCommitKinds += !commits[i].empty();
     int expected = estimateConSanCaptureCount(
-        numActiveMemTypes, !barrierRegions.empty(), numCommitKinds);
+        numActiveMemTypes, numMBarriers > 0, !clusterBarrierSlots.empty(),
+        numCommitKinds, hasAsyncProxyFenceTracking);
     assert(captureCounter == expected &&
            "capture count changed -- update estimateConSanCaptureCount if this "
            "is expected!");
@@ -712,15 +762,15 @@ LogicalResult AuxDataMap::populateAndPassToWarpSpecialize(
   return success();
 }
 
-void AuxDataMap::getBuffersAndBarriers(
+LogicalResult AuxDataMap::getBuffersAndBarriers(
     ModuleOp module, SmallVector<SmallVector<BufferRegion>, 2> &bufRegions,
-    SmallVector<BufferRegion> &barrierRegions) {
+    SmallVector<BufferRegion> &barrierRegions, const ConSanTargetHooks *hooks) {
   // Collect shared memory buffers allocated in the module
   std::unique_ptr<DataFlowSolver> solver = createDataFlowSolver();
   triton::BufferRegionAnalysis *analysis =
       solver->load<triton::BufferRegionAnalysis>();
   if (failed(solver->initializeAndRun(module)))
-    return;
+    return failure();
 
   analysis->calculateUsedBufferRegions(module);
   bufRegions[(int)MemType::SHARED_MEM] = analysis->getAllUsedBufferRegions(
@@ -730,13 +780,38 @@ void AuxDataMap::getBuffersAndBarriers(
   barrierRegions = analysis->getAllUsedBufferRegions(
       BufferRegionAnalysis::RegionType::BARRIER);
 
-  if (!barrierRegions.empty()) {
-    barrierRegions.resize(llvm::NextPowerOf2(barrierRegions.size() - 1),
-                          BufferRegion{0, 0});
+  // Compiler-owned operation scratch has no SSA memdesc for
+  // BufferRegionAnalysis to discover. Collect its allocator-provided static
+  // regions from the same effects ConSan will instrument below. Merging them
+  // here also makes overlap with explicit buffers visible to the alias matrix.
+  if (hooks) {
+    WalkResult result = module.walk([&](Operation *op) -> WalkResult {
+      auto info = hooks->getMemEffectsOpInfo(op);
+      if (failed(info))
+        return WalkResult::interrupt();
+      if (!*info)
+        return WalkResult::advance();
+      for (const auto &effect : (*info)->operandEffects) {
+        auto *staticBuffer =
+            std::get_if<MemEffectsOpInfo::Effects::StaticSharedBuffer>(
+                &effect.buffer);
+        if (!staticBuffer)
+          continue;
+        bufRegions[static_cast<int>(MemType::SHARED_MEM)].push_back(
+            staticBuffer->region);
+      }
+      return WalkResult::advance();
+    });
+    if (result.wasInterrupted())
+      return failure();
   }
 
   for (MemType memType : {MemType::SHARED_MEM, MemType::TENSOR_MEM}) {
     int iMemType = (int)memType;
+    llvm::sort(bufRegions[iMemType]);
+    bufRegions[iMemType].erase(
+        std::unique(bufRegions[iMemType].begin(), bufRegions[iMemType].end()),
+        bufRegions[iMemType].end());
     if (bufRegions[iMemType].empty()) {
       continue;
     }
@@ -744,6 +819,15 @@ void AuxDataMap::getBuffersAndBarriers(
         llvm::NextPowerOf2(bufRegions[iMemType].size() - 1),
         BufferRegion{0, 0});
   }
+  return success();
+}
+
+int AuxDataMap::getClusterBarrierSlot(Operation *op) const {
+  Region *group = getClusterBarrierGroupRegion(op);
+  auto it = clusterBarrierSlots.find(group);
+  assert(it != clusterBarrierSlots.end() &&
+         "cluster barrier group must have a virtual barrier slot");
+  return it->second;
 }
 
 void AuxDataMap::passToWarpSpecialize(FuncOp func, ValueType valueType,

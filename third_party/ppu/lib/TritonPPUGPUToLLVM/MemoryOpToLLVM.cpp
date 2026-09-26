@@ -361,8 +361,21 @@ LogicalResult lowerPPULdMatrix(
     }
   }
 
-  auto structTy = LLVM::LLVMStructType::getLiteral(
-      ctx, SmallVector<Type>(srcVals.size(), llvmElemTy));
+  // The tiling above yields one value per register slot of the full layout,
+  // i.e. the total element count. The converted tensor struct is unique-sized,
+  // so drop the broadcast registers. Identity for an injective layout.
+  auto removeBroadcast =
+      actionRemoveBroadcastedRegs(triton::gpu::toLinearLayout(tensorTy));
+  if (!removeBroadcast.isIdentity())
+    srcVals = removeBroadcast.apply(srcVals);
+
+  // The type converter owns the result struct's shape. Packing against a
+  // locally derived length would survive as an unrealized_conversion_cast and
+  // only fail later during LLVM translation.
+  auto structTy = typeConverter->convertType(tensorTy);
+  assert(cast<LLVM::LLVMStructType>(structTy).getBody().size() ==
+             srcVals.size() &&
+         "ldmatrix element count must match the converted struct size");
   src = packLLElements(loc, typeConverter, srcVals, rewriter, structTy);
   return success();
 }
@@ -420,7 +433,8 @@ public:
     // Try to lower to ldmatrix
     auto *typeConverter = getTypeConverter();
     llvm::SmallVector<Value> values;
-    auto regLayout = toLinearLayout(dstTy);
+    auto regLayout = toLinearLayout(dstTy).removeZeroBasesAlongDim(
+        StringAttr::get(op.getContext(), "register"));
     auto result =
         lowerLdStMatrix(op.getLoc(), regLayout, memDescType, values, smemObj,
                         rewriter, targetInfo, getTypeConverter());
@@ -492,7 +506,8 @@ public:
       }
     }
 
-    Value result = packLLElements(loc, typeConverter, outVals, rewriter, dstTy);
+    Value result =
+        packTensorElements(loc, typeConverter, outVals, rewriter, dstTy);
     rewriter.replaceOp(op, result);
     return success();
   }
@@ -502,7 +517,6 @@ public:
                                 triton::gpu::LocalLoadOpAdaptor adaptor,
                                 const LLVMTypeConverter *typeConverter,
                                 ConversionPatternRewriter &rewriter) const {
-    auto ctx = rewriter.getContext();
     auto loc = op.getLoc();
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     auto src = op.getSrc();
@@ -552,8 +566,21 @@ public:
         elems.push_back(b.extract_element(llvmElemTy, vec, b.i32_val(i)));
     }
 
-    auto structTy = LLVM::LLVMStructType::getLiteral(
-        ctx, SmallVector<Type>(elems.size(), llvmElemTy));
+    // The AIU tiling above yields the total element count; the converted
+    // dotOperand struct is unique-sized, so drop the broadcast registers.
+    // Identity for an injective dotOperand layout.
+    auto removeBroadcast =
+        actionRemoveBroadcastedRegs(triton::gpu::toLinearLayout(dstTy));
+    if (!removeBroadcast.isIdentity())
+      elems = removeBroadcast.apply(elems);
+
+    // The type converter owns the result struct's shape. Packing against a
+    // locally derived length would survive as an unrealized_conversion_cast and
+    // only fail later during LLVM translation.
+    auto structTy = typeConverter->convertType(dstTy);
+    assert(cast<LLVM::LLVMStructType>(structTy).getBody().size() ==
+               elems.size() &&
+           "dotOperand element count must match the converted struct size");
     auto ret = packLLElements(loc, typeConverter, elems, rewriter, structTy);
     rewriter.replaceOp(op, ret);
     return success();
@@ -584,7 +611,8 @@ struct LocalAllocOpConversion
     auto smemObj = SharedMemoryObject(
         smemBase, llvmElemTy, memDescType.getRank(), op.getLoc(), rewriter);
 
-    auto regLayout = toLinearLayout(regTy);
+    auto regLayout = toLinearLayout(regTy).removeZeroBasesAlongDim(
+        StringAttr::get(op.getContext(), "register"));
     auto values = unpackLLElements(op.getLoc(), adaptor.getSrc(), rewriter);
     auto result =
         lowerLdStMatrix(op.getLoc(), regLayout, memDescType, values, smemObj,
@@ -620,7 +648,8 @@ struct LocalStoreOpConversion
     SharedMemoryObject smemObj = LLVM::getSharedMemoryObjectFromStruct(
         op.getLoc(), adaptor.getDst(), llvmElemTy, rewriter);
 
-    auto regLayout = toLinearLayout(srcTy);
+    auto regLayout = toLinearLayout(srcTy).removeZeroBasesAlongDim(
+        StringAttr::get(op.getContext(), "register"));
     auto values = unpackLLElements(op.getLoc(), adaptor.getSrc(), rewriter);
     auto result =
         lowerLdStMatrix(op.getLoc(), regLayout, memDescType, values, smemObj,
@@ -782,15 +811,21 @@ struct LocalAtomicScatterRMWOpConversion
 
     SmallVector<Value> results;
     if (returnOld)
-      results.reserve(info.ptrs.size());
-    for (auto [i, ptrAndValue] :
-         llvm::enumerate(llvm::zip(info.ptrs, info.values))) {
-      auto [ptr, value] = ptrAndValue;
+      results.reserve(info.addrs.size());
+    for (auto [i, addrAndValue] :
+         llvm::enumerate(llvm::zip(info.addrs, info.values))) {
+      auto [addr, value] = addrAndValue;
+      // A non-null ctaId means a cluster-scoped shared address. NVIDIA resolves
+      // it via its private mapDShared; PPU has no equivalent, and its compiler
+      // entry rejects num_ctas > 1, so this should be unreachable. Fail rather
+      // than drop the ctaId and address the wrong CTA's shared memory.
+      if (addr.ctaId)
+        return failure();
       Value pred =
           maybeAnd(rewriter, loc, info.threadPred,
                    info.maskValues.empty() ? Value() : info.maskValues[i]);
-      auto old = emitSharedAtomicRMW(rewriter, loc, info.llvmElemTy, ptr, value,
-                                     rmwOp, returnOld, pred);
+      auto old = emitSharedAtomicRMW(rewriter, loc, info.llvmElemTy, addr.ptr,
+                                     value, rmwOp, returnOld, pred);
       if (failed(old))
         return failure();
       if (returnOld)
@@ -802,8 +837,6 @@ struct LocalAtomicScatterRMWOpConversion
       return success();
     }
 
-    if (!info.removeBroadcast.isIdentity())
-      results = broadcastAs(results, info.regLayout);
     finalizeTensorAtomicResults(op, info.valuesTy, rewriter, results,
                                 info.llvmElemTy, b, info.threadPred, targetInfo,
                                 getTypeConverter());

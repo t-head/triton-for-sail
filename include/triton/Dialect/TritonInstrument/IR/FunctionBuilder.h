@@ -3,6 +3,7 @@
 
 #include "triton/Dialect/TritonInstrument/IR/Utility.h"
 
+#include <optional>
 #include <string>
 #include <variant>
 
@@ -74,6 +75,16 @@ private:
   SmallVector<Arg> args;
 };
 
+/// A byte-addressed memory region materialized in the address representation
+/// used by ConSan's buffer descriptors. The base may come from either an SSA
+/// memdesc or a compiler-owned static shared-memory allocation.
+struct MaterializedBufferRegion {
+  // Masked runtime address in the memory object's address space. For shared
+  // memory this includes the function's shared-memory base pointer.
+  Value baseAddress;
+  uint32_t length;
+};
+
 class FunctionBuilder {
 public:
   FunctionBuilder(ModuleOp module, AuxDataMap &auxData)
@@ -97,10 +108,21 @@ public:
   // reaches its warp-specialize terminator.
   void createRetireActiveThreadCall(ImplicitLocOpBuilder &b, int thread,
                                     Operation *insertPoint);
-  // checkAllActiveWaiting: assert that not all unfinished threads across the
-  // cluster are waiting on matching barrier phases.
-  void createCheckAllActiveWaitingCall(ImplicitLocOpBuilder &b, Value pred,
-                                       Operation *insertPoint);
+  // clusterBarrierRendezvous: model a cluster barrier as an arrive-and-wait on
+  // a virtual entry in the ordinary ConSan barrier tables. The completing
+  // arrival publishes cluster visibility for non-relaxed barriers. The call
+  // returns only after the virtual barrier phase changes or a deadlock is
+  // reported.
+  void createClusterBarrierRendezvousCall(ImplicitLocOpBuilder &b,
+                                          int barrierIdx, int thread,
+                                          uint64_t threadPeersMask,
+                                          bool partitionScoped,
+                                          bool publishVisibility,
+                                          Operation *insertPoint);
+  // checkAllActiveWaiting: return whether unfinished threads across the
+  // cluster are not all waiting on matching barrier phases.
+  Value createCheckAllActiveWaitingCall(ImplicitLocOpBuilder &b, Value pred,
+                                        Operation *insertPoint);
   // verifyBarrierCanInit: ensure the barrier is currently invalidated before
   // initializing it again.
   void createVerifyBarrierCanInitCall(ImplicitLocOpBuilder &b, Value mbar,
@@ -139,31 +161,34 @@ public:
   // as visible to the threads set in threadMask. Clears out any other threads
   // from the visibility bitmask. We know this is safe because there cannot be
   // outstanding writes to this buffer at this point.
-  void createSetWriteVisibilityCall(ImplicitLocOpBuilder &b, Value buf,
-                                    uint32_t length, uint64_t threadMask,
-                                    Value pred, MemType memType,
-                                    Operation *insertPoint, Value effectCTAs);
+  void createSetWriteVisibilityCall(ImplicitLocOpBuilder &b,
+                                    MaterializedBufferRegion buffer,
+                                    uint64_t threadMask, Value pred,
+                                    MemType memType, Operation *insertPoint,
+                                    Value effectCTAs);
   // setReadVisibility: add the threads set in threadMask to the buffer's read
   // visibility bitmask.
-  void createSetReadVisibilityCall(ImplicitLocOpBuilder &b, Value buf,
-                                   uint32_t length, uint64_t threadMask,
-                                   Value pred, MemType memType,
-                                   Operation *insertPoint, Value effectCTAs);
+  void createSetReadVisibilityCall(ImplicitLocOpBuilder &b,
+                                   MaterializedBufferRegion buffer,
+                                   uint64_t threadMask, Value pred,
+                                   MemType memType, Operation *insertPoint,
+                                   Value effectCTAs);
   // clearWriteTracking: clear all the information about threads writing to a
   // buffer.
-  void createClearWriteTrackingCall(ImplicitLocOpBuilder &b, Value buf,
-                                    uint32_t length, Value pred,
+  void createClearWriteTrackingCall(ImplicitLocOpBuilder &b,
+                                    MaterializedBufferRegion buffer, Value pred,
                                     MemType memType, Operation *insertPoint,
                                     Value effectCTAs);
   // clearReadVisibility: clear the read visibility for a buffer.
-  void createClearReadVisibilityCall(ImplicitLocOpBuilder &b, Value buf,
-                                     uint32_t length, Value pred,
-                                     MemType memType, Operation *insertPoint,
-                                     Value effectCTAs);
+  void createClearReadVisibilityCall(ImplicitLocOpBuilder &b,
+                                     MaterializedBufferRegion buffer,
+                                     Value pred, MemType memType,
+                                     Operation *insertPoint, Value effectCTAs);
   // clearReadTracking: clear the read tracking for a buffer.
-  void createClearReadTrackingCall(ImplicitLocOpBuilder &b, Value buf,
-                                   uint32_t length, Value pred, MemType memType,
-                                   Operation *insertPoint, Value effectCTAs);
+  void createClearReadTrackingCall(ImplicitLocOpBuilder &b,
+                                   MaterializedBufferRegion buffer, Value pred,
+                                   MemType memType, Operation *insertPoint,
+                                   Value effectCTAs);
   // trackVisibleWrites: snapshot buffers currently visible to the thread into
   // the tracking table for a barrier.
   void createTrackVisibleWritesCall(ImplicitLocOpBuilder &b, Value mbar,
@@ -177,7 +202,7 @@ public:
   // trackBarrierWriteForBuffer: mark a specific buffer as tracked by a
   // barrier in the write-tracking table.
   void createTrackBarrierWriteForBufferCall(ImplicitLocOpBuilder &b, Value mbar,
-                                            Value buf, uint32_t length,
+                                            MaterializedBufferRegion buffer,
                                             Value pred, MemType memType,
                                             Operation *insertPoint,
                                             Value barrierCTAs,
@@ -204,18 +229,19 @@ public:
                                       MemType memType, Operation *insertPoint);
   // verifyWriteVisibility: ensure the thread either sees the latest write or no
   // other thread is writing the buffer.
-  void createVerifyWriteVisibilityCall(ImplicitLocOpBuilder &b, Value buf,
-                                       uint32_t length, int thread,
-                                       StringRef operandName, Value pred,
-                                       MemType memType, Operation *insertPoint,
+  void createVerifyWriteVisibilityCall(ImplicitLocOpBuilder &b,
+                                       MaterializedBufferRegion buffer,
+                                       int thread, StringRef operandName,
+                                       Value pred, MemType memType,
+                                       Operation *insertPoint,
                                        Value effectCTAs);
   // verifyReadVisibility: ensure all reads from the buffer are visible to the
   // thread.
-  void createVerifyReadVisibilityCall(ImplicitLocOpBuilder &b, Value buf,
-                                      uint32_t length, int thread,
-                                      StringRef operandName, Value pred,
-                                      MemType memType, Operation *insertPoint,
-                                      Value effectCTAs);
+  void createVerifyReadVisibilityCall(ImplicitLocOpBuilder &b,
+                                      MaterializedBufferRegion buffer,
+                                      int thread, StringRef operandName,
+                                      Value pred, MemType memType,
+                                      Operation *insertPoint, Value effectCTAs);
   // copyWriteVisibility: replicate the write visibility bit of sourceThread to
   // every destination thread in destMask.
   void createCopyWriteVisibilityCall(ImplicitLocOpBuilder &b, int sourceThread,
@@ -226,16 +252,72 @@ public:
   void createCopyReadVisibilityCall(ImplicitLocOpBuilder &b, int sourceThread,
                                     uint64_t destMask, Value pred,
                                     MemType memType, Operation *insertPoint);
-  // publishClusterVisibility: after a non-relaxed cluster barrier, make
-  // synchronous facts visible to every CTA in the cluster.
+  // publishClusterVisibility: after a non-relaxed cluster barrier, make the
+  // participating threads' synchronous facts visible across the cluster. A
+  // top-level barrier includes every thread; a warp-specialized barrier is
+  // scoped to its partition and peer thread classes.
   void createPublishClusterVisibilityCall(ImplicitLocOpBuilder &b, Value pred,
-                                          MemType memType,
+                                          int thread, uint64_t threadPeersMask,
+                                          bool partitionScoped, MemType memType,
                                           Operation *insertPoint);
+  // setProxyAccess: record a generic-proxy access by the current base thread
+  // and invalidate prior proxy-fence coverage for that source thread.
+  void createSetProxyAccessCall(ImplicitLocOpBuilder &b,
+                                MaterializedBufferRegion buffer, int thread,
+                                Value pred, Operation *insertPoint,
+                                Value effectCTAs);
+  // fenceProxyAccesses: mark all generic accesses visible to the current base
+  // thread as covered by fence.proxy.async. A CTA fence covers the current
+  // buffer row; a cluster fence covers every cluster buffer row.
+  void createFenceProxyAccessesCall(ImplicitLocOpBuilder &b, int thread,
+                                    bool cluster, Value pred,
+                                    Operation *insertPoint);
+  // trackProxyAccesses: snapshot the current base thread's packed generic
+  // access/fence frontier into a barrier tracking row.
+  void createTrackProxyAccessesCall(ImplicitLocOpBuilder &b, Value mbar,
+                                    int thread, Value pred,
+                                    Operation *insertPoint, Value barrierCTAs);
+  // trackProxyAccessesForBuffer: snapshot the current base thread's packed
+  // generic access/fence frontier for shared-memory regions fully contained
+  // in buffer. This is used by async-proxy writes that complete a barrier:
+  // waiting on that barrier orders only the bytes written by the operation.
+  void createTrackProxyAccessesForBufferCall(
+      ImplicitLocOpBuilder &b, Value mbar, MaterializedBufferRegion buffer,
+      int thread, Value pred, Operation *insertPoint, Value barrierCTAs,
+      Value effectCTAs);
+  // transferProxyAccesses: merge a barrier's packed proxy frontier into the
+  // waiting base thread.
+  void createTransferProxyAccessesCall(ImplicitLocOpBuilder &b, Value mbar,
+                                       int thread, Value pred,
+                                       Operation *insertPoint);
+  // clearBarrierProxyAccessTracking: clear packed proxy state associated with
+  // an invalidated barrier.
+  void createClearBarrierProxyAccessTrackingCall(ImplicitLocOpBuilder &b,
+                                                 Value mbar, Value pred,
+                                                 Operation *insertPoint);
+  // verifyProxyAccess: assert that every generic-proxy access visible to the
+  // issuing base thread has crossed fence.proxy.async.
+  void createVerifyProxyAccessCall(ImplicitLocOpBuilder &b,
+                                   MaterializedBufferRegion buffer, int thread,
+                                   StringRef operandName, Value pred,
+                                   Operation *insertPoint, Value effectCTAs);
+  // copyProxyAccesses: copy a parent base thread's packed proxy frontier to
+  // warp-specialization partition threads.
+  void createCopyProxyAccessesCall(ImplicitLocOpBuilder &b, int sourceThread,
+                                   uint64_t destMask, Value pred,
+                                   Operation *insertPoint);
+  // publishClusterProxyAccesses: publish packed generic access and fence facts
+  // across the cluster. A warp-specialized barrier only updates the
+  // participating base-thread column.
+  void createPublishClusterProxyAccessesCall(ImplicitLocOpBuilder &b,
+                                             Value pred, int thread,
+                                             bool partitionScoped,
+                                             Operation *insertPoint);
   // stageAccessForCommit: mark the buffer as staged (value -1) in the
   // outstanding commit table for this thread.
-  void createStageAccessForCommitCall(ImplicitLocOpBuilder &b, Value buf,
-                                      uint32_t length, int thread, Value pred,
-                                      MemType memType,
+  void createStageAccessForCommitCall(ImplicitLocOpBuilder &b,
+                                      MaterializedBufferRegion buffer,
+                                      int thread, Value pred, MemType memType,
                                       CommitKind::Kind commitKind,
                                       Operation *insertPoint);
   // commitAccesses: convert staged entries to 1 and increment outstanding
@@ -271,12 +353,17 @@ public:
   // When excludeSelf is true, the calling thread's own column is masked out
   // so that only other partitions' outstanding commits are checked.
   void createCheckOutstandingCommitsCall(
-      ImplicitLocOpBuilder &b, Value buf, uint32_t length, int thread,
+      ImplicitLocOpBuilder &b, MaterializedBufferRegion buffer, int thread,
       StringRef pendingAccessType, Value pred, MemType memType,
       CommitKind::Kind commitKind, Operation *insertPoint, Value effectCTAs,
       bool excludeSelf = false);
 
 private:
+  void createTrackProxyAccessesCallImpl(
+      ImplicitLocOpBuilder &b, Value mbar, int thread, Value pred,
+      Operation *insertPoint, Value barrierCTAs,
+      std::optional<MaterializedBufferRegion> buffer, Value effectCTAs);
+
   ModuleOp module;
   AuxDataMap &auxData;
 };

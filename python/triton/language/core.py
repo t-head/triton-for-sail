@@ -124,6 +124,18 @@ def is_builtin(fn) -> bool:
 
 @builtin
 def to_tensor(x, _semantic=None):
+    """
+    Converts a Python scalar into a 0-dimensional :code:`tensor`.
+
+    If :code:`x` is already a :code:`tensor` it is returned unchanged. The result
+    dtype is inferred from the value: a Python :code:`bool` becomes
+    :code:`tl.int1`, an :code:`int` becomes the smallest of :code:`tl.int32`,
+    :code:`tl.uint32`, :code:`tl.int64`, or :code:`tl.uint64` that can represent
+    it, and a :code:`float` becomes :code:`tl.float32` (or :code:`tl.float64` when
+    it is outside the :code:`float32` range).
+
+    :param x: any numeric value.
+    """
     return _semantic.to_tensor(x)
 
 
@@ -1163,10 +1175,7 @@ class tensor(base_value):
     def cast(self, dtype, fp_downcast_rounding=None, bitcast=False) -> tensor:
         ...
 
-    def store(self, value, mask=None, boundary_check=(), cache_modifier="", eviction_policy="") -> tensor:
-        ...
-
-    def advance(self, offsets) -> tensor:
+    def store(self, value, mask=None, *, cache_modifier="", eviction_policy="") -> tensor:
         ...
 
     def atomic_cas(self, cmp, val, sem=None, scope=None) -> tensor:
@@ -1188,6 +1197,9 @@ class tensor(base_value):
         ...
 
     def atomic_or(self, val, mask=None, sem=None, scope=None) -> tensor:
+        ...
+
+    def atomic_poll(self, expected_value, sem="acquire", scope="gpu", timeout_ns=None) -> tensor:
         ...
 
     def atomic_xor(self, val, mask=None, sem=None, scope=None) -> tensor:
@@ -2308,6 +2320,7 @@ def reshape(input, *shape, can_reorder=False, _semantic=None, _generator=None):
         reshape(x, 32, 32)
     """
     shape = _shape_check_impl(_unwrap_iterable(shape))
+    can_reorder = _unwrap_if_constexpr(can_reorder)
     if len(shape) == 0:
         return _unsplat(input, _semantic=_semantic, _generator=_generator)
     return _semantic.reshape(input, shape, can_reorder)
@@ -2407,7 +2420,11 @@ def dot(input, other, acc=None, input_precision=None, allow_tf32=None, max_num_i
       the device does not have Tensor Cores or the inputs are not of dtype f32,
       this option is ignored. For devices that do have tensor cores, the
       default precision is tf32.
-    :type input_precision: string. Available options for nvidia: :code:`"tf32"`, :code:`"tf32x3"`, :code:`"ieee"`. Default: :code:`"tf32"`. Available options for amd: :code:`"ieee"`, (CDNA3 only) :code:`"tf32"`.
+    :type input_precision: string. Available options for nvidia:
+      :code:`"tf32"`, :code:`"tf32x3"`, :code:`"ieee"`,
+      :code:`"bf16x3"`, :code:`"bf16x6"`. Default: :code:`"tf32"`.
+      Available options for amd: :code:`"ieee"`, :code:`"bf16x3"`,
+      :code:`"bf16x6"`, (CDNA3 only) :code:`"tf32"`.
     :param allow_tf32: *Deprecated.* If true, input_precision is set to "tf32".
       Only one of :code:`input_precision` and :code:`allow_tf32` can be
       specified (i.e. at least one must be :code:`None`).
@@ -2507,8 +2524,8 @@ def dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=None,
 
 
 @builtin
-def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", cache_modifier="", eviction_policy="",
-         volatile=False, _semantic=None):
+def load(pointer, mask=None, other=None, *, boundary_check=(), padding_option="", cache_modifier="",
+         eviction_policy="", volatile=False, _semantic=None):
     """
     Return a tensor of data whose values are loaded from memory at location defined by `pointer`:
 
@@ -2516,32 +2533,25 @@ def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", c
             this case:
 
             - `mask` and `other` must also be scalars,
-            - `other` is implicitly typecast to `pointer.dtype.element_ty`, and
-            - `boundary_check` and `padding_option` must be empty.
+            - `other` is implicitly typecast to `pointer.dtype.element_ty`.
 
         (2) If `pointer` is an N-dimensional tensor of pointers, an
             N-dimensional tensor is loaded.  In this case:
 
             - `mask` and `other` are implicitly broadcast to `pointer.shape`,
-            - `other` is implicitly typecast to `pointer.dtype.element_ty`, and
-            - `boundary_check` and `padding_option` must be empty.
+            - `other` is implicitly typecast to `pointer.dtype.element_ty`.
 
-        (3) If `pointer` is a block pointer defined by `make_block_ptr`, a
-            tensor is loaded.  In this case:
-
-            - `mask` and `other` must be `None`, and
-            - `boundary_check` and `padding_option` can be specified to control the behavior of out-of-bound access.
+        (3) On PPU, compatibility block pointers created by `make_block_ptr` also
+            support `boundary_check` and `padding_option`.
 
     :param pointer: Pointer to the data to be loaded
     :type pointer: `triton.PointerType`, or block of `dtype=triton.PointerType`
     :param mask: if `mask[idx]` is false, do not load the data at address `pointer[idx]`
-        (must be `None` with block pointers)
     :type mask: Block of `triton.int1`, optional
     :param other: if `mask[idx]` is false, return `other[idx]`. If `other` is `None`, the masked-out value is undefined.
     :type other: Block, optional
-    :param boundary_check: tuple of integers, indicating the dimensions which should do the boundary check
-    :type boundary_check: tuple of ints, optional
-    :param padding_option: should be one of {"", "zero", "nan"}, the padding value to use while out of bounds. "" means an undefined value.
+    :param boundary_check: dimensions to bounds-check for a PPU compatibility block pointer
+    :param padding_option: padding for a PPU compatibility block pointer; one of `""`, `"zero"`, or `"nan"`
     :param cache_modifier: changes cache option in NVIDIA PTX
     :type cache_modifier: str, optional, should be one of {"", ".ca", ".cg", ".cv"}, where ".ca" stands for
         cache at all levels, ".cg" stands for cache at global level (cache in L2 and below, not L1),
@@ -2556,6 +2566,9 @@ def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", c
         return pointer.load(mask=mask, other=other, boundary_check=boundary_check, padding_option=padding_option,
                             cache_modifier=cache_modifier, eviction_policy=eviction_policy, volatile=volatile,
                             _semantic=_semantic)
+    padding_option = _unwrap_if_constexpr(padding_option)
+    if boundary_check or padding_option not in ("", None):
+        raise ValueError("`boundary_check` and `padding_option` are only supported for PPU block pointers")
 
     # `mask` and `other` can be constexpr
     mask = _unwrap_if_constexpr(mask)
@@ -2564,12 +2577,10 @@ def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", c
         mask = _semantic.to_tensor(mask)
     if other is not None:
         other = _semantic.to_tensor(other)
-    padding_option = _unwrap_if_constexpr(padding_option)
     cache_modifier = _unwrap_if_constexpr(cache_modifier)
     eviction_policy = _unwrap_if_constexpr(eviction_policy)
     volatile = _unwrap_if_constexpr(volatile)
-    return _semantic.load(pointer, mask, other, boundary_check, padding_option, cache_modifier, eviction_policy,
-                          volatile)
+    return _semantic.load(pointer, mask, other, cache_modifier, eviction_policy, volatile)
 
 
 @builtin
@@ -2604,27 +2615,22 @@ def aiu_load(pointer, offsets=(0, 0), block_shape=(0, 0), shape=(0, 0), dtype=vo
 
 @_tensor_member_fn
 @builtin
-def store(pointer, value, mask=None, boundary_check=(), cache_modifier="", eviction_policy="", _semantic=None):
+def store(pointer, value, mask=None, *, boundary_check=(), cache_modifier="", eviction_policy="", _semantic=None):
     """
     Store a tensor of data into memory locations defined by `pointer`.
 
         (1) If `pointer` is a single element pointer, a scalar is stored.  In
             this case:
 
-            - `mask` must also be scalar, and
-            - `boundary_check` and `padding_option` must be empty.
+            - `mask` must also be scalar.
 
         (2) If `pointer` is an N-dimensional tensor of pointers, an
             N-dimensional block is stored.  In this case:
 
-            - `mask` is implicitly broadcast to `pointer.shape`, and
-            - `boundary_check` must be empty.
+            - `mask` is implicitly broadcast to `pointer.shape`.
 
-        (3) If `pointer` is a block pointer defined by `make_block_ptr`, a block
-            of data is stored.  In this case:
-
-            - `mask` must be None, and
-            - `boundary_check` can be specified to control the behavior of out-of-bound access.
+        (3) On PPU, compatibility block pointers created by `make_block_ptr` also
+            support `boundary_check`.
 
     `value` is implicitly broadcast to `pointer.shape` and typecast to `pointer.dtype.element_ty`.
 
@@ -2634,8 +2640,7 @@ def store(pointer, value, mask=None, boundary_check=(), cache_modifier="", evict
     :type value: Block
     :param mask: If `mask[idx]` is false, do not store `value[idx]` at `pointer[idx]`
     :type mask: Block of triton.int1, optional
-    :param boundary_check: tuple of integers, indicating the dimensions which should do the boundary check
-    :type boundary_check: tuple of ints, optional
+    :param boundary_check: dimensions to bounds-check for a PPU compatibility block pointer
     :param cache_modifier: changes cache option in NVIDIA PTX
     :type cache_modifier: str, optional, should be one of {"", ".wb", ".cg", ".cs", ".wt"}, where ".wb" stands for
         cache write-back all coherent levels, ".cg" stands for cache global, ".cs" stands for cache streaming, ".wt"
@@ -2646,6 +2651,8 @@ def store(pointer, value, mask=None, boundary_check=(), cache_modifier="", evict
     if _is_block_ptr(pointer):
         return pointer.store(value, mask=mask, boundary_check=boundary_check, cache_modifier=cache_modifier,
                              eviction_policy=eviction_policy, _semantic=_semantic)
+    if boundary_check:
+        raise ValueError("`boundary_check` is only supported for PPU block pointers")
 
     # `value` can be constexpr
     value = _semantic.to_tensor(value)
@@ -2654,21 +2661,16 @@ def store(pointer, value, mask=None, boundary_check=(), cache_modifier="", evict
         mask = _semantic.to_tensor(mask)
     cache_modifier = _unwrap_if_constexpr(cache_modifier)
     eviction_policy = _unwrap_if_constexpr(eviction_policy)
-    return _semantic.store(pointer, value, mask, boundary_check, cache_modifier, eviction_policy)
+    return _semantic.store(pointer, value, mask, cache_modifier, eviction_policy)
 
 
 @builtin
 def make_block_ptr(base: tensor, shape, strides, offsets, block_shape, order, _semantic=None, _base_ptr_changed=False):
     """
-    Returns a pointer to a block in a parent tensor
-
-    :param base: The base pointer to the parent tensor
-    :param shape: The shape of the parent tensor
-    :param strides: The strides of the parent tensor
-    :param offsets: The offsets to the block
-    :param block_shape: The shape of the block
-    :param order: The order of the original data format
+    Block pointers are retained for PPU compatibility. Use a tensor descriptor on other backends.
     """
+    if _semantic.builder.options.backend_name != "ppu":
+        raise NotImplementedError("Block pointers have been removed in favor of the tensor descriptor API")
     warn("tl.make_block_ptr is deprecated. Use TensorDescriptor or tl.make_tensor_descriptor instead.")
     return _block_ptr(base, shape, strides, offsets, block_shape, order, _base_ptr_changed=_base_ptr_changed,
                       _semantic=_semantic)
@@ -2688,7 +2690,7 @@ def advance(base, offsets, _semantic=None):
     """
     if _is_block_ptr(base):
         return base.advance(offsets, _semantic=_semantic)
-    raise ValueError("`tl.advance` only supports block pointers created by `tl.make_block_ptr`")
+    raise NotImplementedError("Block pointers have been removed in favor of the tensor descriptor API")
 
 
 @builtin
@@ -2797,6 +2799,42 @@ def atomic_cas(pointer, cmp, val, sem=None, scope=None, _semantic=None):
     sem = _unwrap_if_constexpr(sem)
     scope = _unwrap_if_constexpr(scope)
     return _semantic.atomic_cas(pointer, cmp, val, sem, scope)
+
+
+@_tensor_member_fn
+@builtin
+def atomic_poll(pointer, expected_value, sem=None, scope=None, timeout_ns=None, _semantic=None):
+    """
+    Wait until the value at :code:`pointer` equals :code:`expected_value`.
+
+    This will spin-wait on the specified pointer until either the value equals
+    the expected value, or the operation times out. In the event of a timeout,
+    the operation returns false and no results may be acquired.
+
+    :param pointer: A pointer to a scalar 16-, 32-, or 64-bit integer.
+    :type pointer: triton.PointerDType
+    :param expected_value: The value that ends the polling loop.
+    :type expected_value: pointer.dtype.element_ty
+    :param sem: Specifies whether a successful poll has acquire semantics.
+        Acceptable values are "acquire" (default) and "relaxed".
+    :type sem: str, optional
+    :param scope: Defines the scope of threads that observe the synchronizing
+        effect of the poll. Acceptable values are "gpu" (default), "cta"
+        (cooperative thread array, thread block), and "sys" (system).
+    :type scope: str, optional
+    :param timeout_ns: Maximum wall time to poll, measured in nanoseconds by
+        the GPU global timer. If omitted, polling has no timeout. A timeout of
+        zero still performs one load.
+    :type timeout_ns: int, optional
+    :return: True if the expected value was observed, or False if the timeout
+        expired first.
+    :rtype: triton.language.tensor
+    """
+    expected_value = _semantic.to_tensor(expected_value)
+    sem = _unwrap_if_constexpr(sem)
+    scope = _unwrap_if_constexpr(scope)
+    timeout_ns = _unwrap_if_constexpr(timeout_ns)
+    return _semantic.atomic_poll(pointer, expected_value, sem, scope, timeout_ns)
 
 
 @_tensor_member_fn
@@ -2935,7 +2973,30 @@ def expect_zero(x, mask, _semantic=None):
 # -----------------------
 
 
+def _add_binary_op_docstr(name: str, op: str) -> Callable[[T], T]:
+
+    def _decorator(func: T) -> T:
+        func.__doc__ = f"""
+    Computes the element-wise {name} of :code:`x` and :code:`y`.
+
+    This is the function form of the :code:`{op}` operator.
+
+    :param x: the first input tensor
+    :type x: Block
+    :param y: the second input tensor
+    :type y: Block
+    :param sanitize_overflow: insert an integer-overflow check when overflow
+        sanitization is enabled at compile time; set to :code:`False` to emit
+        plain wrapping arithmetic. Ignored for floating-point operands.
+    :type sanitize_overflow: bool
+    """
+        return func
+
+    return _decorator
+
+
 @builtin
+@_add_binary_op_docstr("sum", "+")
 def add(x, y, sanitize_overflow: constexpr = True, _semantic=None):
     x = _unwrap_if_constexpr(x)
     y = _unwrap_if_constexpr(y)
@@ -2943,6 +3004,7 @@ def add(x, y, sanitize_overflow: constexpr = True, _semantic=None):
 
 
 @builtin
+@_add_binary_op_docstr("difference", "-")
 def sub(x, y, sanitize_overflow: constexpr = True, _semantic=None):
     x = _unwrap_if_constexpr(x)
     y = _unwrap_if_constexpr(y)
@@ -2950,6 +3012,7 @@ def sub(x, y, sanitize_overflow: constexpr = True, _semantic=None):
 
 
 @builtin
+@_add_binary_op_docstr("product", "*")
 def mul(x, y, sanitize_overflow: constexpr = True, _semantic=None):
     x = _unwrap_if_constexpr(x)
     y = _unwrap_if_constexpr(y)
@@ -3060,7 +3123,7 @@ def _add_reduction_docstr(name: str, return_indices_arg: str = None, tie_break_a
     :type {tie_break_arg}: bool"""
         if dtype_arg is not None:
             docstr += f"""
-    :param {dtype_arg}: the desired data type of the returned tensor. If specified, the input tensor is casted to :code:`{dtype_arg}` before the operation is performed. This is useful for preventing data overflows. If not specified, integer and bool dtypes are upcasted to :code:`tl.int32` and float dtypes are upcasted to at least :code:`tl.float32`.
+    :param {dtype_arg}: the desired data type of the returned tensor. If specified, the input tensor is casted to :code:`{dtype_arg}` before the operation is performed. This is useful for preventing data overflows. If not specified, integer and bool dtypes are upcasted to :code:`tl.int32` while float dtypes are kept as-is.
     :type {dtype_arg}: tl.dtype"""
 
         func.__doc__ = docstr.format(name=name)
@@ -3509,6 +3572,7 @@ def device_print(prefix, *args, hex=False, _semantic=None):
     '''
     import string
     prefix = _unwrap_if_constexpr(prefix)
+    hex = _unwrap_if_constexpr(hex)
     assert isinstance(prefix, str), f"{prefix} is not string"
     b_ascii = True
     for ch in prefix:

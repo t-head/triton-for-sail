@@ -63,6 +63,20 @@ def TTI_ExperimentalMemDescToI32Op : TTI_Op<"experimental_memdesc_to_i32", [Pure
   let assemblyFormat = "$memdesc attr-dict `:` type($memdesc)";
 }
 
+def TTI_ExperimentalSharedMemoryOffsetToI32Op
+    : TTI_Op<"experimental_shared_memory_offset_to_i32", [Pure]> {
+  let summary = "Materialize a shared-memory byte offset as an i32 address";
+  let description = [{
+    Add a statically allocated byte offset to the current function's shared
+    memory base, then return the masked 32-bit address used by ConSan buffer
+    descriptors. This represents compiler-owned shared-memory scratch that has
+    no SSA memdesc.
+  }];
+  let arguments = (ins I32Attr:$offset);
+  let results = (outs I32:$result);
+  let assemblyFormat = "$offset attr-dict";
+}
+
 def TTI_ExperimentalClusterCTAIdOp
     : TTI_Op<"experimental_cluster_cta_id", [Pure]> {
   let summary = "Get the CTA id within the current cluster";
@@ -153,6 +167,24 @@ def TTI_ExperimentalGSanAtomicTensorAccessOp
                    Optional<TT_BoolLike>:$mask, TT_MemSemanticAttr:$sem, TT_MemSyncScopeAttr:$scope);
   let assemblyFormat = [{
     $sem `,` $scope `,` $ptr (`,` $mask^)? attr-dict `:` type($ptr)
+  }];
+}
+
+def TTI_ExperimentalGSanAtomicPollOp
+    : TTI_Op<"experimental_gsan_atomic_poll"> {
+  let summary = "Instrument a completed atomic poll for GSan";
+  let description = [{
+    Records the successful read performed by an atomic poll after the hardware
+    polling loop has completed.
+  }];
+  let arguments = (ins
+    Arg<TT_Ptr, "", [MemRead<GlobalMemory>, MemWrite<GlobalMemory>]>:$ptr,
+    I1:$matched,
+    TT_MemSemanticAttr:$sem,
+    TT_MemSyncScopeAttr:$scope
+  );
+  let assemblyFormat = [{
+    $sem `,` $scope `,` $ptr `,` $matched attr-dict `:` qualified(type($ptr))
   }];
 }
 

@@ -314,6 +314,7 @@ class CUDABackend(BaseBackend):
         passes.ttgpuir.add_optimize_dot_operands(pm, capability >= 80)
         passes.ttgpuir.add_coalesce_async_copy(pm)
         nvidia.passes.ttnvgpuir.add_optimize_tmem_layouts(pm)
+        nvidia.passes.ttnvgpuir.add_tmem_load_reduce(pm)
         if capability // 10 >= 9:
             nvidia.passes.ttnvgpuir.add_tma_lowering(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm)
@@ -329,7 +330,7 @@ class CUDABackend(BaseBackend):
         passes.common.add_canonicalizer(pm)
         if "fpsan" in opt.instrumentation_mode:
             passes.ttgpuir.add_fp_sanitizer(pm)
-            passes.ttgpuir.add_remove_layout_conversions(pm)
+            passes.ttgpuir.add_remove_layout_conversions(pm, True)
             passes.common.add_canonicalizer(pm)
             passes.common.add_cse(pm)
 
@@ -355,7 +356,7 @@ class CUDABackend(BaseBackend):
         if "fpsan" in options.instrumentation_mode:
             passes.ttgpuir.add_fp_sanitizer(pm)
         if any(mode in options.instrumentation_mode for mode in ["consan", "fpsan"]):
-            passes.ttgpuir.add_remove_layout_conversions(pm)
+            passes.ttgpuir.add_remove_layout_conversions(pm, True)
             passes.common.add_canonicalizer(pm)
             passes.common.add_cse(pm)
 
@@ -433,8 +434,14 @@ class CUDABackend(BaseBackend):
             raise RuntimeError(
                 "Address Sanitizer Error: Address sanitizer is currently only supported on the AMD backend")
         llvm_mod = llvm.to_module(mod, context)
-        proc = sm_arch_from_capability(capability)
-        features = get_features(options, self.target.arch)
+
+        if capability == 107:
+            cap_llvm = 100
+        else:
+            cap_llvm = capability
+
+        proc = sm_arch_from_capability(cap_llvm)
+        features = get_features(options, cap_llvm)
         triple = 'nvptx64-nvidia-cuda'
         nvidia.set_short_ptr()
         llvm.attach_datalayout(llvm_mod, triple, proc, features)
@@ -468,8 +475,14 @@ class CUDABackend(BaseBackend):
         ptx_version = get_ptx_version_from_options(opt, self.target.arch)
 
         triple = 'nvptx64-nvidia-cuda'
-        proc = sm_arch_from_capability(capability)
-        features = get_features(opt, self.target.arch)
+
+        if capability == 107:
+            cap_llvm = 100
+        else:
+            cap_llvm = capability
+
+        proc = sm_arch_from_capability(cap_llvm)
+        features = get_features(opt, cap_llvm)
         flags = ["nvptx-mad-wide-opt"]
         canonicalize_gep = "fpsan" in opt.instrumentation_mode
         ret = llvm.translate_to_asm(src, triple, proc, features, flags, opt.enable_fp_fusion, False, canonicalize_gep)

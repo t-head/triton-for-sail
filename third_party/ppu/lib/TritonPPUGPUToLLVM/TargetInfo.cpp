@@ -176,6 +176,30 @@ Value TargetInfo::ballot(RewriterBase &rewriter, Location loc, Type type,
                                   NVVM::VoteSyncKind::ballot);
 }
 
+Value TargetInfo::getGlobalTimer(RewriterBase &rewriter, Location loc) const {
+  // PPU spells the timer read as inline asm, not as an NVVM intrinsic. This is
+  // the same instruction tl.extra.ppu.globaltimer emits, see
+  // third_party/ppu/language/ppu/utils.py.
+  TIXBuilder builder;
+  auto *dstOpr = builder.newOperand("=l", /*init=*/true);
+  auto *timerOpr = builder.newConstantOperand("%globaltimer");
+  auto &mov = *builder.create("ppu.mov.u64");
+  mov(dstOpr, timerOpr);
+  return builder.launch(rewriter, loc, i64_ty);
+}
+
+StringRef TargetInfo::getAtomicSyncScope(MemSyncScope scope) const {
+  switch (scope) {
+  case MemSyncScope::CTA:
+    return "block";
+  case MemSyncScope::GPU:
+    return "device";
+  case MemSyncScope::SYSTEM:
+    return {};
+  }
+  llvm_unreachable("unknown memory synchronization scope");
+}
+
 void TargetInfo::barrier(Location loc, RewriterBase &rewriter,
                          triton::gpu::AddrSpace targets) const {
   auto b = TritonLLVMOpBuilder(loc, rewriter);

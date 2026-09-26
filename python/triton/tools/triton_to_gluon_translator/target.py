@@ -19,6 +19,7 @@ class TranslatorTarget(str, Enum):
     SM90 = "sm90"
     SM100 = "sm100"
     SM103 = "sm103"
+    SM107 = "sm107"
     # AMD targets currently exercised by the translator test suite:
     GFX90A = "gfx90a"
     GFX1250 = "gfx1250"
@@ -50,6 +51,7 @@ class TranslatorTarget(str, Enum):
             TranslatorTarget.SM90,
             TranslatorTarget.SM100,
             TranslatorTarget.SM103,
+            TranslatorTarget.SM107,
         ) and not self.is_ppu
 
     @property
@@ -72,7 +74,7 @@ class TranslatorTarget(str, Enum):
             return f"{base}.ppu_helpers"
 
         if self.is_nvidia:
-            if self in (TranslatorTarget.SM100, TranslatorTarget.SM103):
+            if self in (TranslatorTarget.SM100, TranslatorTarget.SM103, TranslatorTarget.SM107):
                 return f"{base}.blackwell_helpers"
             if self in (TranslatorTarget.SM90):
                 return f"{base}.hopper_helpers"

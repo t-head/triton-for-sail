@@ -29,6 +29,7 @@ from triton._internal_testing import (
     is_interpreter,
     is_hopper,
     is_ppu,
+    is_sm12x,
     is_hip,
     is_hip_cdna,
     is_hip_cdna2,
@@ -813,6 +814,45 @@ def test_expand_dims_error_cases(device):
     assert re.search(r"duplicate axes, normalized axes = \[0, 0\]", str(exc_info.value.__cause__))
 
 
+@pytest.mark.interpreter
+def test_squeeze_unsqueeze_negative_dim(device):
+
+    @triton.jit
+    def kernel(dummy, N: tl.constexpr):
+        offset1 = tl.arange(0, N)
+
+        t = tl.unsqueeze(offset1, -1)
+        tl.static_assert(t.shape == [N, 1])
+
+        t = tl.unsqueeze(offset1, -2)
+        tl.static_assert(t.shape == [1, N])
+
+        t = tl.unsqueeze(tl.expand_dims(offset1, 0), -1)
+        tl.static_assert(t.shape == [1, N, 1])
+
+        t = tl.squeeze(tl.expand_dims(offset1, 1), -1)
+        tl.static_assert(t.shape == [N])
+
+        t = tl.squeeze(tl.expand_dims(offset1, 0), -2)
+        tl.static_assert(t.shape == [N])
+
+    N = 32
+    dummy_tensor = torch.empty((), device=device)
+    kernel[(1, )](dummy_tensor, N)
+
+    @triton.jit
+    def unsqueeze_out_of_range(dummy, N: tl.constexpr):
+        tl.unsqueeze(tl.arange(0, N), -3)
+
+    @triton.jit
+    def squeeze_out_of_range(dummy, N: tl.constexpr):
+        tl.squeeze(tl.expand_dims(tl.arange(0, N), 1), -3)
+
+    for bad in (unsqueeze_out_of_range, squeeze_out_of_range):
+        with pytest.raises(triton.TritonError):
+            bad[(1, )](dummy_tensor, N)
+
+
 # ----------------------------
 # test invalid program id axis
 # ----------------------------
@@ -1386,6 +1426,90 @@ def test_noinline_returns_tensor(device):
 # ---------------
 # test atomics
 # ---------------
+
+
+@pytest.mark.interpreter
+@pytest.mark.parametrize("sem", ["relaxed", "acquire"])
+@pytest.mark.parametrize("scope", ["cta", "gpu", "sys"])
+@pytest.mark.parametrize("dtype, bit_width", [(torch.int16, 16), (torch.int32, 32), (torch.int64, 64)])
+def test_atomic_poll(dtype, bit_width, sem, scope, device):
+
+    @triton.jit
+    def kernel(flag, out, expected_value, SEM: tl.constexpr, SCOPE: tl.constexpr):
+        tl.atomic_poll(flag, expected_value, sem=SEM, scope=SCOPE)
+        tl.store(out, 1)
+
+    flag = torch.ones(1, dtype=dtype, device=device)
+    out = torch.zeros_like(flag)
+    compiled = kernel[(1, )](flag, out, 1, SEM=sem, SCOPE=scope, num_warps=4)
+
+    assert out.item() == 1
+    if is_cuda():
+        ptx = compiled.asm["ptx"]
+        assert ptx.count(f"ld.relaxed.{scope}.global.b{bit_width}") == 1
+        fence_sem = "acq_rel" if torch.cuda.get_device_capability()[0] < 9 else "acquire"
+        assert ptx.count(f"fence.{fence_sem}.{scope};") == (sem == "acquire")
+        assert "%globaltimer" not in ptx
+
+
+def test_atomic_poll_no_timeout_uses_no_shared_memory(device):
+
+    @triton.jit
+    def kernel(flag, out):
+        matched = tl.atomic_poll(flag, 1)
+        tl.store(out, matched)
+
+    flag = torch.ones(1, dtype=torch.int32, device=device)
+    out = torch.empty(1, dtype=torch.bool, device=device)
+    compiled = kernel[(1, )](flag, out, num_warps=4)
+
+    assert out.item()
+    assert compiled.metadata.shared == 0
+
+
+@pytest.mark.interpreter
+@pytest.mark.parametrize("initial_value, expected", [(1, True), (0, False)])
+def test_atomic_poll_timeout(initial_value, expected, device):
+
+    @triton.jit
+    def kernel(flag, out, timeout_ns):
+        matched = tl.atomic_poll(flag, 1, timeout_ns=timeout_ns)
+        tl.store(out, matched)
+
+    flag = torch.full((1, ), initial_value, dtype=torch.int32, device=device)
+    out = torch.empty(1, dtype=torch.bool, device=device)
+    compiled = kernel[(1, )](flag, out, 0, num_warps=4)
+
+    assert out.item() == expected
+    if is_cuda():
+        ptx = compiled.asm["ptx"]
+        assert ptx.count("ld.relaxed.gpu.global.b32") == 1
+        fence_sem = "acq_rel" if torch.cuda.get_device_capability()[0] < 9 else "acquire"
+        assert ptx.count(f"fence.{fence_sem}.gpu;") == 1
+        assert ptx.count("%globaltimer") == 2
+
+
+@pytest.mark.skipif(not is_cuda(), reason="Requires CUDA")
+def test_atomic_poll_waits_for_remote_cta(device):
+
+    @triton.jit
+    def kernel(flag, payload, out):
+        if tl.program_id(0) == 0:
+            tl.atomic_poll(flag, 1, sem="acquire", scope="gpu")
+            tl.store(out, tl.load(payload))
+        else:
+            tl.store(payload, 42)
+            tl.atomic_xchg(flag, 1, sem="release", scope="gpu")
+
+    flag = torch.zeros(1, dtype=torch.int32, device=device)
+    payload = torch.zeros_like(flag)
+    out = torch.zeros_like(flag)
+    kernel[(2, )](flag, payload, out, num_warps=4)
+
+    assert flag.item() == 1
+    assert out.item() == 42
+
+
 @pytest.mark.interpreter
 @pytest.mark.parametrize(
     "op, dtype_x_str, mode, sem",
@@ -1425,11 +1549,12 @@ def test_atomic_rmw(op, dtype_x_str, mode, sem, device):
 
     # triton kernel
     @triton.jit
-    def kernel(X, Z):
+    def kernel(X, Z, Old):
         pid = tl.program_id(0)
         x = tl.load(X + pid)
         old = GENERATE_TEST_HERE
         tl.static_assert(old.dtype == x.dtype)
+        tl.store(Old + pid, old)
 
     sem_arg = sem if sem is None else f'"{sem}"'
     kernel = patch_kernel(kernel, {'GENERATE_TEST_HERE': f'tl.atomic_{op}(Z, x, sem={sem_arg})'})
@@ -1456,7 +1581,8 @@ def test_atomic_rmw(op, dtype_x_str, mode, sem, device):
     x_tri = to_triton(x, device=device, dst_type=dst_type)
 
     z_tri = to_triton(np.array([neutral], dtype=getattr(np, dtype_x_str)), device=device, dst_type=dst_type)
-    h = kernel[(n_programs, )](x_tri, z_tri)
+    old_tri = to_triton(np.empty_like(x), device=device, dst_type=dst_type)
+    h = kernel[(n_programs, )](x_tri, z_tri, old_tri)
     # torch result
     if dst_type == 'bfloat16':
         z_ref = numpy_op(x).astype(getattr(np, dtype_x_str))
@@ -1765,6 +1891,7 @@ def test_atomic_cas(sem, num_ctas, dtype_str, device):
 
 @pytest.mark.skipif(not is_cuda() or torch.cuda.get_device_capability()[0] < 9,
                     reason="num_ctas > 1 requires NVIDIA SM90+ (Hopper)")
+@pytest.mark.skipif(is_sm12x(), reason="scalar multi-CTA atomic_cas is not supported on sm120 (consumer Blackwell)")
 def test_scalar_atomic_cas_multicta_result(device):
 
     @triton.jit
@@ -3797,7 +3924,7 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
         else:
             assert re.search(r'[mma|wgmma.mma_async].sync.aligned.m\d+n\d+k16(?:.row.col)?.f16.f16.f16', ptx)
     elif in_dtype == 'int8':
-        if is_tcgen5 and capability[0:2] != (10, 3):
+        if is_tcgen5 and capability[1] not in (3, 7):
             assert re.search(r'tcgen05.mma.cta_group::1.kind::i8', ptx)
         elif capability[0] == 7 and capability[1] == 5:  # Turing
             assert 'mma.sync.aligned.m8n8k16.row.col.satfinite.s32.s8.s8.s32' in ptx
@@ -5108,38 +5235,6 @@ def test_tma_store_block_shape_err(device):
     assert "Descriptor block shape must have at least 16 bytes" in str(e.value.__cause__)
 
 
-def test_trans_reshape(device, with_allocator):
-
-    @triton.jit
-    def kernel(in_base_ptr, out_base_ptr, IN_SHAPE0: tl.constexpr, IN_SHAPE1: tl.constexpr):
-
-        in_block_ptr = tl.make_block_ptr(
-            base=in_base_ptr,
-            shape=(IN_SHAPE0, IN_SHAPE1),
-            strides=(IN_SHAPE1, 1),
-            offsets=(0, 0),
-            block_shape=(IN_SHAPE0, IN_SHAPE1),
-            order=(1, 0),
-        )
-        x = tl.load(in_block_ptr)
-        x = tl.reshape(x, (32, 4, 4, 2))
-        x = tl.permute(x, (1, 2, 3, 0))
-        x = tl.reshape(x, (IN_SHAPE0 * IN_SHAPE1, ))
-        tl.store(out_base_ptr + tl.arange(0, IN_SHAPE0 * IN_SHAPE1), x)
-
-    shape = (32, 32)
-    input = torch.arange(math.prod(shape), dtype=torch.int32, device=device).reshape(shape)
-    expected = torch.permute(input, (1, 0))
-    # Don't do zeros_like -- that copies the layout, which we don't want.
-    actual = torch.zeros(expected.shape, dtype=torch.int32, device=device)
-
-    k = kernel[(1, )](input, actual, shape[0], shape[1])
-    assert k.asm['ttgir'].count(
-        'ttg.convert_layout') == 1, "Expected exactly one convert_layout op in the TTGIR after optimization"
-
-    np.testing.assert_equal(to_numpy(expected), to_numpy(actual))
-
-
 # -------------
 # test call
 # -------------
@@ -6255,7 +6350,7 @@ def test_override_arch(arch, env_var_override, device, fresh_knobs):
             h = simple.warmup(data, out, arch=arch, grid=(1, ))
         ttgir_gfx = re.search(r'hip:(\w+)', h.asm["ttgir"])
         ttgir_warp = re.search(r'"ttg.threads-per-warp" = (\d+)', h.asm["ttgir"])
-        amdgcn_gfx = re.search(r'.amdgcn_target "amdgcn-amd-amdhsa--(\w+)"', h.asm["amdgcn"])
+        amdgcn_gfx = re.search(r'\.amdgcn_target "amdgcn-amd-amdhsa-[^-]*-(\w+)"', h.asm["amdgcn"])
         assert ttgir_gfx.group(1) == arch
         assert int(ttgir_warp.group(1)) == (32 if arch == "gfx1200" else 64)
         assert amdgcn_gfx.group(1) == arch
@@ -6827,6 +6922,7 @@ def gather_test_kernel_1d(src_ptr, idx_ptr, out_ptr, axis: tl.constexpr, src_dim
 @pytest.mark.parametrize("src_shape, indices_shape, axis", [
     ([32], [64], 0),
     ([4, 4], [8, 4], 0),
+    ([4, 4], [4096, 4], 0),
     ([128, 64], [256, 64], 0),
     ([128, 64], [128, 128], 1),
 ])

@@ -31,13 +31,13 @@
 #include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
 #include "passes.h"
 #include "llvm/IR/Constants.h"
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
-#include <pybind11/stl_bind.h>
+#include <nanobind/nanobind.h>
+#include <nanobind/stl/string.h>
+#include <nanobind/stl/vector.h>
 
-namespace py = pybind11;
+namespace py = nanobind;
 
-void init_triton_ppu_passes_ttgpuir(py::module &&m) {
+void init_triton_ppu_passes_ttgpuir(py::module_ &m) {
   using namespace mlir::triton;
   m.def("add_allocate_shared_memory_ppu",
         [](mlir::PassManager &pm, int32_t capability) {
@@ -55,7 +55,7 @@ void init_triton_ppu_passes_ttgpuir(py::module &&m) {
   ADD_PASS_WRAPPER_0("add_ppu_reorder_instructions", mlir::createTritonPPUGPUReorderInstructions);
 }
 
-void init_triton_ppu_passes_ttppugpuir(py::module &&m) {
+void init_triton_ppu_passes_ttppugpuir(py::module_ &m) {
   ADD_PASS_WRAPPER_0("add_aiu_lowering", mlir::createTritonPPUAIULoweringPass);
   ADD_PASS_WRAPPER_0("add_ppugpu_to_llvm",
                      mlir::triton::createConvertPPUGPUToLLVM);
@@ -109,10 +109,12 @@ static void checkMatmulConstraints(const std::string &A_dtype,
   }
 }
 
-void init_triton_ppu(py::module &&m) {
+void init_triton_ppu(py::module_ &m) {
   auto passes = m.def_submodule("passes");
-  init_triton_ppu_passes_ttgpuir(passes.def_submodule("ttgpuir"));
-  init_triton_ppu_passes_ttppugpuir(passes.def_submodule("ttppugpuir"));
+  auto ttgpuir_m = passes.def_submodule("ttgpuir");
+  init_triton_ppu_passes_ttgpuir(ttgpuir_m);
+  auto ttppugpuir_m = passes.def_submodule("ttppugpuir");
+  init_triton_ppu_passes_ttppugpuir(ttppugpuir_m);
 
   // load dialects
   m.def("load_dialects", [](mlir::MLIRContext &context) {
@@ -197,29 +199,29 @@ void init_triton_ppu(py::module &&m) {
   auto acblas = m.def_submodule("acblas");
 
   py::class_<AcblasLtInstance>(acblas, "AcblasLt")
-      .def(py::init<>([&](py::object &workspace) {
-        auto wrk_ptr = workspace.attr("data_ptr")().cast<uint64_t>();
-        auto wrk_size = workspace.attr("numel")().cast<size_t>() *
-                        workspace.attr("element_size")().cast<size_t>();
+      .def(py::new_([](py::object workspace) {
+        auto wrk_ptr = py::cast<uint64_t>(workspace.attr("data_ptr")());
+        auto wrk_size = py::cast<size_t>(workspace.attr("numel")()) *
+                        py::cast<size_t>(workspace.attr("element_size")());
         return new AcblasLtInstance(wrk_ptr, wrk_size);
       }))
       .def("matmul",
            [](AcblasLtInstance &self, py::object &A, py::object &B,
               py::object &C) {
-             auto A_ptr = A.attr("data_ptr")().cast<uint64_t>();
-             auto B_ptr = B.attr("data_ptr")().cast<uint64_t>();
-             auto C_ptr = C.attr("data_ptr")().cast<uint64_t>();
+             auto A_ptr = py::cast<uint64_t>(A.attr("data_ptr")());
+             auto B_ptr = py::cast<uint64_t>(B.attr("data_ptr")());
+             auto C_ptr = py::cast<uint64_t>(C.attr("data_ptr")());
 
-             auto A_shape = A.attr("shape").cast<std::vector<int>>();
-             auto B_shape = B.attr("shape").cast<std::vector<int>>();
-             auto C_shape = C.attr("shape").cast<std::vector<int>>();
+             auto A_shape = py::cast<std::vector<int>>(A.attr("shape"));
+             auto B_shape = py::cast<std::vector<int>>(B.attr("shape"));
+             auto C_shape = py::cast<std::vector<int>>(C.attr("shape"));
 
              auto A_dtype =
-                 A.attr("dtype").attr("__str__")().cast<std::string>();
+                 py::cast<std::string>(A.attr("dtype").attr("__str__")());
              auto B_dtype =
-                 B.attr("dtype").attr("__str__")().cast<std::string>();
+                 py::cast<std::string>(B.attr("dtype").attr("__str__")());
              auto C_dtype =
-                 C.attr("dtype").attr("__str__")().cast<std::string>();
+                 py::cast<std::string>(C.attr("dtype").attr("__str__")());
 
              checkMatmulConstraints(A_dtype, B_dtype, C_dtype, A_shape, B_shape,
                                     C_shape);
@@ -247,20 +249,20 @@ void init_triton_ppu(py::module &&m) {
            })
       .def("gemm", [](AcblasLtInstance &self, py::object &A, py::object &B,
                       py::object &C, py::object &D, float alpha, float beta) {
-        auto A_ptr = A.attr("data_ptr")().cast<uint64_t>();
-        auto B_ptr = B.attr("data_ptr")().cast<uint64_t>();
-        auto C_ptr = C.attr("data_ptr")().cast<uint64_t>();
-        auto D_ptr = D.attr("data_ptr")().cast<uint64_t>();
+        auto A_ptr = py::cast<uint64_t>(A.attr("data_ptr")());
+        auto B_ptr = py::cast<uint64_t>(B.attr("data_ptr")());
+        auto C_ptr = py::cast<uint64_t>(C.attr("data_ptr")());
+        auto D_ptr = py::cast<uint64_t>(D.attr("data_ptr")());
 
-        auto A_shape = A.attr("shape").cast<std::vector<int>>();
-        auto B_shape = B.attr("shape").cast<std::vector<int>>();
-        auto C_shape = C.attr("shape").cast<std::vector<int>>();
-        auto D_shape = D.attr("shape").cast<std::vector<int>>();
+        auto A_shape = py::cast<std::vector<int>>(A.attr("shape"));
+        auto B_shape = py::cast<std::vector<int>>(B.attr("shape"));
+        auto C_shape = py::cast<std::vector<int>>(C.attr("shape"));
+        auto D_shape = py::cast<std::vector<int>>(D.attr("shape"));
 
-        auto A_dtype = A.attr("dtype").attr("__str__")().cast<std::string>();
-        auto B_dtype = B.attr("dtype").attr("__str__")().cast<std::string>();
-        auto C_dtype = C.attr("dtype").attr("__str__")().cast<std::string>();
-        auto D_dtype = D.attr("dtype").attr("__str__")().cast<std::string>();
+        auto A_dtype = py::cast<std::string>(A.attr("dtype").attr("__str__")());
+        auto B_dtype = py::cast<std::string>(B.attr("dtype").attr("__str__")());
+        auto C_dtype = py::cast<std::string>(C.attr("dtype").attr("__str__")());
+        auto D_dtype = py::cast<std::string>(D.attr("dtype").attr("__str__")());
 
         checkMatmulConstraints(A_dtype, B_dtype, D_dtype, A_shape, B_shape,
                                D_shape);

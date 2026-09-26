@@ -63,8 +63,10 @@ struct ConvertLayoutOpSwizzlingConversion
     auto dstTy = op.getType();
 
     LinearLayout conversion = minimalCvtLayout(srcTy, dstTy);
-    LinearLayout srcLayout = toLinearLayout(srcTy);
-    LinearLayout dstLayout = toLinearLayout(dstTy);
+    LinearLayout srcLayout =
+        toLinearLayout(srcTy).removeZeroBasesAlongDim(str_attr("register"));
+    LinearLayout dstLayout =
+        toLinearLayout(dstTy).removeZeroBasesAlongDim(str_attr("register"));
 
     StringAttr kBlock = str_attr("block");
 
@@ -224,7 +226,8 @@ struct ConvertLayoutOpSwizzlingConversion
       if (idxSrc == 0) {
         lowerLdStShared(loc, ctx, storeCvt, tileInVals, llvmElemTy, smemBase,
                         /*paddingShifts=*/{}, affineOffset,
-                        maskSpanAffineOffset, rewriter, targetInfo);
+                        maskSpanAffineOffset, /*affineBlockOffset=*/Value(),
+                        /*maskSpanAffineBlock=*/0, rewriter, targetInfo);
       } else {
         assert(idxSrc == 1 || idxSrc == 2);
         bool transpose = idxSrc == 2;
@@ -241,7 +244,8 @@ struct ConvertLayoutOpSwizzlingConversion
       if (idxDst == 0) {
         tileOutVals = lowerLdStShared(
             loc, ctx, loadCvt, {}, llvmElemTy, smemBase,
-            /*paddingShifts=*/{}, affineOffset, maskSpanAffineOffset, rewriter,
+            /*paddingShifts=*/{}, affineOffset, maskSpanAffineOffset,
+            /*affineBlockOffset=*/Value(), /*maskSpanAffineBlock=*/0, rewriter,
             targetInfo);
       } else {
         assert(idxDst == 1 || idxDst == 2);
@@ -338,7 +342,9 @@ private:
     }
 
     // ChainedDot optimization by `DotOperand0`:
-    auto vals = unpackLLElements(loc, adaptor.getSrc(), rewriter);
+    // The packing loop below indexes by the total element count, so expand the
+    // broadcast registers the converted struct drops. Identity when injective.
+    auto vals = unpackTensorElements(loc, adaptor.getSrc(), rewriter, srcTy);
     unsigned elems = getTotalElemsPerThread(srcTy);
     Type elemTy = this->getTypeConverter()->convertType(srcTy.getElementType());
     auto elemSize = elemTy.getIntOrFloatBitWidth();
@@ -424,8 +430,8 @@ private:
         }
       }
     }
-    Value view =
-        packLLElements(loc, getTypeConverter(), reorderedVals, rewriter, dstTy);
+    Value view = packTensorElements(loc, getTypeConverter(), reorderedVals,
+                                    rewriter, dstTy);
     rewriter.replaceOp(op, view);
   }
 

@@ -26,6 +26,7 @@
 #include "mlir/Support/LLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
+#include "triton/Tools/LayoutUtils.h"
 #include "llvm/ADT/SmallVector.h"
 
 using namespace mlir;
@@ -45,32 +46,43 @@ Value loadC(Value tensor, Value llTensor,
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   MLIRContext *ctx = tensor.getContext();
   auto tensorTy = cast<RankedTensorType>(tensor.getType());
-  size_t fcSize = triton::gpu::getTotalElemsPerThread(tensor.getType());
 
   assert(isa<PPUMmaEncodingAttr>(tensorTy.getEncoding()) &&
          "Currently, we only support $c with a mma layout.");
-  // Load a normal C tensor with mma layout, that should be a
-  // LLVM::struct with fcSize elements.
-  auto structTy = cast<LLVM::LLVMStructType>(llTensor.getType());
-  assert(structTy.getBody().size() == fcSize &&
-         "DotOp's $c operand should pass the same number of values as $d in "
-         "mma layout.");
 
-  auto numMmaRets = tensorTy.getElementType().getIntOrFloatBitWidth() / 4;
+  // The incoming struct is unique-sized (the type converter drops broadcast
+  // registers), but the mma tiling below indexes $c by the total element count.
+  // Expand the broadcast registers back so the two agree; for an injective mma
+  // layout this is the identity.
+  auto cVals = unpackTensorElements(loc, llTensor, rewriter, tensorTy);
+  size_t fcSize = cVals.size();
+  auto cElemTy = tensorTy.getElementType();
+  // Element type as it appears in the LLVM struct, which is what any struct we
+  // rebuild has to use; the MLIR element type is not necessarily the same.
+  auto llElemTy =
+      cast<LLVM::LLVMStructType>(llTensor.getType()).getBody().front();
+  bool expanded = fcSize != cast<LLVM::LLVMStructType>(llTensor.getType())
+                                .getBody()
+                                .size();
+
+  auto numMmaRets = cElemTy.getIntOrFloatBitWidth() / 4;
   assert(numMmaRets == 8 || numMmaRets == 4);
   if (numMmaRets == 8) {
-    return llTensor;
+    // Nothing to expand for an injective layout: hand back the original struct
+    // rather than rebuilding an equivalent one.
+    if (!expanded)
+      return llTensor;
+    Type structTy = LLVM::LLVMStructType::getLiteral(
+        ctx, SmallVector<Type>(fcSize, llElemTy));
+    return packLLElements(loc, typeConverter, cVals, rewriter, structTy);
   } else if (numMmaRets == 4) {
     auto cPack = SmallVector<Value>();
-    auto cElemTy = tensorTy.getElementType();
     int numCPackedElem = 8 / numMmaRets;
     Type cPackTy = vec_ty(cElemTy, numCPackedElem);
     for (int i = 0; i < fcSize; i += numCPackedElem) {
       Value pack = LLVM::UndefOp::create(rewriter, loc, cPackTy);
       for (int j = 0; j < numCPackedElem; ++j) {
-        pack = b.insert_element(cPackTy, pack,
-                                b.extract_val(cElemTy, llTensor, i + j),
-                                b.i32_val(j));
+        pack = b.insert_element(cPackTy, pack, cVals[i + j], b.i32_val(j));
       }
       cPack.push_back(pack);
     }
@@ -90,7 +102,7 @@ ValueTableV2 getValuesFromDotOperandLayoutStruct(
     ConversionPatternRewriter &rewriter, Value value, int batch, int repOuter,
     int repK, RankedTensorType type) {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
-  auto elems = unpackLLElements(loc, value, rewriter);
+  auto elems = unpackTensorElements(loc, value, rewriter, type);
   auto eltTy = typeConverter->convertType(type.getElementType());
   int offset{};
   ValueTableV2 vals;
@@ -431,7 +443,6 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
                          Value loadedB, Value loadedC, DotOp op,
                          DotOpAdaptor adaptor) {
   auto tb = TritonLLVMOpBuilder(loc, rewriter);
-  MLIRContext *ctx = c.getContext();
   auto aTensorTy = cast<RankedTensorType>(a.getType());
   auto bTensorTy = cast<RankedTensorType>(b.getType());
   auto dTensorTy = cast<RankedTensorType>(d.getType());
@@ -513,9 +524,6 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
 
   Type resElemTy = dTensorTy.getElementType();
 
-  // replace with new packed result
-  Type structTy = LLVM::LLVMStructType::getLiteral(
-      ctx, SmallVector<Type>(fc.size() * numCPackedElem, resElemTy));
   SmallVector<Value> results(fc.size() * numCPackedElem);
   for (int i = 0; i < fc.size(); ++i) {
     for (int j = 0; j < numCPackedElem; ++j) {
@@ -525,6 +533,22 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
               : tb.bitcast(fc[i], resElemTy);
     }
   }
+
+  // The mma tiling worked on the total element count; the result struct is
+  // unique-sized, so drop the broadcast registers again. Identity for an
+  // injective mma layout.
+  auto removeBroadcast =
+      actionRemoveBroadcastedRegs(triton::gpu::toLinearLayout(dTensorTy));
+  if (!removeBroadcast.isIdentity())
+    results = removeBroadcast.apply(results);
+
+  // The type converter owns the result struct's shape. Pack against it rather
+  // than a locally derived length: a mismatch would otherwise survive as an
+  // unrealized_conversion_cast and only fail later during LLVM translation.
+  auto structTy = typeConverter->convertType(dTensorTy);
+  assert(cast<LLVM::LLVMStructType>(structTy).getBody().size() ==
+             results.size() &&
+         "dot result count must match the converted struct size");
   Value res = packLLElements(loc, typeConverter, results, rewriter, structTy);
 
   rewriter.replaceOp(op, res);

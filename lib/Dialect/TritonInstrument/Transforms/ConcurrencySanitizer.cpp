@@ -1,13 +1,16 @@
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "mlir/Transforms/Passes.h"
+#include "triton/Analysis/Utility.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "triton/Dialect/TritonInstrument/IR/Dialect.h"
 #include "triton/Dialect/TritonInstrument/IR/FunctionBuilder.h"
 #include "triton/Dialect/TritonInstrument/IR/Utility.h"
 #include "triton/Dialect/TritonInstrument/Transforms/ConSanTargetHooks.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#include "triton/Tools/LayoutUtils.h"
 #include "triton/Tools/Sys/GetEnv.h"
 
 namespace mlir {
@@ -77,13 +80,12 @@ bool isTensorCoreOp(Operation *op) {
 }
 
 std::optional<int> maybeGetPartitionIdx(Operation *op) {
-  if (auto wsOp = op->getParentOfType<ttg::WarpSpecializePartitionsOp>()) {
+  Operation *parent = op->getParentOp();
+  if (!parent)
+    return std::nullopt;
+  if (isa<ttg::WarpSpecializePartitionsOp>(parent))
     return op->getParentRegion()->getRegionNumber();
-  }
-  if (Operation *parent = op->getParentOp()) {
-    return maybeGetPartitionIdx(parent);
-  }
-  return std::nullopt;
+  return maybeGetPartitionIdx(parent);
 }
 
 int getCurrentThread(Operation *op, const ConSanTargetHooks *hooks,
@@ -367,7 +369,205 @@ SmallVector<uint16_t> getTensorCoreBarrierBroadcastMasks(Operation *op) {
   return ttng::getCTABroadcastMasks(twoCTAs, commitDescs);
 }
 
-Value getMemEffectCTAs(ImplicitLocOpBuilder &b, Operation *op) {
+void extendXorSpan(uint32_t &span, uint32_t basis, int numCTAs) {
+  uint32_t oldSpan = span;
+  for (int value = 0; value < numCTAs; ++value) {
+    if (!(oldSpan & (1u << value)))
+      continue;
+    uint32_t extended = value ^ basis;
+    assert(extended < static_cast<uint32_t>(numCTAs) &&
+           "CTA basis exceeds the cluster size");
+    span |= 1u << extended;
+  }
+}
+
+LinearLayout getSharedLayout(ttg::MemDescType memDescTy) {
+  return ttg::isPaddedEncoding(memDescTy.getEncoding())
+             ? ttg::paddedLinearLayout(memDescTy)
+             : ttg::toLinearLayout(memDescTy);
+}
+
+LinearLayout getLocalLoadStoreConversion(ttg::MemDescType memDescTy,
+                                         RankedTensorType regTy) {
+  return invertAndComposeBlockLocal(getSharedLayout(memDescTy),
+                                    ttg::toLinearLayout(regTy));
+}
+
+LinearLayout getLocalGatherScatterConversion(ttg::MemDescType memDescTy,
+                                             RankedTensorType regTy,
+                                             unsigned axis) {
+  MLIRContext *ctx = memDescTy.getContext();
+  LinearLayout sharedLayout = getSharedLayout(memDescTy);
+  SmallVector<StringAttr> allDims =
+      standardOutDimNames(ctx, memDescTy.getRank());
+  StringAttr axisDim = allDims[axis];
+  LinearLayout regLayout = ttg::toLinearLayout(regTy).transposeOuts(allDims);
+  SmallVector<StringAttr> nonIndexedDims = allDims;
+  nonIndexedDims.erase(nonIndexedDims.begin() + axis);
+  LinearLayout indexedLayout =
+      regLayout.sublayout(llvm::to_vector(regLayout.getInDimNames()),
+                          nonIndexedDims) *
+      LinearLayout::identity1D(sharedLayout.getOutDimSize(axisDim), axisDim,
+                               axisDim);
+  indexedLayout = indexedLayout.transposeOuts(allDims);
+  return invertAndComposeBlockLocal(sharedLayout, indexedLayout);
+}
+
+uint32_t getXorImageMask(const LinearLayout &layout, StringAttr outDim,
+                         int numCTAs) {
+  uint32_t image = 1;
+  for (StringAttr inDim : layout.getInDimNames()) {
+    for (int bit = 0; bit < layout.getInDimSizeLog2(inDim); ++bit)
+      extendXorSpan(image, layout.getBasis(inDim, bit, outDim), numCTAs);
+  }
+  return image;
+}
+
+uint32_t translateXorMask(uint32_t mask, uint32_t translation, int numCTAs) {
+  uint32_t translated = 0;
+  for (int value = 0; value < numCTAs; ++value) {
+    if (!(mask & (1u << value)))
+      continue;
+    uint32_t target = value ^ translation;
+    assert(target < static_cast<uint32_t>(numCTAs) &&
+           "target CTA exceeds the cluster size");
+    translated |= 1u << target;
+  }
+  return translated;
+}
+
+Value getLocalMemoryRecipientCTAs(ImplicitLocOpBuilder &b,
+                                  const LinearLayout &conversion) {
+  MLIRContext *ctx = b.getContext();
+
+  StringAttr kBlock = StringAttr::get(ctx, "block");
+  int numCTAs = ttg::lookupNumCTAs(b);
+  assert(conversion.hasInDim(kBlock) && conversion.hasOutDim(kBlock) &&
+         conversion.getInDimSize(kBlock) == numCTAs &&
+         conversion.getOutDimSize(kBlock) == numCTAs &&
+         "expected conversion to preserve the cluster dimensions");
+
+  // Span every non-issuer input basis that lowering can map into the block
+  // output. For gather/scatter this includes the independent runtime-index
+  // input, whose value is unavailable to this pass. The resulting image is a
+  // conservative recipient set for the full BufferRegion effect.
+  SmallVector<StringAttr> varyingInputs =
+      llvm::to_vector(conversion.getInDimNames());
+  llvm::erase(varyingInputs, kBlock);
+  LinearLayout varyingInputsToTarget =
+      conversion.sublayout(varyingInputs, {kBlock});
+  uint32_t targetSpan = getXorImageMask(varyingInputsToTarget, kBlock, numCTAs);
+
+  LinearLayout issuerToTarget = conversion.sublayout({kBlock}, {kBlock});
+
+  SmallVector<uint32_t> recipientMasks;
+  recipientMasks.reserve(numCTAs);
+  for (int issuer = 0; issuer < numCTAs; ++issuer) {
+    auto outputs = issuerToTarget.apply({{kBlock, issuer}});
+    assert(outputs.size() == 1 && outputs.front().first == kBlock &&
+           "expected block output dimension");
+    recipientMasks.push_back(
+        translateXorMask(targetSpan, outputs.front().second, numCTAs));
+  }
+
+  bool currentCTAOnly =
+      llvm::all_of(llvm::enumerate(recipientMasks), [](auto entry) {
+        return entry.value() == (1u << entry.index());
+      });
+  if (currentCTAOnly)
+    return currentCTAMask(b);
+  if (llvm::all_of(recipientMasks, [&](uint32_t mask) {
+        return mask == recipientMasks.front();
+      }))
+    return arith::ConstantIntOp::create(b, recipientMasks.front(), 32);
+
+  Value ctaId = tti::ExperimentalClusterCTAIdOp::create(b, b.getLoc());
+  Value recipients =
+      arith::ConstantIntOp::create(b, recipientMasks.front(), 32);
+  for (int issuer = 1; issuer < numCTAs; ++issuer) {
+    Value isIssuer =
+        arith::CmpIOp::create(b, arith::CmpIPredicate::eq, ctaId,
+                              arith::ConstantIntOp::create(b, issuer, 32));
+    recipients = arith::SelectOp::create(
+        b, isIssuer,
+        arith::ConstantIntOp::create(b, recipientMasks[issuer], 32),
+        recipients);
+  }
+  return recipients;
+}
+
+Value getLocalLoadStoreRecipientCTAs(ImplicitLocOpBuilder &b,
+                                     ttg::MemDescType memDescTy,
+                                     RankedTensorType regTy) {
+  // Layout-less tensors can appear in intermediate/test IR but cannot encode a
+  // cross-CTA ownership mapping. Preserve the existing current-CTA behavior.
+  if (!regTy.getEncoding())
+    return currentCTAMask(b);
+  return getLocalMemoryRecipientCTAs(
+      b, getLocalLoadStoreConversion(memDescTy, regTy));
+}
+
+Value getMemEffectCTAs(ImplicitLocOpBuilder &b, Operation *op,
+                       const ConSanTargetHooks *hooks) {
+  if (auto convert = dyn_cast<ttg::ConvertLayoutOp>(op)) {
+    // Convert-layout scratch has the source layout's CTA ownership. Stores are
+    // therefore local to the issuer, while loads may read the source scratch
+    // owned by peer CTAs. This block-level conversion matches the block
+    // mapping of the swizzled scratch layout used by lowering.
+    LinearLayout srcLayout = ttg::toLinearLayout(convert.getSrc().getType());
+    LinearLayout dstLayout = ttg::toLinearLayout(convert.getType());
+    Value loadCTAs = getLocalMemoryRecipientCTAs(
+        b, invertAndComposeBlockLocal(srcLayout, dstLayout));
+    return arith::OrIOp::create(b, currentCTAMask(b), loadCTAs);
+  }
+  if (auto reduce = dyn_cast<tt::ReduceOp>(op)) {
+    // Reduce lowering creates its scratch-backed conversions after ConSan.
+    // Intra-CTA reductions only access the issuer's scratch. Cross-CTA
+    // reductions are not currently expected after layout optimization, but
+    // conservatively cover the cluster if one reaches this pipeline stage.
+    if (!ReduceOpHelper(reduce).isReduceWithinCTA())
+      return allCTAsMask(b);
+    return currentCTAMask(b);
+  }
+  if (auto load = dyn_cast<ttg::LocalLoadOp>(op)) {
+    return getLocalLoadStoreRecipientCTAs(b, load.getSrc().getType(),
+                                          load.getType());
+  }
+  if (auto store = dyn_cast<ttg::LocalStoreOp>(op)) {
+    return getLocalLoadStoreRecipientCTAs(b, store.getDst().getType(),
+                                          store.getSrc().getType());
+  }
+  if (auto alloc = dyn_cast<ttg::LocalAllocOp>(op); alloc && alloc.getSrc()) {
+    return getLocalLoadStoreRecipientCTAs(b, alloc.getType(),
+                                          alloc.getSrc().getType());
+  }
+  if (auto gather = dyn_cast<ttg::LocalGatherOp>(op)) {
+    return getLocalMemoryRecipientCTAs(
+        b, getLocalGatherScatterConversion(gather.getSrc().getType(),
+                                           gather.getType(), gather.getAxis()));
+  }
+  if (auto scatter = dyn_cast<ttg::LocalScatterOp>(op)) {
+    return getLocalMemoryRecipientCTAs(
+        b, getLocalGatherScatterConversion(scatter.getDst().getType(),
+                                           scatter.getValues().getType(),
+                                           scatter.getAxis()));
+  }
+  if (auto atomic = dyn_cast<ttg::LocalAtomicScatterRMWOp>(op)) {
+    Value recipients = getLocalMemoryRecipientCTAs(
+        b, getLocalGatherScatterConversion(atomic.getDst().getType(),
+                                           atomic.getValues().getType(),
+                                           atomic.getAxis()));
+    if (auto mask = hooks->getScratchCTABroadcastMask(op)) {
+      Value scratchRecipients =
+          *mask ? getRecipientCTAsForBroadcastMasks(b, {*mask})
+                : currentCTAMask(b);
+      recipients = arith::OrIOp::create(b, recipients, scratchRecipients);
+    }
+    return recipients;
+  }
+  if (auto mask = hooks->getScratchCTABroadcastMask(op))
+    return *mask ? getRecipientCTAsForBroadcastMasks(b, {*mask})
+                 : currentCTAMask(b);
   if (auto tmaLoad = dyn_cast<ttng::TMALoadLikeOpInterface>(op)) {
     if (tmaLoad.getMulticast())
       return getMulticastRecipientCTAs(b, tmaLoad.getResult());
@@ -418,7 +618,8 @@ public:
 
     ImplicitLocOpBuilder b(entryPoint.getLoc(), entryPoint);
     b.setInsertionPointToStart(&entryPoint.getBody().front());
-    instrumentMemoryOperations(b, funcBuilder);
+    if (failed(instrumentMemoryOperations(b, funcBuilder)))
+      return failure();
     initializeAllocations();
     return success();
   }
@@ -444,14 +645,21 @@ private:
       ImplicitLocOpBuilder b(op->getLoc(), op);
       b.setInsertionPointAfter(op);
       Value alloc = op->getResult(0);
-      if (canInitializeAllocation(alloc))
+      if (canInitializeAllocation(alloc)) {
         initializeAllocation(b, alloc);
+        auto allocType = cast<ttg::MemDescType>(alloc.getType());
+        bool isShared =
+            isa<ttg::SharedMemorySpaceAttr>(allocType.getMemorySpace());
+        if (isShared && auxData.hasAsyncProxyFenceTracking)
+          ttng::FenceAsyncSharedOp::create(b, /*bCluster=*/false);
+      }
     }
   }
 
-  void instrumentMemoryOperations(ImplicitLocOpBuilder &b,
-                                  tti::FunctionBuilder &funcBuilder) {
-    module.walk([&](Operation *op) {
+  LogicalResult instrumentMemoryOperations(ImplicitLocOpBuilder &b,
+                                           tti::FunctionBuilder &funcBuilder) {
+    SmallVector<ttng::ClusterBarrierOp> clusterBarriers;
+    WalkResult walkResult = module.walk([&](Operation *op) -> WalkResult {
       CriticalSectionListener listener;
       b.setListener(&listener);
 
@@ -474,19 +682,29 @@ private:
         b.setListener(nullptr);
         instrumentBarrierWait(op, info->alloc, info->phase, info->pred, thread,
                               baseThread, funcBuilder);
-        return;
+        return WalkResult::advance();
       }
 
-      instrumentMemEffects(b, op, thread, funcBuilder);
+      if (failed(instrumentMemEffects(b, op, thread, funcBuilder))) {
+        b.setListener(nullptr);
+        return WalkResult::interrupt();
+      }
       b.setLoc(op->getLoc());
+      if (auto info = hooks->getAsyncProxyFenceInfo(op)) {
+        funcBuilder.createFenceProxyAccessesCall(
+            b, baseThread, info->cluster, hooks->getIssuerCTAPred(b, op), op);
+      }
       if (auto wsOp = dyn_cast<ttg::WarpSpecializeOp>(op)) {
         funcBuilder.createSetActiveMaskCall(b, getActiveMask(wsOp), op);
         auto partitionRegions = wsOp.getNonEmptyPartitionRegions();
         if (!partitionRegions.empty()) {
           uint64_t destMask = 0;
+          uint64_t baseDestMask = 0;
           for (Region *region : partitionRegions)
             destMask |= getThreadPeersMask(region->getRegionNumber() + 1,
                                            auxData.threadLayout);
+          for (Region *region : partitionRegions)
+            baseDestMask |= 1ULL << (region->getRegionNumber() + 1);
           if (destMask) {
             for (MemType memType : {MemType::SHARED_MEM, MemType::TENSOR_MEM}) {
               funcBuilder.createCopyWriteVisibilityCall(b, thread, destMask,
@@ -495,6 +713,9 @@ private:
                                                        nullptr, memType, op);
             }
           }
+          if (baseDestMask)
+            funcBuilder.createCopyProxyAccessesCall(b, baseThread, baseDestMask,
+                                                    nullptr, op);
         }
       }
       if (auto info = hooks->getBarrierInitInfo(op)) {
@@ -516,6 +737,8 @@ private:
           funcBuilder.createClearBarrierReadTrackingCall(b, barrier, pred,
                                                          memType, op);
         }
+        funcBuilder.createClearBarrierProxyAccessTrackingCall(b, barrier, pred,
+                                                              op);
       }
       if (auto asyncCommitGroupOp = dyn_cast<ttg::AsyncCommitGroupOp>(op)) {
         if (!auxData.commits[CommitKind::AsyncCp].empty())
@@ -553,27 +776,8 @@ private:
         }
       }
       if (auto clusterBarrier = dyn_cast<ttng::ClusterBarrierOp>(op)) {
-        if (!clusterBarrier.getRelaxed() &&
-            !llvm::is_contained(auxData.nonPublishingClusterBarriers, op)) {
-          b.setInsertionPointAfter(op);
-          // Publish the cluster-wide frontier once, then keep every CTA at
-          // this synchronization point until the publication completes.
-          b.setListener(nullptr);
-          Value ctaId = tti::ExperimentalClusterCTAIdOp::create(b, b.getLoc());
-          Value zero = arith::ConstantIntOp::create(b, 0, 32);
-          Value isCTA0 =
-              arith::CmpIOp::create(b, arith::CmpIPredicate::eq, ctaId, zero);
-          Value lock = auxData.lock.at(op).value;
-          tti::ExperimentalLockAcquireOp::create(b, lock, isCTA0);
-          for (MemType memType : {MemType::SHARED_MEM, MemType::TENSOR_MEM})
-            funcBuilder.createPublishClusterVisibilityCall(b, isCTA0, memType,
-                                                           op);
-          tti::ExperimentalLockReleaseOp::create(b, lock, isCTA0);
-          auto publishBarrier = ttng::ClusterBarrierOp::create(b, b.getLoc());
-          auxData.nonPublishingClusterBarriers.push_back(
-              publishBarrier.getOperation());
-          b.setListener(&listener);
-        }
+        if (!llvm::is_contained(auxData.internalClusterBarriers, op))
+          clusterBarriers.push_back(clusterBarrier);
       }
 
       if (isa<ttg::WarpYieldOp, ttg::WarpReturnOp>(op) &&
@@ -584,20 +788,58 @@ private:
             llvm::is_contained(wsOp.getNonEmptyPartitionRegions(),
                                op->getParentRegion());
         if (shouldRetire) {
+          b.setListener(nullptr);
           b.setLoc(wsOp.getLoc());
+          Value lock = auxData.lock.at(op).value;
+          Value trueVal = arith::ConstantIntOp::create(b, 1, 1);
+          tti::ExperimentalLockAcquireOp::create(b, lock, trueVal);
           funcBuilder.createRetireActiveThreadCall(b, baseThread, op);
-          funcBuilder.createCheckAllActiveWaitingCall(b, nullptr, op);
+          Value ok =
+              funcBuilder.createCheckAllActiveWaitingCall(b, nullptr, op);
+          tti::ExperimentalLockReleaseOp::create(b, lock, trueVal);
+          tti::createAssertInThread(
+              b, ok,
+              "Deadlock detected after a warp-specialized thread exited");
+          b.setListener(&listener);
         }
       }
       if (isa<tt::ReturnOp>(op) && !auxData.activeMasks.empty() &&
           op->getParentOfType<tt::FuncOp>() == tti::getEntryPoint(module)) {
+        b.setListener(nullptr);
+        Value lock = auxData.lock.at(op).value;
+        Value trueVal = arith::ConstantIntOp::create(b, 1, 1);
+        tti::ExperimentalLockAcquireOp::create(b, lock, trueVal);
         funcBuilder.createSetActiveMaskCall(b, 0, op);
-        funcBuilder.createCheckAllActiveWaitingCall(b, nullptr, op);
+        Value ok = funcBuilder.createCheckAllActiveWaitingCall(b, nullptr, op);
+        tti::ExperimentalLockReleaseOp::create(b, lock, trueVal);
+        tti::createAssertInThread(b, ok,
+                                  "Deadlock detected when the kernel returned");
+        b.setListener(&listener);
       }
 
       listener.maybeWrapWithCriticalSection(b, auxData, nullptr);
       b.setListener(nullptr);
+      return WalkResult::advance();
     });
+    if (walkResult.wasInterrupted())
+      return failure();
+
+    // Cluster rendezvous polling introduces control-flow blocks, so add it
+    // after the operation walk rather than invalidating the walk iterators.
+    for (ttng::ClusterBarrierOp clusterBarrier : clusterBarriers) {
+      Operation *op = clusterBarrier.getOperation();
+      int thread = getCurrentThread(op, hooks, auxData.threadLayout);
+      int baseThread = getBaseThread(thread, auxData.threadLayout);
+      bool partitionScoped =
+          static_cast<bool>(op->getParentOfType<ttg::WarpSpecializeOp>());
+      b.setLoc(op->getLoc());
+      b.setInsertionPoint(op);
+      funcBuilder.createClusterBarrierRendezvousCall(
+          b, auxData.getClusterBarrierSlot(op), baseThread,
+          getThreadPeersMask(baseThread, auxData.threadLayout), partitionScoped,
+          /*publishVisibility=*/!clusterBarrier.getRelaxed(), op);
+    }
+    return success();
   }
 
   void instrumentBarrierWait(Operation *op, Value alloc, Value phase,
@@ -611,8 +853,10 @@ private:
     funcBuilder.createVerifyBarrierInitializedCall(wb, alloc, pred, op,
                                                    currentCTAMask(wb));
     funcBuilder.createSetWaitingCall(wb, alloc, baseThread, phase, pred, op);
-    funcBuilder.createCheckAllActiveWaitingCall(wb, pred, op);
+    Value ok = funcBuilder.createCheckAllActiveWaitingCall(wb, pred, op);
     tti::ExperimentalLockReleaseOp::create(wb, lock, pred);
+    tti::createAssertInThread(wb, ok,
+                              "Deadlock detected while waiting on an mbarrier");
     // Post-wait: transfer visible writes and reads to all peer threads,
     // and clear waiting for this barrier.
     assert(!auxData.barriers.empty() &&
@@ -627,75 +871,105 @@ private:
           wb, alloc, getThreadPeersMask(thread, auxData.threadLayout), pred,
           memType, op);
     }
+    funcBuilder.createTransferProxyAccessesCall(wb, alloc, baseThread, pred,
+                                                op);
     funcBuilder.createClearWaitingCall(wb, alloc, baseThread, pred, op);
     tti::ExperimentalLockReleaseOp::create(wb, lock, pred);
   }
 
-  void instrumentMemEffects(ImplicitLocOpBuilder &b, Operation *op, int thread,
-                            tti::FunctionBuilder &funcBuilder) {
+  LogicalResult instrumentMemEffects(ImplicitLocOpBuilder &b, Operation *op,
+                                     int thread,
+                                     tti::FunctionBuilder &funcBuilder) {
     int baseThread = getBaseThread(thread, auxData.threadLayout);
-    std::optional<MemEffectsOpInfo> opInfo = hooks->getMemEffectsOpInfo(op);
-    if (!opInfo) {
-      return;
-    }
+    auto opInfoResult = hooks->getMemEffectsOpInfo(op);
+    if (failed(opInfoResult))
+      return failure();
+    std::optional<MemEffectsOpInfo> opInfo = std::move(*opInfoResult);
+    if (!opInfo)
+      return success();
     Value pred = opInfo->pred;
     Value issuerCTAPred = hooks->getIssuerCTAPred(b, op);
     pred = tti::maybeAnd(b, pred, issuerCTAPred);
-    Value effectCTAs = getMemEffectCTAs(b, op);
-    for (auto effect : opInfo->operandEffects) {
-      Value buf = effect.buf;
-      auto bufType = cast<ttg::MemDescType>(buf.getType());
-      MemType memType = MemType::TENSOR_MEM;
-      if (isa<ttg::SharedEncodingTrait>(bufType.getEncoding())) {
-        memType = MemType::SHARED_MEM;
+    Value effectCTAs = getMemEffectCTAs(b, op, hooks);
+    struct MaterializedEffect {
+      tti::MaterializedBufferRegion buffer;
+      MemType memType;
+    };
+    SmallVector<MaterializedEffect> materializedEffects;
+    materializedEffects.reserve(opInfo->operandEffects.size());
+
+    for (const auto &effect : opInfo->operandEffects) {
+      MaterializedEffect materialized;
+      if (auto *buf = std::get_if<Value>(&effect.buffer)) {
+        auto bufType = cast<ttg::MemDescType>(buf->getType());
+        materialized.memType = MemType::TENSOR_MEM;
+        if (isa<ttg::SharedEncodingTrait>(bufType.getEncoding()))
+          materialized.memType = MemType::SHARED_MEM;
+        materialized.buffer = {tti::ExperimentalMemDescToI32Op::create(b, *buf),
+                               effect.length};
+      } else {
+        const auto &staticBuffer =
+            std::get<MemEffectsOpInfo::Effects::StaticSharedBuffer>(
+                effect.buffer);
+        materialized.memType = MemType::SHARED_MEM;
+        materialized.buffer = {
+            tti::ExperimentalSharedMemoryOffsetToI32Op::create(
+                b, b.getI32IntegerAttr(staticBuffer.region.baseOffset)),
+            staticBuffer.region.length};
+      }
+      materializedEffects.push_back(materialized);
+
+      auto buffer = materialized.buffer;
+      MemType memType = materialized.memType;
+      if (memType == MemType::SHARED_MEM) {
+        if (effect.proxy == MemEffectsOpInfo::Effects::Proxy::Async) {
+          funcBuilder.createVerifyProxyAccessCall(
+              b, buffer, baseThread, effect.operandName, pred, op, effectCTAs);
+        } else {
+          funcBuilder.createSetProxyAccessCall(b, buffer, baseThread, pred, op,
+                                               effectCTAs);
+        }
       }
       if (effect.rw == MemEffectsOpInfo::Effects::Read) {
         // For op that is reading, we only need to check if anything else
         // is writing to the same buffer.
-        addWriteChecks(b, funcBuilder, op, buf, effect.length, pred, memType,
-                       thread, effect.operandName, effectCTAs,
-                       opInfo->commitKind);
+        addWriteChecks(b, funcBuilder, op, buffer, pred, memType, thread,
+                       effect.operandName, effectCTAs, opInfo->commitKind);
         if (opInfo->trackingKind == MemEffectsOpInfo::TrackingKind::Barrier) {
           funcBuilder.createSetReadVisibilityCall(
-              b, buf, effect.length,
-              getThreadPeersMask(thread, auxData.threadLayout), pred, memType,
-              op, effectCTAs);
+              b, buffer, getThreadPeersMask(thread, auxData.threadLayout), pred,
+              memType, op, effectCTAs);
         }
         if (opInfo->trackingKind ==
             MemEffectsOpInfo::TrackingKind::CommitCount) {
           assert(memType == MemType::SHARED_MEM);
-          funcBuilder.createStageAccessForCommitCall(b, buf, effect.length,
-                                                     baseThread, pred, memType,
-                                                     opInfo->commitKind, op);
+          funcBuilder.createStageAccessForCommitCall(
+              b, buffer, baseThread, pred, memType, opInfo->commitKind, op);
         }
       }
       if (effect.rw == MemEffectsOpInfo::Effects::Write) {
         // Op is writing to the buffer, we need to check if anything else
         // is reading or writing to the same buffer.
-        addWriteChecks(b, funcBuilder, op, buf, effect.length, pred, memType,
-                       thread, effect.operandName, effectCTAs,
-                       opInfo->commitKind);
-        addReadChecks(b, funcBuilder, op, buf, effect.length, pred, memType,
-                      thread, effect.operandName, effectCTAs,
-                      opInfo->commitKind);
+        addWriteChecks(b, funcBuilder, op, buffer, pred, memType, thread,
+                       effect.operandName, effectCTAs, opInfo->commitKind);
+        addReadChecks(b, funcBuilder, op, buffer, pred, memType, thread,
+                      effect.operandName, effectCTAs, opInfo->commitKind);
         if (opInfo->trackingKind == MemEffectsOpInfo::TrackingKind::Barrier) {
           funcBuilder.createSetWriteVisibilityCall(
-              b, buf, effect.length,
-              getThreadPeersMask(thread, auxData.threadLayout), pred, memType,
-              op, effectCTAs);
-          funcBuilder.createClearWriteTrackingCall(b, buf, effect.length, pred,
-                                                   memType, op, effectCTAs);
-          funcBuilder.createClearReadVisibilityCall(b, buf, effect.length, pred,
-                                                    memType, op, effectCTAs);
-          funcBuilder.createClearReadTrackingCall(b, buf, effect.length, pred,
-                                                  memType, op, effectCTAs);
+              b, buffer, getThreadPeersMask(thread, auxData.threadLayout), pred,
+              memType, op, effectCTAs);
+          funcBuilder.createClearWriteTrackingCall(b, buffer, pred, memType, op,
+                                                   effectCTAs);
+          funcBuilder.createClearReadVisibilityCall(b, buffer, pred, memType,
+                                                    op, effectCTAs);
+          funcBuilder.createClearReadTrackingCall(b, buffer, pred, memType, op,
+                                                  effectCTAs);
         }
         if (opInfo->trackingKind ==
             MemEffectsOpInfo::TrackingKind::CommitCount) {
           assert(memType == MemType::SHARED_MEM);
-          funcBuilder.createStageAccessForCommitCall(b, buf, effect.length,
-                                                     baseThread, pred, memType,
-                                                     opInfo->commitKind, op);
+          funcBuilder.createStageAccessForCommitCall(
+              b, buffer, baseThread, pred, memType, opInfo->commitKind, op);
         }
       }
     }
@@ -715,18 +989,23 @@ private:
           funcBuilder.createTrackVisibleReadsCall(
               b, barrier, thread, combinedPred, memType, op, recipientCTAs);
         }
+        funcBuilder.createTrackProxyAccessesCall(
+            b, barrier, baseThread, combinedPred, op, recipientCTAs);
       } else if (barrierInfo.trackingMode ==
                  MemEffectsOpInfo::BarrierTrackingMode::EffectWrites) {
-        for (const auto &effect : opInfo->operandEffects) {
+        for (auto [effect, materialized] :
+             llvm::zip(opInfo->operandEffects, materializedEffects)) {
           if (effect.rw != MemEffectsOpInfo::Effects::Write)
             continue;
-          auto bufType = cast<ttg::MemDescType>(effect.buf.getType());
-          MemType memType = MemType::TENSOR_MEM;
-          if (isa<ttg::SharedEncodingTrait>(bufType.getEncoding()))
-            memType = MemType::SHARED_MEM;
           funcBuilder.createTrackBarrierWriteForBufferCall(
-              b, barrier, effect.buf, effect.length, combinedPred, memType, op,
-              recipientCTAs, effectCTAs);
+              b, barrier, materialized.buffer, combinedPred,
+              materialized.memType, op, recipientCTAs, effectCTAs);
+          if (materialized.memType == MemType::SHARED_MEM &&
+              effect.proxy == MemEffectsOpInfo::Effects::Proxy::Async) {
+            funcBuilder.createTrackProxyAccessesForBufferCall(
+                b, barrier, materialized.buffer, baseThread, combinedPred, op,
+                recipientCTAs, effectCTAs);
+          }
         }
       }
       if (barrierInfo.count > 0 || barrierInfo.txCount != 0) {
@@ -744,16 +1023,17 @@ private:
       funcBuilder.createCommitAccessesCall(b, baseThread, pred,
                                            opInfo->commitKind, op);
     }
+    return success();
   }
 
   void addWriteChecks(ImplicitLocOpBuilder &b,
                       tti::FunctionBuilder &funcBuilder, Operation *op,
-                      Value buf, uint32_t length, Value pred, MemType memType,
-                      int thread, const std::string &operandName,
-                      Value effectCTAs,
+                      tti::MaterializedBufferRegion buffer, Value pred,
+                      MemType memType, int thread,
+                      const std::string &operandName, Value effectCTAs,
                       CommitKind::Kind opCommitKind = CommitKind::None) {
-    funcBuilder.createVerifyWriteVisibilityCall(
-        b, buf, length, thread, operandName, pred, memType, op, effectCTAs);
+    funcBuilder.createVerifyWriteVisibilityCall(b, buffer, thread, operandName,
+                                                pred, memType, op, effectCTAs);
     // commit-num-based synchronization is only supported for shared memory
     if (memType == MemType::SHARED_MEM) {
       for (const auto &commitKindDesc :
@@ -761,7 +1041,7 @@ private:
         bool excludeSelf = (opCommitKind == commitKindDesc.kind &&
                             hooks->isOrderedCommitKind(opCommitKind));
         funcBuilder.createCheckOutstandingCommitsCall(
-            b, buf, length, getBaseThread(thread, auxData.threadLayout),
+            b, buffer, getBaseThread(thread, auxData.threadLayout),
             commitKindDesc.operationDesc, pred, memType, commitKindDesc.kind,
             op, effectCTAs, excludeSelf);
       }
@@ -769,12 +1049,12 @@ private:
   }
 
   void addReadChecks(ImplicitLocOpBuilder &b, tti::FunctionBuilder &funcBuilder,
-                     Operation *op, Value buf, uint32_t length, Value pred,
-                     MemType memType, int thread,
+                     Operation *op, tti::MaterializedBufferRegion buffer,
+                     Value pred, MemType memType, int thread,
                      const std::string &operandName, Value effectCTAs,
                      CommitKind::Kind opCommitKind = CommitKind::None) {
-    funcBuilder.createVerifyReadVisibilityCall(
-        b, buf, length, thread, operandName, pred, memType, op, effectCTAs);
+    funcBuilder.createVerifyReadVisibilityCall(b, buffer, thread, operandName,
+                                               pred, memType, op, effectCTAs);
     // commit-num-based synchronization is only supported for shared memory
     if (memType == MemType::SHARED_MEM) {
       for (const auto &commitKindDesc :
@@ -782,7 +1062,7 @@ private:
         bool excludeSelf = (opCommitKind == commitKindDesc.kind &&
                             hooks->isOrderedCommitKind(opCommitKind));
         funcBuilder.createCheckOutstandingCommitsCall(
-            b, buf, length, getBaseThread(thread, auxData.threadLayout),
+            b, buffer, getBaseThread(thread, auxData.threadLayout),
             commitKindDesc.operationDesc, pred, memType, commitKindDesc.kind,
             op, effectCTAs, excludeSelf);
       }
