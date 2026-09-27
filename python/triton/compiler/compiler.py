@@ -468,6 +468,7 @@ class CompiledKernel:
         # because it involves doing runtime things
         # (e.g., checking amount of shared memory on current device)
         self.module = None
+        self._module_pid = None
         self.function = None
         self._run = None
         self._unload_module = None
@@ -475,6 +476,8 @@ class CompiledKernel:
 
     def __del__(self):
         if getattr(self, "_module_state", "unloaded") != "loaded":
+            return
+        if self.module is None or self._module_pid != os.getpid():
             return
         module = self.module
         function = self.function
@@ -492,6 +495,7 @@ class CompiledKernel:
                 self.function = None
                 self._run = None
                 self._unload_module = None
+                self._module_pid = None
                 self._module_state = "unloaded"
 
     def _init_handles(self):
@@ -548,6 +552,7 @@ class CompiledKernel:
             self._unload_module = unload_module
             self.module, self.function, self.n_regs, self.n_spills, self.n_max_threads = active_driver.utils.load_binary(
                 self.name, self.kernel, self.metadata.shared, load_device)
+            self._module_pid = os.getpid()
             warp_size = active_driver.get_current_target().warp_size
             if self.metadata.num_warps * warp_size > self.n_max_threads:
                 raise_(OutOfResources(self.metadata.num_warps * warp_size, self.n_max_threads, "threads"))
@@ -562,6 +567,7 @@ class CompiledKernel:
             finally:
                 self.function = None
                 self._unload_module = None
+                self._module_pid = None
                 self._module_state = "unloaded"
             raise
         self._run = launcher

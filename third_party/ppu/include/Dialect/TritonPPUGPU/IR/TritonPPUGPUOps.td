@@ -32,6 +32,7 @@ include "triton/Dialect/Triton/IR/TritonInterfaces.td"
 include "triton/Dialect/Triton/IR/TritonOpInterfaces.td"
 include "triton/Dialect/TritonGPU/IR/TritonGPUTypes.td"
 include "triton/Dialect/TritonGPU/IR/TritonGPUAttrDefs.td"
+include "triton/Dialect/TritonGPU/IR/TritonGPUMemoryEffects.td"
 include "mlir/Dialect/LLVMIR/LLVMOpBase.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td" // Pure
@@ -46,7 +47,6 @@ class TT_PPUGPU_Op<string mnemonic, list<Trait> traits = []> :
 // Interfaces
 //
 def GlobalMemory : Resource<"::mlir::triton::GlobalMemory">;
-def SharedMemory : Resource<"::mlir::triton::gpu::SharedMemory">;
 
 
 def AsyncAIUCopyGlobalToLocalOp : TT_PPUGPU_Op<"async_aiu_copy_global_to_local", [
@@ -65,7 +65,7 @@ def AsyncAIUCopyGlobalToLocalOp : TT_PPUGPU_Op<"async_aiu_copy_global_to_local",
     Arg<TT_PtrType, "", [MemRead<GlobalMemory>]>:$src,
     Variadic<I32>:$coord,
     Variadic<I64>:$shape,
-    Arg<TTG_MemDescType, "", [MemWrite<SharedMemory>]>:$result,
+    Arg<TTG_MemDescType, "", GenericSharedWrite>:$result,
     DefaultValuedAttr<TT_CacheModifierAttr, "triton::CacheModifier::NONE">:$cache,
     DefaultValuedAttr<TT_EvictionPolicyAttr, "triton::EvictionPolicy::NORMAL">:$evict,
     DefaultValuedAttr<BoolAttr, "false">:$isVolatile

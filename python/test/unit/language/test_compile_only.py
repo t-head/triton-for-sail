@@ -43,6 +43,21 @@ def test_topk_valid_k(k):
     src = ASTSource(fn=topk_kernel, signature={"K": "constexpr"}, constexprs={"K": k})
     triton.compile(src, target=GPUTarget("cuda", 90, 32))
 
+@pytest.mark.skipif(is_ppu(), reason="Explicit CUDA targets are unsupported on PPU")
+def test_compile_only_sort_keeps_comparisons_boolean() -> None:
+
+    @triton.jit
+    def sort_kernel(values, result):
+        offsets = tl.arange(0, 128)
+        loaded = tl.load(values + offsets)
+        sorted_values = tl.sort(loaded, descending=False)
+        tl.store(result + offsets, sorted_values)
+
+    source = ASTSource(fn=sort_kernel, signature={"values": "*i32", "result": "*i32"})
+    compiled = triton.compile(source, target=GPUTarget("cuda", 100, 32))
+    assert "arith.extui" not in compiled.asm["ttgir"]
+
+
 @pytest.mark.skipif(is_ppu(), reason="ptxas-blackwell is not installed on PPU")
 def test_compile_only_sm100() -> None:
 
