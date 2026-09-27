@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import socket
+import time
+from datetime import timedelta
 
 import pytest
 import torch
@@ -11,10 +13,12 @@ import triton
 import triton.language as tl
 
 from triton._internal_testing import is_cuda, run_in_process
-from triton.experimental.gsan import symmetric_memory
-from triton.experimental.gsan._allocator import get_runtime_state_layout
+from triton.experimental.gsan import _stream_sync, symmetric_memory
 from triton.experimental.gsan._testing_utils import atomic_poll, shadow_cell_from_address, shadow_tensor_for, SHADOW_GRANULARITY_BYTES
-from triton.experimental.gsan._utils import uint8_cuda_tensor_from_ptr
+
+pytestmark = pytest.mark.xdist_group("gsan-symmetric-memory")
+_PROCESS_GROUP_TIMEOUT = timedelta(seconds=30)
+_SPAWN_TIMEOUT_SECONDS = 60
 
 
 def _get_free_tcp_port() -> int:
@@ -23,20 +27,42 @@ def _get_free_tcp_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def _vector_clocks(runtime_state_device: int, access_device: int) -> tuple[torch.Tensor, dict[str, int]]:
-    layout = get_runtime_state_layout(runtime_state_device)
-    region_size = layout["thread_state_stride_bytes"] * layout["num_sms"]
-    region = uint8_cuda_tensor_from_ptr(layout["thread_state_base_ptr"], region_size, access_device)
-    clocks = torch.as_strided(
-        region.view(torch.uint16)[layout["thread_state_header_size_bytes"] // 2:],
-        size=(layout["num_sms"], layout["num_threads"]),
-        stride=(layout["thread_state_stride_bytes"] // 2, 1),
-    )
-    return clocks, layout
+def _spawn_distributed(worker, world_size, *args):
+    context = mp.spawn(worker, args=(world_size, *args), nprocs=world_size, join=False)
+    deadline = time.monotonic() + _SPAWN_TIMEOUT_SECONDS
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"distributed GSan worker {worker.__name__} exceeded its {_SPAWN_TIMEOUT_SECONDS}-second timeout")
+            if context.join(timeout=remaining, grace_period=5):
+                return
+    except BaseException:
+        for process in context.processes:
+            if process.is_alive():
+                process.kill()
+        for process in context.processes:
+            process.join()
+        raise
 
 
-def _local_vector_clocks(device_index: int) -> tuple[torch.Tensor, dict[str, int]]:
-    return _vector_clocks(device_index, device_index)
+def _assert_barrier_synchronizes_stream_clocks(hdl, device_index: int, group: dist.ProcessGroup) -> None:
+    stream = torch.cuda.current_stream(device_index)
+    stream_state = _stream_sync._launch_stream_state(device_index, stream.cuda_stream)
+    kernel_id = stream_state.next_kernel_id
+    assert kernel_id > 0
+
+    previous_clock = stream_state.clocks[(kernel_id - 1) % 3].cpu()
+    peer_clocks = [None] * hdl.world_size
+    dist.all_gather_object(peer_clocks, previous_clock, group=group)
+
+    hdl.barrier(channel=0)
+
+    assert stream_state.next_kernel_id == kernel_id + 1
+    synced_clock = stream_state.clocks[kernel_id % 3].cpu()
+    expected_clock = torch.stack(peer_clocks).amax(dim=0)
+    assert torch.all(synced_clock >= expected_clock).item()
 
 
 @triton.jit
@@ -63,6 +89,12 @@ def _single_cta_no_atomic_sync_kernel(payload_ptr, peer_payload_ptr, seen_peer_p
 @triton.jit
 def _store_scalar_kernel(peer_buf, byte_offset, value):
     tl.store(peer_buf + byte_offset, value)
+
+
+@triton.jit
+def _load_scalar_kernel(buf, byte_offset, out):
+    value = tl.load(buf + byte_offset)
+    tl.store(out, value)
 
 
 def _run_symmetric_memory_checks(rank: int, world_size: int) -> None:
@@ -103,15 +135,7 @@ def _run_symmetric_memory_checks(rank: int, world_size: int) -> None:
     if rank == 1:
         assert torch.all(local_shadow == 29).item()
 
-    local_clocks, layout = _local_vector_clocks(rank)
-    local_clocks.zero_()
-    local_tid = rank * layout["num_sms"]
-    peer_tid = peer * layout["num_sms"]
-    local_clocks[0, local_tid] = rank + 11
-    hdl.barrier(channel=0)
-    synced_clocks, _ = _local_vector_clocks(rank)
-    assert torch.all(synced_clocks[:, local_tid] == (rank + 11)).item()
-    assert torch.all(synced_clocks[:, peer_tid] == (peer + 11)).item()
+    _assert_barrier_synchronizes_stream_clocks(hdl, rank, dist.group.WORLD)
 
     del peer_buf
     del local_shadow
@@ -143,7 +167,7 @@ def _run_symmetric_memory_checks(rank: int, world_size: int) -> None:
 
 
 def _run_subgroup_symmetric_memory_checks(rank: int) -> None:
-    subgroup = dist.new_group(ranks=[1, 2], backend="nccl")
+    subgroup = dist.new_group(ranks=[1, 2], backend="nccl", timeout=_PROCESS_GROUP_TIMEOUT)
     try:
         if rank in (1, 2):
             dev = torch.device(f"cuda:{rank}")
@@ -232,10 +256,16 @@ def _run_multi_node_simulated_symmetric_memory_checks(rank: int, world_size: int
     untouched_shadow_before = shadow_cell_from_address(buf.data_ptr() + untouched_shadow_offset,
                                                        device_index=device_index)
 
-    _store_scalar_kernel[(1, )](peer_buf, outgoing_shadow_offset, rank + 151, num_warps=1)
-    torch.cuda.synchronize()
-    hdl.barrier(channel=0)
-    dist.barrier()
+    stream = torch.cuda.Stream(device=dev)
+    seen_after_barrier = torch.empty((1, ), dtype=torch.uint8, device=dev)
+    with torch.cuda.stream(stream):
+        _store_scalar_kernel[(1, )](peer_buf, outgoing_shadow_offset, rank + 151, num_warps=1)
+        torch.cuda.synchronize()
+        hdl.barrier(channel=0)
+        dist.barrier()
+        _load_scalar_kernel[(1, )](buf, incoming_shadow_offset, seen_after_barrier, num_warps=1)
+        torch.cuda.synchronize()
+    assert int(seen_after_barrier.item()) == prev + 151
 
     incoming_shadow_after = shadow_cell_from_address(buf.data_ptr() + incoming_shadow_offset, device_index=device_index)
     untouched_shadow_after = shadow_cell_from_address(buf.data_ptr() + untouched_shadow_offset,
@@ -246,16 +276,7 @@ def _run_multi_node_simulated_symmetric_memory_checks(rank: int, world_size: int
     assert incoming_shadow_after.write_clock.epoch != 0
     assert untouched_shadow_after == untouched_shadow_before
 
-    local_clocks, layout = _vector_clocks(rank, device_index)
-    local_clocks.zero_()
-    local_tid = rank * layout["num_sms"]
-    local_clocks[0, local_tid] = rank + 211
-    hdl.barrier(channel=0)
-
-    synced_clocks, _ = _vector_clocks(rank, device_index)
-    for global_rank in range(world_size):
-        tid = global_rank * layout["num_sms"]
-        assert torch.all(synced_clocks[:, tid] == (global_rank + 211)).item()
+    _assert_barrier_synchronizes_stream_clocks(hdl, device_index, dist.group.WORLD)
 
     del peer_buf
     torch.cuda.synchronize()
@@ -338,7 +359,8 @@ def _distributed_worker(rank: int, world_size: int, master_port: int, run_subgro
     os.environ["WORLD_SIZE"] = str(world_size)
     os.environ["MASTER_ADDR"] = "127.0.0.1"
     os.environ["MASTER_PORT"] = str(master_port)
-    dist.init_process_group(backend="nccl", rank=rank, world_size=world_size, device_id=torch.device(dev))
+    dist.init_process_group(backend="nccl", rank=rank, world_size=world_size, device_id=torch.device(dev),
+                            timeout=_PROCESS_GROUP_TIMEOUT)
     try:
         if run_subgroup_check:
             _run_subgroup_symmetric_memory_checks(rank)
@@ -354,7 +376,8 @@ def _distributed_worker_single_cta_atomic_sync(rank: int, world_size: int, maste
     os.environ["WORLD_SIZE"] = str(world_size)
     os.environ["MASTER_ADDR"] = "127.0.0.1"
     os.environ["MASTER_PORT"] = str(master_port)
-    dist.init_process_group(backend="nccl", rank=rank, world_size=world_size, device_id=torch.device(dev))
+    dist.init_process_group(backend="nccl", rank=rank, world_size=world_size, device_id=torch.device(dev),
+                            timeout=_PROCESS_GROUP_TIMEOUT)
     try:
         _run_single_cta_atomic_sync_check(rank, world_size)
         dist.barrier()
@@ -368,7 +391,7 @@ def _distributed_worker_multi_node_simulated(rank: int, world_size: int, master_
     os.environ["WORLD_SIZE"] = str(world_size)
     os.environ["MASTER_ADDR"] = "127.0.0.1"
     os.environ["MASTER_PORT"] = str(master_port)
-    dist.init_process_group(backend="gloo", rank=rank, world_size=world_size)
+    dist.init_process_group(backend="gloo", rank=rank, world_size=world_size, timeout=_PROCESS_GROUP_TIMEOUT)
     try:
         _run_multi_node_simulated_symmetric_memory_checks(rank, world_size, device_index)
         dist.barrier()
@@ -381,7 +404,7 @@ def _distributed_worker_single_cta_no_atomic_sync(rank: int, world_size: int, ma
     os.environ["WORLD_SIZE"] = str(world_size)
     os.environ["MASTER_ADDR"] = "127.0.0.1"
     os.environ["MASTER_PORT"] = str(master_port)
-    dist.init_process_group(backend="gloo", rank=rank, world_size=world_size)
+    dist.init_process_group(backend="gloo", rank=rank, world_size=world_size, timeout=_PROCESS_GROUP_TIMEOUT)
     torch.cuda.set_device(dev)
     try:
         _run_single_cta_no_atomic_sync_check(rank, world_size)
@@ -393,12 +416,7 @@ def _distributed_worker_single_cta_no_atomic_sync(rank: int, world_size: int, ma
 def _run_single_cta_no_atomic_sync_failure_case() -> None:
     world_size = 2
     master_port = _get_free_tcp_port()
-    mp.spawn(
-        _distributed_worker_single_cta_no_atomic_sync,
-        args=(world_size, master_port),
-        nprocs=world_size,
-        join=True,
-    )
+    _spawn_distributed(_distributed_worker_single_cta_no_atomic_sync, world_size, master_port)
 
 
 @pytest.mark.skipif(not is_cuda(), reason="requires CUDA backend")
@@ -408,12 +426,7 @@ def test_gsan_symmetric_memory_rendezvous():
 
     world_size = 2
     master_port = _get_free_tcp_port()
-    mp.spawn(
-        _distributed_worker,
-        args=(world_size, master_port, False),
-        nprocs=world_size,
-        join=True,
-    )
+    _spawn_distributed(_distributed_worker, world_size, master_port, False)
 
 
 @pytest.mark.skipif(not is_cuda(), reason="requires CUDA backend")
@@ -423,12 +436,7 @@ def test_gsan_symmetric_memory_rendezvous_subgroup_without_global_zero():
 
     world_size = 3
     master_port = _get_free_tcp_port()
-    mp.spawn(
-        _distributed_worker,
-        args=(world_size, master_port, True),
-        nprocs=world_size,
-        join=True,
-    )
+    _spawn_distributed(_distributed_worker, world_size, master_port, True)
 
 
 @pytest.mark.skipif(not is_cuda(), reason="requires CUDA backend")
@@ -438,12 +446,7 @@ def test_gsan_symmetric_memory_rendezvous_multi_node_simulated():
 
     world_size = 4
     master_port = _get_free_tcp_port()
-    mp.spawn(
-        _distributed_worker_multi_node_simulated,
-        args=(world_size, master_port, 2),
-        nprocs=world_size,
-        join=True,
-    )
+    _spawn_distributed(_distributed_worker_multi_node_simulated, world_size, master_port, 2)
 
 
 @pytest.mark.skipif(not is_cuda(), reason="requires CUDA backend")
@@ -453,12 +456,7 @@ def test_gsan_symmetric_memory_single_cta_atomic_sync():
 
     world_size = 2
     master_port = _get_free_tcp_port()
-    mp.spawn(
-        _distributed_worker_single_cta_atomic_sync,
-        args=(world_size, master_port),
-        nprocs=world_size,
-        join=True,
-    )
+    _spawn_distributed(_distributed_worker_single_cta_atomic_sync, world_size, master_port)
 
 
 @pytest.mark.skipif(not is_cuda(), reason="requires CUDA backend")
@@ -563,7 +561,7 @@ def _distributed_worker_triton_kernels_convert_dp_to_ep(rank: int, world_size: i
     os.environ["WORLD_SIZE"] = str(world_size)
     os.environ["MASTER_ADDR"] = "127.0.0.1"
     os.environ["MASTER_PORT"] = str(master_port)
-    dist.init_process_group(backend="gloo", rank=rank, world_size=world_size)
+    dist.init_process_group(backend="gloo", rank=rank, world_size=world_size, timeout=_PROCESS_GROUP_TIMEOUT)
     torch.cuda.set_device(dev)
     try:
         _run_triton_kernels_convert_dp_to_ep_with_gsan_pool(rank, world_size)
@@ -580,9 +578,4 @@ def test_gsan_symmetric_memory_with_triton_kernels_convert_dp_to_ep():
 
     world_size = 2
     master_port = _get_free_tcp_port()
-    mp.spawn(
-        _distributed_worker_triton_kernels_convert_dp_to_ep,
-        args=(world_size, master_port),
-        nprocs=world_size,
-        join=True,
-    )
+    _spawn_distributed(_distributed_worker_triton_kernels_convert_dp_to_ep, world_size, master_port)

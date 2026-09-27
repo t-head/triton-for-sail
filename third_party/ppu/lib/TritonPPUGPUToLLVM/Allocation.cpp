@@ -92,7 +92,7 @@ getPPUAllocationAnalysisScratchSizeFn(TargetInfoBase &targetInfo) {
     if (auto cvtOp = dyn_cast<triton::gpu::ConvertLayoutOp>(op)) {
       auto srcTy = cvtOp.getSrc().getType();
       auto dstTy = cvtOp.getType();
-      if (!cvtNeedsSharedMemory(srcTy, dstTy))
+      if (!cvtNeedsSharedMemory(cvtOp))
         return 0;
       // In hggc we always swizzle
       auto elems = getNumScratchElemsSwizzledCvt(srcTy, dstTy, targetInfo);

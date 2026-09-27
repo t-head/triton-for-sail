@@ -20,8 +20,9 @@ def gdc_wait(_semantic=None):
 
     See https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#parallel-synchronization-and-communication-instructions-griddepcontrol for more details.
     """
-    core.inline_asm_elementwise("griddepcontrol.wait; // dummy $0", "=r", [], dtype=core.int32, is_pure=False, pack=1,
-                                _semantic=_semantic)
+    if _semantic.builder.options.backend_name == "ppu":
+        raise ValueError("GDC is unsupported on PPU")
+    _semantic.grid_dependency_wait()
 
 
 @core.extern
@@ -38,5 +39,6 @@ def gdc_launch_dependents(_semantic=None):
 
     See https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#parallel-synchronization-and-communication-instructions-griddepcontrol for more details.
     """
-    core.inline_asm_elementwise("griddepcontrol.launch_dependents; // dummy $0", "=r", [], dtype=core.int32,
-                                is_pure=False, pack=1, _semantic=_semantic)
+    if _semantic.builder.options.backend_name == "ppu":
+        raise ValueError("GDC is unsupported on PPU")
+    _semantic.grid_dependency_launch_dependents()

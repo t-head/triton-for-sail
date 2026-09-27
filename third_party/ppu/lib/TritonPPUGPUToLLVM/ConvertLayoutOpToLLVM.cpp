@@ -73,8 +73,7 @@ struct ConvertLayoutOpSwizzlingConversion
     assert(to_vector(conversion.getInDimNames()) ==
            to_vector(conversion.getOutDimNames()));
     auto dims = conversion.getInDimNames();
-    if (!llvm::is_contained(dims, kBlock) &&
-        cvtNeedsSharedMemory(srcTy, dstTy)) {
+    if (!llvm::is_contained(dims, kBlock) && cvtNeedsSharedMemory(op)) {
       auto loc = op.getLoc();
       // Swizzling helpers require the identity kBlock dimension.
       auto llvmElemTy = getTypeConverter()->convertType(srcTy.getElementType());

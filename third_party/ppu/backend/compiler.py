@@ -174,6 +174,7 @@ class HGGCOptions:
     sanitize_overflow: bool = True
     arch: str = None
     instrumentation_mode: str = ""
+    fpsan_homomorphic_casts: bool = False
     ppu_hint: Tuple[str] = ()
 
     def __post_init__(self):
@@ -223,6 +224,8 @@ class PPUBackend(BaseBackend):
         # Enable debug mode for ConSan, so device-side assertions are not optimized out
         if "instrumentation_mode" in opts and opts["instrumentation_mode"] == "consan":
             opts["debug"] = True
+        if opts.get("launch_pdl"):
+            raise ValueError("launch_pdl is unsupported on PPU")
 
         args = {'arch': knobs.runtime.override_arch or f"sm{self.target.arch}"}
         args.update({k: opts[k] for k in HGGCOptions.__dataclass_fields__.keys() if k in opts if opts[k] is not None})

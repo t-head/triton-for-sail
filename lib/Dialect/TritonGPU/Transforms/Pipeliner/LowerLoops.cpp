@@ -1129,7 +1129,8 @@ LogicalResult lowerLoop(scf::ForOp forOp,
   auto loweredForOp = lowerLoads(newForOp, schedule, axisInfoAnalysis);
   if (failed(loweredForOp))
     return failure();
-  newForOp = lowerTMADescriptors(*loweredForOp, schedule);
+  newForOp =
+      cast<scf::ForOp>(lowerTMADescriptors(*loweredForOp, schedule));
   schedule.serialize(newForOp);
   return success();
 }

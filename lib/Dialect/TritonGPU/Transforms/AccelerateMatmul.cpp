@@ -18,6 +18,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/DecomposeScaledBlocked.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Tools/LayoutUtils.h"
 #include "triton/Tools/StrUtil.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -873,12 +874,18 @@ public:
     // MMA_K = 64 is also not supported when BLOCK_M = 64.
     auto blockK = dotOp.getA().getType().getShape().back() * (isAFP4 ? 2 : 1);
     auto blockM = dotOp.getA().getType().getShape()[0];
+    // mxf4/mxf4nvf4 do not support MN-major operands, so fp4 x fp4 falls
+    // back to mxf8f6f4 if either operand is not K-packed. The mxf8f6f4
+    // shared-memory packing format requires padding for every fp4 operand,
+    // even if the operand is K packed.
+    bool isFp4MMAUsingMxf8f6f4 =
+        isFp4MMA && (!dotOp.getLhsKPack() || !dotOp.getRhsKPack());
     bool isMMAv5Fp4PaddedLhs =
-        (isFp4MMA && !dotOp.getLhsKPack()) || // fp4  x fp4 with M-major A
+        isFp4MMAUsingMxf8f6f4 ||
         (IsAMixedPrecFp4 && (requiresFp4Padding || blockM == 64 ||
                              blockK == 32 || !dotOp.getLhsKPack()));
     bool isMMAv5Fp4PaddedRhs =
-        (isFp4MMA && !dotOp.getRhsKPack()) || // fp4  x fp4 with N-major B
+        isFp4MMAUsingMxf8f6f4 ||
         (IsBMixedPrecFp4 &&
          (requiresFp4Padding || blockK == 32 || !dotOp.getRhsKPack()));
 
@@ -921,21 +928,32 @@ public:
     RankedTensorType oldScaleAType = dotOp.getAScale().getType();
     RankedTensorType oldScaleBType = dotOp.getBScale().getType();
 
-    Attribute scaleEncoding =
-        triton::nvidia_gpu::TensorMemoryScalesEncodingAttr::get(context,
-                                                                CGALayout);
+    auto aScaleBlockRepOrder =
+        triton::nvidia_gpu::getTensorMemoryScalesBlockRepOrder(
+            dotOp, /*isA=*/true, dotOp.getAElemType(), dotOp.getBElemType(),
+            oldScaleAType.getElementType(), oldScaleBType.getElementType());
+    auto bScaleBlockRepOrder =
+        triton::nvidia_gpu::getTensorMemoryScalesBlockRepOrder(
+            dotOp, /*isA=*/false, dotOp.getAElemType(), dotOp.getBElemType(),
+            oldScaleAType.getElementType(), oldScaleBType.getElementType());
+    Attribute scaleAEncoding =
+        triton::nvidia_gpu::TensorMemoryScalesEncodingAttr::get(
+            context, CGALayout, aScaleBlockRepOrder);
+    Attribute scaleBEncoding =
+        triton::nvidia_gpu::TensorMemoryScalesEncodingAttr::get(
+            context, CGALayout, bScaleBlockRepOrder);
     Value scaleA =
         tryCreateTmemCopyCompatibleScaleOperand(dotOp.getAScale(), rewriter);
     if (!scaleA) {
       scaleA =
-          createTmemScaleOperand(dotOp.getAScale(), scaleEncoding,
+          createTmemScaleOperand(dotOp.getAScale(), scaleAEncoding,
                                  tensorMemorySpace, numWarps, loc, rewriter);
     }
     Value scaleB =
         tryCreateTmemCopyCompatibleScaleOperand(dotOp.getBScale(), rewriter);
     if (!scaleB) {
       scaleB =
-          createTmemScaleOperand(dotOp.getBScale(), scaleEncoding,
+          createTmemScaleOperand(dotOp.getBScale(), scaleBEncoding,
                                  tensorMemorySpace, numWarps, loc, rewriter);
     }
 
