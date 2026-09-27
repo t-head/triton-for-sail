@@ -40,7 +40,8 @@ struct CircularStoreOpConversion
     auto loc = op.getLoc();
 
     auto dataPack =
-        lowerCircularStoreOpHelper(op, adaptor.getSegment(), rewriter);
+        lowerCircularStore(op, adaptor.getSegment(), adaptor.getCounter(),
+                           adaptor.getDynamicScopeId(), rewriter);
 
     uint32_t addrSpace = dataPack.addrSpace;
     if (addrSpace == 1) {

@@ -203,7 +203,7 @@ struct ConvertTritonGPUToLLVMPPU
     ModuleAllocation allocation(
         mod, mlir::triton::ppu_gpu::getPPUAllocationAnalysisScratchSizeFn(
                  targetInfo));
-    ModuleMembarAnalysis membarPass(&allocation);
+    ModuleMembarAnalysis membarPass(allocation);
     membarPass.run();
     bool hasGlobalScratchAlloc = false;
     mod.walk([&](triton::gpu::GlobalScratchAllocOp) {
