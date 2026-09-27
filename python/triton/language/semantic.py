@@ -598,8 +598,15 @@ class TritonSemantic(Generic[TensorTy]):
         # scalar
         if dtype is None:
             raise ValueError("dtype must be specified when value is not a tensor")
-        if value == 0:
-            value = self.builder.get_null_value(dtype.to_ir(self.builder))
+        if dtype.is_int() and value == 0:
+            # For BC, we explicitly allow e.g. tl.full((), 0.0, tl.int32)
+            # which raises a type error for non-zero values.
+            value = 0
+        if dtype.name == "fp8e4b15":
+            # Validate target support
+            dtype.to_ir(self.builder)
+            value = self.tensor(self.builder.get_fp32(value), tl.float32)
+            return self.cast(value, dtype)
         elif dtype.is_fp8():
             value = self.builder.get_fp32(value)
             value = self.builder.create_fp_trunc(value, dtype.to_ir(self.builder))
@@ -1257,17 +1264,14 @@ class TritonSemantic(Generic[TensorTy]):
             raise ValueError("atomic_poll timeout_ns must be non-negative")
         if timeout_ns is not None:
             timeout_ns = self.to_tensor(timeout_ns)
-        if ptr.type.is_block():
-            raise ValueError("atomic_poll only supports a pointer to a scalar")
-        if not ptr.type.is_ptr():
+        if not ptr.type.scalar.is_ptr():
             raise ValueError(f"Unsupported ptr type {ptr.type.__repr__()} in `tl.atomic_poll`")
-        if expected.type.is_block():
-            raise ValueError("Expected value argument cannot be block type")
 
-        element_ty = ptr.type.element_ty
+        element_ty = ptr.type.scalar.element_ty
         if not element_ty.is_int() or element_ty.primitive_bitwidth not in [16, 32, 64]:
             raise ValueError("atomic_poll only supports integer elements with width {16, 32, 64}")
         expected = self.cast(expected, element_ty)
+        ptr, expected, _ = self._broadcast_ptr_val_mask(ptr, expected, None)
 
         sem = self._str_to_sem(sem, default=ir.MEM_SEMANTIC.ACQUIRE)
         if sem not in [ir.MEM_SEMANTIC.ACQUIRE, ir.MEM_SEMANTIC.RELAXED]:
@@ -1284,7 +1288,7 @@ class TritonSemantic(Generic[TensorTy]):
             sem,
             scope,
         )
-        return self.tensor(handle, tl.int1)
+        return self.tensor(handle, expected.type.with_element_ty(tl.int1))
 
     def atomic_cas(self, ptr: TensorTy, cmp: TensorTy, val: TensorTy, sem: str, scope: str) -> TensorTy:
         sem = self._str_to_sem(sem)
@@ -1351,10 +1355,10 @@ class TritonSemantic(Generic[TensorTy]):
 
         i_type = tl.int32 if sca_ty == tl.float32 else tl.int64
         i_val = self.bitcast(val, i_type)
-        i_ptr = self.bitcast(ptr, tl.pointer_type(i_type, 1))
+        i_ptr = self.bitcast(ptr, tl.pointer_type(i_type))
         ui_type = tl.uint32 if sca_ty == tl.float32 else tl.uint64
         ui_val = self.bitcast(val, ui_type)
-        ui_ptr = self.bitcast(ptr, tl.pointer_type(ui_type, 1))
+        ui_ptr = self.bitcast(ptr, tl.pointer_type(ui_type))
         neg = self._signbit(val)
         pos = self.not_(neg)
         pos_ret = self.tensor(
@@ -1389,10 +1393,10 @@ class TritonSemantic(Generic[TensorTy]):
 
         i_type = tl.int32 if sca_ty == tl.float32 else tl.int64
         i_val = self.bitcast(val, i_type)
-        i_ptr = self.bitcast(ptr, tl.pointer_type(i_type, 1))
+        i_ptr = self.bitcast(ptr, tl.pointer_type(i_type))
         ui_type = tl.uint32 if sca_ty == tl.float32 else tl.uint64
         ui_val = self.bitcast(val, ui_type)
-        ui_ptr = self.bitcast(ptr, tl.pointer_type(ui_type, 1))
+        ui_ptr = self.bitcast(ptr, tl.pointer_type(ui_type))
         neg = self._signbit(val)
         pos = self.not_(neg)
         pos_ret = self.tensor(

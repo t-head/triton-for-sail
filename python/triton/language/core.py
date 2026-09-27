@@ -677,7 +677,7 @@ _DtypeClass = dtype
 
 class pointer_type(dtype):
 
-    def __init__(self, element_ty: dtype, address_space: int = 1, const: bool = False):
+    def __init__(self, element_ty: dtype, address_space: str = "global", const: bool = False):
         element_ty = _unwrap_if_constexpr(element_ty)
         if not isinstance(element_ty, dtype):
             raise TypeError(f'element_ty has type `{type(element_ty).__name__}`; expected `dtype`.')
@@ -687,7 +687,9 @@ class pointer_type(dtype):
         self.name = f'pointer<{element_ty}>' if not const else f'const_pointer<{element_ty}>'
 
     def to_ir(self, builder: ir.builder) -> ir.pointer_type:
-        return builder.get_ptr_ty(self.element_ty.to_ir(builder), self.address_space)
+        # const pointers live in the constant address space.
+        address_space = "constant" if self.const else self.address_space
+        return builder.get_ptr_ty(self.element_ty.to_ir(builder), address_space)
 
     def __str__(self):
         return self.name
@@ -1260,7 +1262,7 @@ class tensor(base_value):
     def sigmoid(self) -> tensor:
         ...
 
-    def softmax(self, dim=None, keep_dims=False, ieee_rounding=False) -> tensor:
+    def softmax(self, dim=None, *, keep_dims=None, ieee_rounding=False) -> tensor:
         ...
 
     def ravel(self) -> tensor:
@@ -2197,8 +2199,9 @@ def cat(input, other, can_reorder=False, dim=0, _semantic=None):
     rank = len(input.shape)
     assert rank == len(other.shape), f"tensors must have the same rank, got {rank} and {len(other.shape)}"
     dim = _wrap_axis(_unwrap_if_constexpr(dim), rank)
-    assert all(input.shape[i] == other.shape[i] for i in builtins.range(rank) if i !=
-               dim), f"tensor dims must match except in the concat dimension {dim}, got {input.shape} and {other.shape}"
+    assert all(input.shape[i] == other.shape[i] for i in builtins.range(rank)), (
+        f"tl.cat requires tensors of the same shape, got "
+        f"{[_unwrap_if_constexpr(s) for s in input.shape]} and {[_unwrap_if_constexpr(s) for s in other.shape]}")
 
     # Join introduces a new minor dim; move it before the concat dim and merge.
     c = join(input, other, _semantic=_semantic)
@@ -2818,13 +2821,14 @@ def atomic_poll(pointer, expected_value, sem=None, scope=None, timeout_ns=None, 
     """
     Wait until the value at :code:`pointer` equals :code:`expected_value`.
 
-    This will spin-wait on the specified pointer until either the value equals
-    the expected value, or the operation times out. In the event of a timeout,
-    the operation returns false and no results may be acquired.
+    This will spin-wait on each specified pointer until either its value equals
+    the expected value, or the operation times out. The block waits for all polls to
+    finish. Timed-out elements return false and acquire no results.
 
-    :param pointer: A pointer to a scalar 16-, 32-, or 64-bit integer.
+    :param pointer: A pointer, or block of pointers, to 16-, 32-, or 64-bit integers.
     :type pointer: triton.PointerDType
-    :param expected_value: The value that ends the polling loop.
+    :param expected_value: The value that ends each polling loop, broadcast to
+        the shape of :code:`pointer`.
     :type expected_value: pointer.dtype.element_ty
     :param sem: Specifies whether a successful poll has acquire semantics.
         Acceptable values are "acquire" (default) and "relaxed".
@@ -2833,12 +2837,12 @@ def atomic_poll(pointer, expected_value, sem=None, scope=None, timeout_ns=None, 
         effect of the poll. Acceptable values are "gpu" (default), "cta"
         (cooperative thread array, thread block), and "sys" (system).
     :type scope: str, optional
-    :param timeout_ns: Maximum wall time to poll, measured in nanoseconds by
-        the GPU global timer. If omitted, polling has no timeout. A timeout of
-        zero still performs one load.
+    :param timeout_ns: Shared polling time budget for the entire operation, measured
+        in nanoseconds by the GPU global timer. If omitted, polling has no timeout.
+        Each element is loaded at least once, even with a zero timeout.
     :type timeout_ns: int, optional
-    :return: True if the expected value was observed, or False if the timeout
-        expired first.
+    :return: A boolean with the shape of :code:`pointer`, true for each element
+        whose expected value was observed and false if its timeout expired first.
     :rtype: triton.language.tensor
     """
     expected_value = _semantic.to_tensor(expected_value)

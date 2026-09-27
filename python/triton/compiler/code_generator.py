@@ -351,6 +351,7 @@ class CodeGenerator(ast.NodeVisitor):
         self.noinline = noinline
         self.caller_context = caller_context
         self.scf_stack = []
+        self._loop_carry_discovery_depth = 0
         self.ret_type = None
         # SSA-construction
         # name => language.tensor
@@ -471,13 +472,25 @@ class CodeGenerator(ast.NodeVisitor):
         self.builder.restore_insertion_point(ip)
         self.builder.set_loc(loc)
 
+    @contextlib.contextmanager
+    def _discovering_loop_carries(self):
+        # Nested loops need result placeholders, not a second complete body,
+        # while generating IR that an enclosing _find_carries will discard.
+        # This gives depth + 1 innermost-body visits instead of 2**depth.
+        self._loop_carry_discovery_depth += 1
+        try:
+            yield
+        finally:
+            self._loop_carry_discovery_depth -= 1
+
     def _find_carries(self, node, liveins, ignore: set[str] = set()):
         # create loop body block
         block = self.builder.create_block()
         self.builder.set_insertion_point_to_start(block)
         # dry visit loop body
         self.scf_stack.append(node)
-        self.visit_compound_statement(node.body)
+        with self._discovering_loop_carries():
+            self.visit_compound_statement(node.body)
         self.scf_stack.pop()
         block.erase()
 
@@ -641,7 +654,7 @@ class CodeGenerator(ast.NodeVisitor):
             raise self._unsupported(
                 node, "nested function definitions are not allowed inside a @triton.jit kernel. "
                 "Move the helper function to module level and decorate it with @triton.jit.")
-        arg_names, kwarg_names = self.visit(node.args)
+        arg_names = self.visit(node.args)
         # initialize defaults
         for i, default_value in enumerate(node.args.defaults[::-1]):
             arg_node = node.args.args[-i - 1]
@@ -689,8 +702,9 @@ class CodeGenerator(ast.NodeVisitor):
             arg_names += [self.visit(arg)]
         if node.vararg is not None:
             arg_names += [self.visit(node.vararg)]
-        kwarg_names = self.visit(node.kwarg)
-        return arg_names, kwarg_names
+        # Keyword-only parameters use the same ordered IR argument list.
+        arg_names += [self.visit(arg) for arg in node.kwonlyargs]
+        return arg_names
 
     def visit_arg(self, node):
         ast.NodeVisitor.generic_visit(self, node)
@@ -1203,6 +1217,8 @@ class CodeGenerator(ast.NodeVisitor):
                 if cond.disable_licm:
                     while_op.set_attr("llvm.loop_annotation", self.builder.get_disable_loop_licm_attr())
                 cond = cond.condition
+            if _is_triton_tensor(cond):
+                cond = cond.to(language.int1, _semantic=self.semantic)
             self.builder.set_insertion_point_to_end(before_block)
             # create ConditionOp: e.g., scf.condition(%cond) %arg0, %arg1, ...
             self.builder.create_condition_op(cond.handle, block_args)
@@ -1220,7 +1236,11 @@ class CodeGenerator(ast.NodeVisitor):
                 self.local_defs[name] = val
                 self._maybe_set_loc_to_name(val, name)
             self.scf_stack.append(node)
-            self.visit_compound_statement(node.body)
+            # An enclosing carry-discovery pass discards this loop. Its result
+            # types and identities suffice; yield the body arguments instead
+            # of recursively generating the body a second time.
+            if not self._loop_carry_discovery_depth:
+                self.visit_compound_statement(node.body)
             self.scf_stack.pop()
 
             yield_handles = flatten_values_to_ir(self.lscope[name] for name in names)
@@ -1391,7 +1411,10 @@ class CodeGenerator(ast.NodeVisitor):
             for name, val in zip(names, block_args):
                 self._maybe_set_loc_to_name(val, name)
                 self.set_value(name, val)
-            self.visit_compound_statement(node.body)
+            # See visit_While: only the enclosing dry run observes this loop's
+            # results. The final lowering still generates the real body.
+            if not self._loop_carry_discovery_depth:
+                self.visit_compound_statement(node.body)
             self.scf_stack.pop()
             yield_handles = flatten_values_to_ir(self.lscope[name] for name in names)
 

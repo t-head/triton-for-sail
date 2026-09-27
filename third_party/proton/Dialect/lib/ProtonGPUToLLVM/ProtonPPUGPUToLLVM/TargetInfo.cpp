@@ -5,6 +5,7 @@
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "third_party/ppu/include/TritonPPUGPUToLLVM/TIXAsmFormat.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
+#include "llvm/Support/NVPTXAddrSpace.h"
 
 namespace mlir::triton::proton::gpu::PPU {
 
@@ -63,6 +64,17 @@ int TargetInfo::getAddressSpace(Attribute addressSpace) const {
                              "and GlobalMemorySpace for now");
   }
   return spaceId;
+}
+
+unsigned TargetInfo::getPtrAddressSpace(triton::PtrAddrSpace space) const {
+  switch (space) {
+  case triton::PtrAddrSpace::Global:
+  case triton::PtrAddrSpace::Constant:
+    return llvm::NVPTXAS::ADDRESS_SPACE_GLOBAL;
+  case triton::PtrAddrSpace::Descriptor:
+    return llvm::NVPTXAS::ADDRESS_SPACE_GENERIC;
+  }
+  llvm_unreachable("unknown PtrAddrSpace");
 }
 
 int TargetInfo::getIndexPtrAddrSpace() const {

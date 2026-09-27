@@ -1,5 +1,21 @@
 // RUN: triton-opt --split-input-file %s --verify-diagnostics
 
+tt.func @atomic_poll_mismatched_result(%ptr: tensor<32x!tt.ptr<i32>>, %expected: tensor<32xi32>) {
+  // expected-error @+1 {{result type matches expected shape}}
+  %matched = tt.atomic_poll acquire, gpu, %ptr, %expected : tensor<32x!tt.ptr<i32>>, tensor<32xi32> -> i1
+  tt.return
+}
+
+// -----
+
+tt.func @atomic_poll_invalid_width(%ptr: tensor<32x!tt.ptr<i8>>, %expected: tensor<32xi8>) {
+  // expected-error @+1 {{only supports integer elements with width {16, 32, 64}}}
+  %matched = tt.atomic_poll acquire, gpu, %ptr, %expected : tensor<32x!tt.ptr<i8>>, tensor<32xi8> -> tensor<32xi1>
+  tt.return
+}
+
+// -----
+
 tt.func @fn(%v: i32) {
   %b = tt.splat %v : i32 -> tensor<128xi32>
   // expected-error @+1 {{rank of source must be same as rank of result}}
@@ -11,6 +27,20 @@ tt.func @fn(%v: i32) {
 
 // expected-error @+1 {{pointer types must point to integer or floating-point types}}
 tt.func public @invalid_pointer_pointee(%arg0: !tt.ptr<index>) {
+  tt.return
+}
+
+// -----
+
+// expected-error @+1 {{invalid pointer address space 'bogus'}}
+tt.func public @invalid_pointer_address_space(%arg0: !tt.ptr<f32, "bogus">) {
+  tt.return
+}
+
+// -----
+
+// expected-error @+1 {{expected string}}
+tt.func public @invalid_pointer_integer_address_space(%arg0: !tt.ptr<f32, 1>) {
   tt.return
 }
 
