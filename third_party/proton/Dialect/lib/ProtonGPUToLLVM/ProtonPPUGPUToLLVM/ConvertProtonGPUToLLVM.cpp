@@ -61,7 +61,8 @@ struct ConvertProtonPPUGPUToLLVM
     mlir::LowerToLLVMOptions option(context);
     TritonGPUToLLVMTypeConverter typeConverter(context, option,
                                                tritonTargetInfo);
-    populateTypeConversions(typeConverter, protonTargetInfo);
+    mlir::triton::proton::gpu::populateTypeConversions(typeConverter,
+                                                        protonTargetInfo);
     mlir::triton::proton::gpu::populateProtonGPUOpPatterns(
         typeConverter, patterns, protonTargetInfo, 1);
     mlir::triton::proton::gpu::PPU::populateProtonGPUOpPPUPatterns(

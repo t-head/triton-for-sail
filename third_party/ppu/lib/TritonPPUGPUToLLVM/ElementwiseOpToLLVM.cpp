@@ -883,7 +883,7 @@ void mlir::triton::ppu::populateElementwiseOpToLLVMPatterns(
   using namespace mlir::triton::gpu;
 
   mlir::triton::populateElementwiseOpToLLVMPatterns(
-      typeConverter, patterns, axisInfoAnalysis, targetInfo, benefit);
+      typeConverter, patterns, axisInfoAnalysis, benefit);
 
 #define POPULATE_OP(SRC_OP, DST_OP)                                            \
   patterns.add<ElementwiseOpConversion<SRC_OP, DST_OP>>(                       \

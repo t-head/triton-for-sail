@@ -849,7 +849,8 @@ private:
 
 void mlir::triton::ppu::populateMemoryOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, const TargetInfo &targetInfo,
-    RewritePatternSet &patterns, PatternBenefit benefit) {
+    RewritePatternSet &patterns, ModuleAxisInfoAnalysis &axisInfoAnalysis,
+    PatternBenefit benefit) {
   // Backend optimized memory ops get higher benefit
   patterns.add<LocalAllocOpConversion>(typeConverter, targetInfo,
                                        benefit.getBenefit() + 1);
@@ -859,6 +860,6 @@ void mlir::triton::ppu::populateMemoryOpToLLVMPatterns(
                                       benefit.getBenefit() + 1);
   patterns.add<LocalAtomicScatterRMWOpConversion>(typeConverter, targetInfo,
                                                   benefit.getBenefit() + 1);
-  mlir::triton::populateMemoryOpToLLVMPatterns(typeConverter, targetInfo,
-                                               patterns, benefit);
+  mlir::triton::populateMemoryOpToLLVMPatterns(
+      typeConverter, targetInfo, patterns, axisInfoAnalysis, benefit);
 }

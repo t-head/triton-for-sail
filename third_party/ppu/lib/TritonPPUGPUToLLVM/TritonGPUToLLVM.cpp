@@ -277,7 +277,7 @@ struct ConvertTritonGPUToLLVMPPU
     mlir::triton::populateAssertOpToLLVMPattern(typeConverter, patterns,
                                                 targetInfo, benefit);
     mlir::triton::ppu::populateMemoryOpToLLVMPatterns(
-        typeConverter, targetInfo, patterns, benefit);
+        typeConverter, targetInfo, patterns, axisInfoAnalysis, benefit);
     mlir::triton::populateMakeRangeOpToLLVMPattern(typeConverter, targetInfo,
                                                    patterns, benefit);
     mlir::triton::ppu::populateFp4ToFpToLLVMPatterns(typeConverter, patterns,
