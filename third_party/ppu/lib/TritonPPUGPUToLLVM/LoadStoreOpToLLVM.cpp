@@ -44,6 +44,8 @@
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/LayoutUtils.h"
 
+#include "llvm/ADT/SmallString.h"
+
 #include <cassert>
 
 using namespace mlir;
@@ -122,30 +124,97 @@ std::string getRegisterSizeCode(int size, bool is_float) {
   }
 }
 
-Value createCachePolicy(triton::EvictionPolicy opEvict,
-                        ConversionPatternRewriter &rewriter, Location loc,
-                        int computeCapability) {
-  // Emit createpolicy.fractional.L2::policy.b64 xx 1.0
+struct CachePolicy {
+  triton::CacheModifier modifier = triton::CacheModifier::NONE;
+  triton::EvictionPolicy legacy = triton::EvictionPolicy::NORMAL;
+  ttg::CachePolicyAttr detailed;
+};
+
+FailureOr<CachePolicy> getCachePolicy(Operation *op, Attribute attr) {
+  CachePolicy cachePolicy;
+  if (!attr)
+    return cachePolicy;
+  if (auto policy = dyn_cast<ttg::CachePolicyAttr>(attr)) {
+    cachePolicy.detailed = policy;
+    cachePolicy.modifier = policy.getCacheModifier();
+    return cachePolicy;
+  }
+  if (auto policy = dyn_cast<triton::CachePolicyAttr>(attr)) {
+    cachePolicy.modifier = policy.getCacheModifier();
+    cachePolicy.legacy = policy.getEvictionPolicy();
+    return cachePolicy;
+  }
+  op->emitOpError("unsupported PPU cache policy attribute ") << attr;
+  return failure();
+}
+
+StringRef getL1EvictionPriority(CachePolicy cachePolicy) {
+  if (cachePolicy.detailed) {
+    auto l1 = cachePolicy.detailed.getL1();
+    if (l1 != ttg::CacheEvictionPriority::NONE)
+      return ttg::stringifyCacheEvictionPriority(l1);
+    return {};
+  }
+  if (cachePolicy.legacy == triton::EvictionPolicy::EVICT_FIRST)
+    return "evict_first";
+  if (cachePolicy.legacy == triton::EvictionPolicy::EVICT_LAST)
+    return "evict_last";
+  return {};
+}
+
+FailureOr<Value> createCachePolicy(CachePolicy cachePolicy,
+                                   ConversionPatternRewriter &rewriter,
+                                   Location loc, int computeCapability,
+                                   Operation *op) {
   TIXBuilder tixBuilder;
-  const bool hasL2EvictPolicy =
-      opEvict == triton::EvictionPolicy::EVICT_FIRST ||
-      opEvict == triton::EvictionPolicy::EVICT_LAST;
+  const bool hasLegacyL2EvictPolicy =
+      cachePolicy.legacy == triton::EvictionPolicy::EVICT_FIRST ||
+      cachePolicy.legacy == triton::EvictionPolicy::EVICT_LAST;
+  StringRef primary;
+  StringRef secondary;
+  FloatAttr fraction;
+  if (cachePolicy.detailed) {
+    auto primaryPriority = cachePolicy.detailed.getL2Primary();
+    if (primaryPriority != ttg::CacheEvictionPriority::NONE)
+      primary = ttg::stringifyCacheEvictionPriority(primaryPriority);
+    auto secondaryPriority = cachePolicy.detailed.getL2Secondary();
+    if (secondaryPriority != ttg::CacheEvictionPriority::NONE)
+      secondary = ttg::stringifyCacheEvictionPriority(secondaryPriority);
+    fraction = cachePolicy.detailed.getL2Fraction();
+  }
+  const bool hasDetailedL2Policy = !primary.empty();
   Value policyRet;
 
   const bool hardwareSupport = computeCapability >= 80;
+  if (hasDetailedL2Policy && !hardwareSupport) {
+    op->emitOpError(
+        "fractional L2 cache policy requires compute capability 80 or newer");
+    return failure();
+  }
 
-  if (hasL2EvictPolicy && hardwareSupport) {
-    auto &policy =
-        tixBuilder.create("ppu.createpolicy.fractional")
-            ->o("L2::evict_first",
-                opEvict == triton::EvictionPolicy::EVICT_FIRST)
-            .o("L2::evict_last", opEvict == triton::EvictionPolicy::EVICT_LAST)
-            .b(64);
+  if ((hasLegacyL2EvictPolicy || hasDetailedL2Policy) && hardwareSupport) {
+    if (!hasDetailedL2Policy) {
+      primary = cachePolicy.legacy == triton::EvictionPolicy::EVICT_FIRST
+                    ? "evict_first"
+                    : "evict_last";
+    }
+    auto &policy = tixBuilder.create("ppu.createpolicy.fractional")
+                       ->o("L2::evict_normal", primary == "evict_normal")
+                       .o("L2::evict_unchanged", primary == "evict_unchanged")
+                       .o("L2::evict_first", primary == "evict_first")
+                       .o("L2::evict_last", primary == "evict_last")
+                       .o("L2::evict_first", secondary == "evict_first")
+                       .b(64);
 
-    const std::string writeConstraint = "=l";
-    // prepare asm operands
-    auto *dstOpr = tixBuilder.newOperand(writeConstraint, /*init=*/true);
-    std::string fractionStr = "1.0";
+    auto *dstOpr = tixBuilder.newOperand("=l", /*init=*/true);
+    llvm::SmallString<16> fractionBuffer;
+    if (fraction)
+      fraction.getValue().toString(fractionBuffer);
+    else
+      fractionBuffer = "1.0";
+    std::string fractionStr = fractionBuffer.str().str();
+    if (fractionStr.find_first_of(".eE") == std::string::npos)
+      fractionStr += ".0";
     auto *fractionOpr = tixBuilder.newConstantOperand(fractionStr);
     policy(dstOpr, fractionOpr);
 
@@ -200,6 +269,9 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
   LogicalResult
   matchAndRewrite(triton::LoadOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    auto cachePolicy = getCachePolicy(op, op.getCachePolicyAttr());
+    if (failed(cachePolicy))
+      return failure();
     auto ctx = getContext();
     auto loc = op->getLoc();
     auto b = TritonLLVMOpBuilder(loc, rewriter);
@@ -274,6 +346,17 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
                               << " valueElemNBits = " << valueElemNBits << " "
                               << op.getType());
     SmallVector<Value> loadedVals;
+    FailureOr<Value> l2Policy =
+        createCachePolicy(*cachePolicy, rewriter, loc, computeCapability, op);
+    if (failed(l2Policy))
+      return failure();
+    Value l2PolicyReg = *l2Policy;
+    StringRef l1Policy = getL1EvictionPriority(*cachePolicy);
+    auto l2PrefetchSizeAttr = cachePolicy->detailed
+                                  ? cachePolicy->detailed.getL2PrefetchSize()
+                                  : IntegerAttr();
+    int64_t l2PrefetchSize =
+        l2PrefetchSizeAttr ? l2PrefetchSizeAttr.getInt() : 0;
     for (size_t vecStart = 0; vecStart < numElems; vecStart += vec) {
       // TODO: optimization when ptr is GEP with constant offset
       size_t in_off = 0;
@@ -341,20 +424,22 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
       auto *addrOpr =
           tixBuilder.newAddrOperand(ptrElems[vecStart], "l", in_off);
 
-      // Create L2 cache policy register if needed
-      Value l2PolicyReg =
-          createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
-
       // Define the instruction opcode
       auto &ld = tixBuilder.create("ppu.ld")
                      ->o("volatile", op.getIsVolatile())
                      .global()
-                     .o("ca", op.getCache() == triton::CacheModifier::CA)
-                     .o("cg", op.getCache() == triton::CacheModifier::CG)
-                     .o("L1::evict_first",
-                        op.getEvict() == triton::EvictionPolicy::EVICT_FIRST)
-                     .o("L1::evict_last",
-                        op.getEvict() == triton::EvictionPolicy::EVICT_LAST)
+                     .o("ca", cachePolicy->modifier == triton::CacheModifier::CA)
+                     .o("cg", cachePolicy->modifier == triton::CacheModifier::CG)
+                     .o("cs", cachePolicy->modifier == triton::CacheModifier::CS)
+                     .o("cv", cachePolicy->modifier == triton::CacheModifier::CV)
+                     .o("L1::evict_normal", l1Policy == "evict_normal")
+                     .o("L1::evict_unchanged", l1Policy == "evict_unchanged")
+                     .o("L1::evict_first", l1Policy == "evict_first")
+                     .o("L1::evict_last", l1Policy == "evict_last")
+                     .o("L1::no_allocate", l1Policy == "no_allocate")
+                     .o("L2::64B", l2PrefetchSize == 64)
+                     .o("L2::128B", l2PrefetchSize == 128)
+                     .o("L2::256B", l2PrefetchSize == 256)
                      .o("L2::cache_hint", l2PolicyReg != Value())
                      .v(nWords)
                      .b(width);
@@ -420,6 +505,9 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
   LogicalResult
   matchAndRewrite(triton::StoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    auto cachePolicy = getCachePolicy(op, op.getCachePolicyAttr());
+    if (failed(cachePolicy))
+      return failure();
     Value ptr = op.getPtr();
     Value value = op.getValue();
 
@@ -470,6 +558,13 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
     auto freeVarMasks = getFreeVariableMasks(ptr.getType());
     Value threadPred =
         emitRedundantThreadPredicate(freeVarMasks, rewriter, loc, targetInfo);
+
+    FailureOr<Value> l2Policy =
+        createCachePolicy(*cachePolicy, rewriter, loc, computeCapability, op);
+    if (failed(l2Policy))
+      return failure();
+    Value l2PolicyReg = *l2Policy;
+    StringRef l1Policy = getL1EvictionPriority(*cachePolicy);
 
     const int numVecs = elemsPerThread / vec;
     for (size_t vecStart = 0; vecStart < elemsPerThread; vecStart += vec) {
@@ -523,21 +618,18 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
       auto *asmAddr =
           tixBuilder.newAddrOperand(ptrElems[vecStart], "l", in_off);
 
-      // Create L2 cache policy register if needed
-      Value l2PolicyReg =
-          createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
-
       auto &tixStoreInstr =
           tixBuilder.create("ppu.st")
               ->global()
-              .o("wb", op.getCache() == triton::CacheModifier::WB)
-              .o("cg", op.getCache() == triton::CacheModifier::CG)
-              .o("cs", op.getCache() == triton::CacheModifier::CS)
-              .o("wt", op.getCache() == triton::CacheModifier::WT)
-              .o("L1::evict_first",
-                 op.getEvict() == triton::EvictionPolicy::EVICT_FIRST)
-              .o("L1::evict_last",
-                 op.getEvict() == triton::EvictionPolicy::EVICT_LAST)
+              .o("wb", cachePolicy->modifier == triton::CacheModifier::WB)
+              .o("cg", cachePolicy->modifier == triton::CacheModifier::CG)
+              .o("cs", cachePolicy->modifier == triton::CacheModifier::CS)
+              .o("wt", cachePolicy->modifier == triton::CacheModifier::WT)
+              .o("L1::evict_normal", l1Policy == "evict_normal")
+              .o("L1::evict_unchanged", l1Policy == "evict_unchanged")
+              .o("L1::evict_first", l1Policy == "evict_first")
+              .o("L1::evict_last", l1Policy == "evict_last")
+              .o("L1::no_allocate", l1Policy == "no_allocate")
               .o("L2::cache_hint", l2PolicyReg != Value())
               .v(nWords)
               .b(width);
@@ -987,8 +1079,8 @@ struct AtomicCASOpConversion
       }
     }
 
-    finalizeTensorAtomicResults(op, tensorTy, rewriter, resultVals, valueElemTy,
-                                b, threadPred, targetInfo, getTypeConverter());
+    finalizeAtomicResults(op, rewriter, resultVals, valueElemTy, b, threadPred,
+                          targetInfo, getTypeConverter());
     return success();
   }
 };
@@ -1398,8 +1490,8 @@ public:
         return success();
       }
     }
-    finalizeTensorAtomicResults(op, tensorTy, rewriter, resultVals, valueElemTy,
-                                b, threadPred, targetInfo, getTypeConverter());
+    finalizeAtomicResults(op, rewriter, resultVals, valueElemTy, b, threadPred,
+                          targetInfo, getTypeConverter());
     return success();
   }
 };

@@ -3596,8 +3596,8 @@ TEST_F(LinearLayoutConversionsTest, OutOfTreeMmaDotOperandExtensionPoint) {
   auto emitError = [&]() {
     return mlir::emitError(mlir::UnknownLoc::get(&ctx));
   };
-  EXPECT_TRUE(succeeded(DotOperandEncodingAttr::verify(emitError, /*opIdx=*/0,
-                                                       parent, /*kWidth=*/0)));
+  EXPECT_TRUE(succeeded(DotOperandEncodingAttr::verify(
+      emitError, /*opIdx=*/0, parent, /*kWidth=*/0, /*isChained=*/false)));
 
   // toLinearLayout dispatches through the interface, not a hardcoded type.
   auto dotOperand = dot(parent, /*idx=*/0, /*kWidth=*/0);
