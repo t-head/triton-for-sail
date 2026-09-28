@@ -659,6 +659,27 @@ struct PreciseDivFOpConversion
   }
 };
 
+struct ApproxDivFOpConversion
+    : ElementwiseOpConversionBase<ApproxDivFOp, ApproxDivFOpConversion> {
+  using Base =
+      ElementwiseOpConversionBase<ApproxDivFOp, ApproxDivFOpConversion>;
+  using Base::Base;
+  using Adaptor = typename Base::OpAdaptor;
+
+  SmallVector<Value> createDestOps(ApproxDivFOp op, OpAdaptor adaptor,
+                                   ConversionPatternRewriter &rewriter,
+                                   Type elemTy, MultipleOperandsRange operands,
+                                   Location loc) const {
+    TIXBuilder builder;
+    auto &div = *builder.create("ppu.div.approx.f32");
+    auto res = builder.newOperand("=f");
+    auto lhs = builder.newOperand(operands[0][0], "f");
+    auto rhs = builder.newOperand(operands[0][1], "f");
+    div(res, lhs, rhs);
+    return {builder.launch(rewriter, loc, elemTy, false)};
+  }
+};
+
 // Uses inline tix to convert s8/u8 to bf16, since the
 struct SIToFPOpConversion
     : ElementwiseOpConversionBase<arith::SIToFPOp, SIToFPOpConversion> {
@@ -902,6 +923,8 @@ void mlir::triton::ppu::populateElementwiseOpToLLVMPatterns(
                                         benefit);
   patterns.add<PreciseDivFOpConversion>(typeConverter, axisInfoAnalysis,
                                         benefit);
+  patterns.add<ApproxDivFOpConversion>(typeConverter, axisInfoAnalysis,
+                                       benefit);
   patterns.add<FDivOpConversion>(typeConverter, axisInfoAnalysis, benefit);
   patterns.add<FPToSIOpConversion>(typeConverter, axisInfoAnalysis, benefit);
   patterns.add<SIToFPOpConversion>(typeConverter, axisInfoAnalysis,
