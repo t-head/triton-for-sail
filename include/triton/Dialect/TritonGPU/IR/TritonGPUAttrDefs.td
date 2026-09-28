@@ -1106,6 +1106,7 @@ w2 w2 w3 w3
     SmallVector<int64_t> getInstrShapeForOperand(int kWidth, int opIdx) const;
     SmallVector<int64_t> getRepForOperand(ArrayRef<int64_t> operandShape, int kWidth, int opIdx) const;
     SmallVector<unsigned> getRepOrderForOperand(int opIdx) const;
+    LinearLayout dotOperandToLinearLayout(Attribute dotOp, ArrayRef<int64_t> shape) const;
 
     // Check if tilesPerWarp is 1 in every dimension.
     bool hasUnitTilesPerWarp() const;
@@ -1298,6 +1299,7 @@ This simplifies both WMMA and dotOperand layouts lowering to linear layout.
 
   let extraClassDeclaration = extraDistributedDeclaration # [{
     SmallVector<unsigned> getRepOrderForOperand(int opIdx) const;
+    LinearLayout dotOperandToLinearLayout(Attribute dotOp, ArrayRef<int64_t> shape) const;
     LinearLayout getTileLayout(unsigned rank) const;
     static SmallVector<unsigned, 3> getDefaultInstrShape() {
       return {16, 16, 16};
@@ -1424,6 +1426,7 @@ For example, the matrix L corresponding to blockTileSize=[32,16] is:
                                           int bitwidth, int kWidth,
                                           int opIdx) const;
     SmallVector<unsigned> getRepOrderForOperand(int opIdx) const;
+    LinearLayout dotOperandToLinearLayout(Attribute dotOp, ArrayRef<int64_t> shape) const;
   }];
 
   let hasCustomAssemblyFormat = 1;
@@ -1473,6 +1476,8 @@ It is characterized by two parameters:
                                           int bitwidth, int kWidth,
                                           int opIdx) const;
     SmallVector<unsigned> getRepOrderForOperand(int opIdx) const;
+    LinearLayout dotOperandToLinearLayout(Attribute dotOp,
+                                          ArrayRef<int64_t> shape) const;
   }];
 
   let hasCustomAssemblyFormat = 1;
