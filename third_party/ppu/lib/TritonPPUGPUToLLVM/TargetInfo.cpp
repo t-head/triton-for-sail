@@ -524,7 +524,8 @@ Value TargetInfo::programId(RewriterBase &rewriter, Location loc,
 
 bool TargetInfo::warpReduce(RewriterBase &rewriter, Location loc,
                             SmallVector<Value> &acc, triton::ReduceOp op,
-                            unsigned reduceLaneIdMask) const {
+                            unsigned reduceLaneIdMask,
+                            unsigned /*broadcastLaneIdMask*/) const {
   constexpr unsigned kWarpSize = 32;
   if (reduceLaneIdMask != kWarpSize - 1)
     return false;
@@ -555,12 +556,6 @@ bool TargetInfo::warpReduce(RewriterBase &rewriter, Location loc,
     return true;
   }
   return false;
-}
-
-std::string TargetInfo::getMulhiFuncName(Type resultElementTy) const {
-  std::string funcName =
-      resultElementTy.isInteger(32) ? "__ppu_umulhi" : "__ppu_umul64hi";
-  return funcName;
 }
 
 void TargetInfo::printf(RewriterBase &rewriter, Value formatStrStart,
