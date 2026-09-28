@@ -111,3 +111,4 @@ docs/sg_execution_times.rst
 *.html
 
 AGENTS.override.md
+fail.md

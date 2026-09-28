@@ -196,26 +196,19 @@ def run_single_test(
     try:
         proc = subprocess.run(
             cmd,
-            capture_output=not verbose,  # verbose 模式下直接输出到终端
+            stdout=None,              # 始终流式输出到 CI log
+            stderr=subprocess.PIPE,   # 捕获 stderr 用于失败诊断
             text=True,
         )
         result.returncode = proc.returncode
-        if not verbose:
-            result.stdout = proc.stdout or ""
-            result.stderr = proc.stderr or ""
+        result.stderr = proc.stderr or ""
 
         if proc.returncode == 0:
             print(f"  ✅ 测试通过: {config.display_name}")
         else:
             print(f"  ❌ 测试失败 (返回码={proc.returncode}): {config.display_name}")
-            # 非 verbose 模式下，失败时打印 stdout/stderr 帮助调试
-            if not verbose and result.stdout:
-                stdout_lines = result.stdout.strip().splitlines()
-                tail = stdout_lines[-50:] if len(stdout_lines) > 50 else stdout_lines
-                print(f"    📋 pytest output (last {len(tail)} lines):")
-                for line in tail:
-                    print(f"    {line}")
-            if not verbose and result.stderr:
+            # 失败时打印 stderr 帮助调试（stdout 已流式输出，无需事后打印）
+            if result.stderr:
                 print(f"  --- stderr 输出 (最后 20 行) ---")
                 for line in result.stderr.strip().splitlines()[-20:]:
                     print(f"    {line}")
