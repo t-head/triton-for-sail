@@ -97,6 +97,8 @@ def test_cast_matmul(monkeypatch, M, K, N, BLOCK_K, BLOCK_M, BLOCK_N, w_dtype, x
     capability = torch.cuda.get_device_capability()
     if m8_mma == 1 and not (capability[0] == 8 and capability[1] == 0):
         pytest.skip("m8 mma only support on ppu1.0")
+    if is_ppu() and K < 16:
+        pytest.skip("dot K smaller than 16 is unsupported on PPU")
 
     if is_hip() and (BLOCK_K, BLOCK_M, BLOCK_N) in ((64, 64, 128), (64, 16, 128)):
         pytest.skip("skip as they run out of shared memory")
