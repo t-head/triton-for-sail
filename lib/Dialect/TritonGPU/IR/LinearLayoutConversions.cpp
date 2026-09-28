@@ -1461,7 +1461,7 @@ PPUMmaEncodingAttr::dotOperandToLinearLayout(Attribute dotOp,
                                            kDim, S("warp"))
                    .transposeOuts(llvm::to_vector(ctaLayout.getOutDimNames()));
 
-  return combineCtaCgaWithShape(ctaLayout, getCGALayout(dot), shape);
+  return combineCtaCgaWithShape(ctaLayout, mma.getCGALayout(), shape);
 }
 
 LinearLayout
