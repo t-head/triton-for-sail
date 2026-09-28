@@ -113,7 +113,7 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
         # 5) regression 回归测试
         TestConfig(
             file_path=os.path.join(test_dir, "python", "test", "regression"),
-            extra_args=["--tb=short", "-s", "-n", "8"],
+            extra_args=["--tb=short", "-n", "8"],
         ),
         # ------------------------ test-gsan ----------------------
         # gsan 测试套件 (triton-for-sail 暂无 python/test/gsan 目录, 先注释)
@@ -176,7 +176,7 @@ def run_single_test(
         target = f"{target}::{config.test_filter}"
 
     cmd: List[str] = [
-        "pytest", "-v", "-s",
+        "pytest", "-q", "--tb=short", "--no-header",
         target,
         f"--junitxml={temp_xml}",
     ]
@@ -187,7 +187,7 @@ def run_single_test(
     # 打印运行信息
     print(f"\n{'='*70}")
     print(f"[{index + 1}] 正在运行: {config.display_name}")
-    print(f"    命令: {' '.join(cmd)}")
+    print(f"    命令: pytest {target} + {len(cmd)-4} args")
     if verbose:
         print(f"    文件路径: {config.file_path} | 存在: {os.path.exists(config.file_path)}")
     print(f"{'='*70}")
@@ -659,8 +659,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         with open(args.env_output, "w") as f:
             json.dump(env_info, f, indent=2)
         print(f"📋 环境信息已写入: {args.env_output}")
-        for k, v in env_info.items():
-            print(f"  {k}: {v}")
 
     # ---- 返回退出码 ----
     has_failures = any(not r.passed for r in results)
