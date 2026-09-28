@@ -25,10 +25,15 @@ $GITHUB_STEP_SUMMARY.
 """
 
 import argparse
+import io
 import json
 import os
 import sys
 import xml.etree.ElementTree as ET
+
+# GitHub Step Summary hard limit is 1024 KB; we truncate at 900 KB to leave
+# room for the warning footer and any UTF-8 expansion.
+_MAX_SUMMARY_BYTES = 900 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -185,17 +190,9 @@ def _report_single_board(args):
         print("🎉 All tests passed — no failures to display.")
     print()
 
-    # Full test list (collapsible)
-    if testcases:
-        print("<details>")
-        print(f"<summary>📋 All Test Cases ({len(testcases)} tests)</summary>")
-        print()
-        print("| Status | Test | Time |")
-        print("|--------|------|------|")
-        for tc in testcases:
-            print(f'| {_status_icon(tc["status"])} | {tc["name"]} | {tc["time"]}s |')
-        print()
-        print("</details>")
+    # Full test list removed to stay within GitHub Step Summary 1024 KB limit.
+    print(f"> 📋 Full test list ({len(testcases)} tests) available in `test_result.xml` on NAS.")
+    print()
 
     return 0 if not failures else 1
 
@@ -336,21 +333,9 @@ def _report_combined(args):
             print("🎉 All tests passed — no failures to display.")
         print()
 
-        # Collapsible full test list
-        if testcases:
-            print("<details>")
-            print(f"<summary>📋 All Test Cases ({len(testcases)} tests)</summary>")
-            print()
-            print("| Status | Test | Time |")
-            print("|--------|------|------|")
-            for tc in testcases:
-                print(
-                    f"| {_status_icon(tc['status'])} "
-                    f"| {tc['name']} | {tc['time']}s |"
-                )
-            print()
-            print("</details>")
-            print()
+        # Full test list removed to stay within GitHub Step Summary 1024 KB limit.
+        print(f"> 📋 Full test list ({len(testcases)} tests) available in `test_result.xml` on NAS.")
+        print()
 
     return 0
 
@@ -380,22 +365,57 @@ def parse_args():
     return parser.parse_args()
 
 
+def _truncate_if_needed(text):
+    """Ensure *text* fits within the GitHub Step Summary size budget.
+
+    If the UTF-8 encoded size exceeds ``_MAX_SUMMARY_BYTES``, the output is
+    truncated at a line boundary and a warning footer is appended.
+    """
+    encoded = text.encode("utf-8")
+    if len(encoded) <= _MAX_SUMMARY_BYTES:
+        return text
+    # Find the last newline within the budget (keep whole lines)
+    cut = encoded[:_MAX_SUMMARY_BYTES].rfind(b"\n")
+    if cut < 0:
+        cut = _MAX_SUMMARY_BYTES
+    truncated = encoded[:cut].decode("utf-8", errors="ignore")
+    truncated += (
+        "\n\n> ⚠️ Report truncated to fit GitHub Step Summary size limit (1024KB).\n"
+    )
+    return truncated
+
+
 def main():
     args = parse_args()
 
-    if args.result_root is not None:
-        # Mode B — combined multi-board
-        try:
-            _report_combined(args)
-        except Exception as exc:
-            print(f"> ⚠️ Report generation error: {exc}", file=sys.stderr)
-        sys.exit(0)
-    elif args.xml is not None:
-        # Mode A — single-board
-        sys.exit(_report_single_board(args))
-    else:
-        print("Error: specify either --xml (single-board) or --result-root (combined).", file=sys.stderr)
-        sys.exit(2)
+    # Capture all print output so we can enforce the size limit before writing.
+    buf = io.StringIO()
+    _real_stdout = sys.stdout
+    sys.stdout = buf
+
+    exit_code = 0
+    try:
+        if args.result_root is not None:
+            # Mode B — combined multi-board
+            try:
+                _report_combined(args)
+            except Exception as exc:
+                print(f"> ⚠️ Report generation error: {exc}", file=sys.stderr)
+        elif args.xml is not None:
+            # Mode A — single-board
+            exit_code = _report_single_board(args)
+        else:
+            sys.stdout = _real_stdout
+            print("Error: specify either --xml (single-board) or --result-root (combined).", file=sys.stderr)
+            sys.exit(2)
+    finally:
+        sys.stdout = _real_stdout
+
+    # Write (possibly truncated) report to real stdout
+    report = _truncate_if_needed(buf.getvalue())
+    _real_stdout.write(report)
+
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

@@ -78,7 +78,7 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
         "ppu/aiu/test_aiu_load_padding.py",
         "ppu/aiu/test_aiu_block_ptr_load.py",
     ]
-    main_args = ["--tb=short", "-n", "8"]
+    main_args = ["--tb=short", "-n", "2"]
     for rel in main_ignored:
         main_args.append(f"--ignore={os.path.join(unit, rel)}")
     # CI 层函数级 deselect: 硬编码 SM90/参数缺失导致必然失败的用例
@@ -97,12 +97,12 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
         # 2) subprocess 测试会 spawn 子进程, 单独跑
         TestConfig(
             file_path=os.path.join(unit, "language", "test_subprocess.py"),
-            extra_args=["--tb=short", "-n", "8"],
+            extra_args=["--tb=short", "-n", "2"],
         ),
         # 3) test_debug 需要进程隔离 (--forked)
         TestConfig(
             file_path=os.path.join(unit, "test_debug.py"),
-            extra_args=["--tb=short", "-n", "8", "--forked"],
+            extra_args=["--tb=short", "-n", "2", "--forked"],
         ),
         # 4) line info 测试
         TestConfig(
@@ -113,7 +113,7 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
         # 5) regression 回归测试
         TestConfig(
             file_path=os.path.join(test_dir, "python", "test", "regression"),
-            extra_args=["--tb=short", "-n", "8"],
+            extra_args=["--tb=short", "-n", "2"],
         ),
         # ------------------------ test-gsan ----------------------
         # gsan 测试套件 (triton-for-sail 暂无 python/test/gsan 目录, 先注释)
@@ -176,7 +176,7 @@ def run_single_test(
         target = f"{target}::{config.test_filter}"
 
     cmd: List[str] = [
-        "pytest", "-q", "--tb=short", "--no-header",
+        "pytest", "-q", "--tb=short", "--no-header", "--timeout=300",
         target,
         f"--junitxml={temp_xml}",
     ]
@@ -208,7 +208,13 @@ def run_single_test(
             print(f"  ✅ 测试通过: {config.display_name}")
         else:
             print(f"  ❌ 测试失败 (返回码={proc.returncode}): {config.display_name}")
-            # 非 verbose 模式下，失败时打印 stderr 帮助调试
+            # 非 verbose 模式下，失败时打印 stdout/stderr 帮助调试
+            if not verbose and result.stdout:
+                stdout_lines = result.stdout.strip().splitlines()
+                tail = stdout_lines[-50:] if len(stdout_lines) > 50 else stdout_lines
+                print(f"    📋 pytest output (last {len(tail)} lines):")
+                for line in tail:
+                    print(f"    {line}")
             if not verbose and result.stderr:
                 print(f"  --- stderr 输出 (最后 20 行) ---")
                 for line in result.stderr.strip().splitlines()[-20:]:
