@@ -22,6 +22,7 @@
 from triton.backends.compiler import BaseBackend, GPUTarget, Language
 from triton._C.libtriton import ir, passes, llvm, ppu
 from triton import knobs
+from triton._instrumentation import instrument as _instrument, is_enabled
 
 from dataclasses import dataclass
 import functools
@@ -34,6 +35,9 @@ import signal
 import os
 import subprocess
 from pathlib import Path
+
+
+instrument = functools.partial(_instrument, backend="ppu")
 
 
 def min_dot_size(target: GPUTarget):
@@ -199,7 +203,6 @@ class HGGCOptions:
 
 
 class PPUBackend(BaseBackend):
-    instrumentation = None
 
     @staticmethod
     def supports_target(target: GPUTarget):
@@ -276,8 +279,7 @@ class PPUBackend(BaseBackend):
 
     def load_dialects(self, ctx):
         ppu.load_dialects(ctx)
-        if PPUBackend.instrumentation:
-            PPUBackend.instrumentation.load_dialects(ctx)
+        instrument(ctx, point="load-dialects")
 
     @staticmethod
     def make_ttir(mod, metadata, opt, capability):
@@ -374,13 +376,12 @@ class PPUBackend(BaseBackend):
         passes.convert.add_scf_to_cf(pm)
         passes.gluon.add_inliner(pm)
         ppu.passes.ttgpuir.add_allocate_shared_memory_ppu(pm, capability)
-        if knobs.compilation.instrumentation_mode == "consan":
+        if is_enabled(options, "consan"):
             # Call ConcurrencySanitizerPass here, before allocating global scratch memory but after allocating tensor and shared
             passes.ttgpuir.add_concurrency_sanitizer(pm)
         passes.ttgpuir.add_allocate_global_scratch_memory(pm)
         # instrumentation point here so we can override IRs above (e.g., ttir and ttgir)
-        if PPUBackend.instrumentation:
-            PPUBackend.instrumentation.patch("ttgpuir_to_llvmir", pm, mod.context)
+        instrument(pm, point="ttgpuir-to-llvmir", context=mod.context)
         ppu.passes.ttgpuir.add_to_llvmir(pm, capability)
         ppu.passes.ttgpuir.add_convert_libdevice_func_to_ppu(pm)
         passes.common.add_canonicalizer(pm)
@@ -390,12 +391,10 @@ class PPUBackend(BaseBackend):
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)
         passes.convert.add_nvvm_to_llvm(pm)
+        instrument(pm, point="llvmir-to-llvm", context=mod.context)
 
         if not knobs.compilation.disable_line_info and not knobs.compilation.dump_ir_extract_di_local_variables:
             passes.llvmir.add_di_scope(pm)
-
-        if PPUBackend.instrumentation:
-            PPUBackend.instrumentation.patch("llvmir_to_llvm", pm, mod.context)
 
         pm.run(mod, 'make_llir')
 
