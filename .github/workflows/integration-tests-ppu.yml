@@ -82,7 +82,7 @@ jobs:
             # Install test dependencies
             pip install -r python/test-requirements.txt pandas
             # Run checkin tests; capture exit code so NAS copy always runs on failure
-            python .github/ppu-ci/run_checkin_tests.py -o test_result.xml --test-dir /workspace/source --env-output env_info.json -v || TEST_RC=$?
+            python .github/ppu-ci/run_checkin_tests.py -o test_result.xml --test-dir /workspace/source --env-output env_info.json || TEST_RC=$?
             TEST_RC=${TEST_RC:-0}
             echo "========== TEST RESULT SUMMARY =========="
             python3 << 'PYEOF' || true
@@ -96,12 +96,6 @@ jobs:
                 skip = int(ts.get('skipped', 0))
                 time_s = ts.get('time', '?')
                 print(f'Total: {total}, Passed: {total-fail-err-skip}, Failed: {fail}, Errors: {err}, Skipped: {skip}, Time: {time_s}s')
-            for tc in root.findall('.//testcase'):
-                failure = tc.find('failure')
-                error = tc.find('error')
-                status = 'FAIL' if failure is not None else ('ERROR' if error is not None else 'PASS')
-                name = tc.get('classname', '') + '.' + tc.get('name', '')
-                print(f'  [{status}] {name} ({tc.get("time", "?")}s)')
             PYEOF
             echo "========================================="
             # Copy test results and env info to NAS (per-board subdir avoids collision)
