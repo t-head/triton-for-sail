@@ -523,6 +523,15 @@ struct FpToFpOpConversion
       }));
     }
 
+    if ((srcElementType.isBF16() && dstElementType.isF16()) ||
+        (srcElementType.isF16() && dstElementType.isBF16())) {
+      Value v = LLVM::FPExtOp::create(rewriter, loc, f32_ty, operands[0][0]);
+      auto rounding = roundingMode.value_or(RoundingMode::RTNE);
+      return {dstElementType.isBF16()
+                  ? convertFp32ToBf16(loc, rewriter, v, rounding)
+                  : convertFp32ToFp16(loc, rewriter, v, rounding)};
+    }
+
     if (srcElementType.isF32() && dstElementType.isF16()) {
       assert(roundingMode.has_value() &&
              "rounding mode must be specified for fp32->fp16 conversion");

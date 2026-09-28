@@ -148,7 +148,7 @@ define ptx_kernel void @short_pointer_kernel(ptr addrspace(1) %out, i64 %offset)
     return backend, source
 
 
-@pytest.mark.skipif(is_hip(), reason="NVPTX code generation is unavailable on AMD")
+@pytest.mark.skipif(is_hip() or is_ppu(), reason="NVPTX code generation is unavailable on AMD or PPU")
 @pytest.mark.parametrize("link_hip_first", [False, True])
 def test_nvidia_short_pointer_option(link_hip_first, fresh_triton_cache):
     from triton.backends.compiler import GPUTarget
