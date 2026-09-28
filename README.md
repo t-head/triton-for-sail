@@ -244,7 +244,13 @@ Then you can run the examples in the AIU section for end-to-end verification.
 
 ### 4.4 Environment variables
 
-For general environment variables, see the [upstream Triton README](README.triton.md). Below are the additional PPU-specific environment variables:
+For general environment variables, see the [upstream Triton README](README.triton.md). In particular, floating-point fusion is disabled by default:
+
+- `TRITON_DEFAULT_FP_FUSION` overrides the default behavior of disabling fp fusion (mul+add->fma).
+- `TRITON_FORCE_DISABLE_FP_FUSION=1` disables implicit fp fusion even when a kernel
+  requests `enable_fp_fusion=True`. Explicit fused operations such as `tl.fma` are unchanged.
+
+The additional PPU-specific environment variables are:
 
 - `PPU_LLC_OPTIONS`: extra options passed to `ppu-llc`.
 - `DISABLE_PPU_LLC_OPT`: disable `ppu-llc` optimizations.

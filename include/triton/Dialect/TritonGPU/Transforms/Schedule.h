@@ -108,7 +108,7 @@ public:
   }
 
   bool insertIfAbsent(Operation *op, int stage, Cluster cluster) {
-    if (opToStageAndCluster.count(op))
+    if (opToStageAndCluster.contains(op))
       return false;
     insert(op, stage, cluster);
     return true;
@@ -125,7 +125,9 @@ public:
 
   void erase(Operation *op) { opToStageAndCluster.erase(op); }
 
-  int count(Operation *op) const { return opToStageAndCluster.count(op); }
+  bool contains(Operation *op) const {
+    return opToStageAndCluster.contains(op);
+  }
 
   std::pair<int, Cluster> operator[](Operation *op) {
     return opToStageAndCluster[op];
