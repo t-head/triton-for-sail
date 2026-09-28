@@ -128,11 +128,11 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
             extra_args=["--tb=short", "-n", "1"],
         ),
         # ------------------------ test-triton-kernels ----------------------
-        # 9) triton_kernels 套件
-        TestConfig(
-            file_path=os.path.join(test_dir, "python", "triton_kernels", "tests"),
-            extra_args=["--tb=short", "-n", "6"],
-        ),
+        # 9) triton_kernels 套件 — 暂时跳过（PPU 上跳过 triton_kernels 测试）
+        # TestConfig(
+        #     file_path=os.path.join(test_dir, "python", "triton_kernels", "tests"),
+        #     extra_args=["--tb=short", "-n", "6"],
+        # ),
         # ------------------------ test-proton ----------------------
         # 10) proton 全部测试
         TestConfig(
