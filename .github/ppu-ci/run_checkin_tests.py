@@ -184,13 +184,13 @@ def run_single_test(
     if config.extra_args:
         cmd.extend(config.extra_args)
 
-    # 打印运行信息
-    print(f"\n{'='*70}")
-    print(f"[{index + 1}] 正在运行: {config.display_name}")
-    print(f"    命令: pytest {target} + {len(cmd)-4} args")
+    # 打印运行信息（flush=True 确保 banner 在 pytest 输出前显示）
+    print(f"\n{'='*70}", flush=True)
+    print(f"[{index + 1}] 正在运行: {config.display_name}", flush=True)
+    print(f"    命令: pytest {target} + {len(cmd)-4} args", flush=True)
     if verbose:
-        print(f"    文件路径: {config.file_path} | 存在: {os.path.exists(config.file_path)}")
-    print(f"{'='*70}")
+        print(f"    文件路径: {config.file_path} | 存在: {os.path.exists(config.file_path)}", flush=True)
+    print(f"{'='*70}", flush=True)
 
     start_time = time.time()
     try:
@@ -204,9 +204,9 @@ def run_single_test(
         result.stderr = proc.stderr or ""
 
         if proc.returncode == 0:
-            print(f"  ✅ 测试通过: {config.display_name}")
+            print(f"  ✅ 测试通过: {config.display_name}", flush=True)
         else:
-            print(f"  ❌ 测试失败 (返回码={proc.returncode}): {config.display_name}")
+            print(f"  ❌ 测试失败 (返回码={proc.returncode}): {config.display_name}", flush=True)
             # 失败时打印 stderr 帮助调试（stdout 已流式输出，无需事后打印）
             if result.stderr:
                 print(f"  --- stderr 输出 (最后 20 行) ---")
