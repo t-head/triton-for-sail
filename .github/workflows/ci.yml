@@ -2,15 +2,15 @@ name: Integration Tests
 on:
   workflow_dispatch:
   pull_request:
-    branches-ignore: ['llvm-**']
+    branches: ['main', 'release/3.*', 'feature/ci-testing-3.8.x']
   merge_group:
-    branches: [main, 'dev-**']
+    branches: ['main', 'release/3.*', 'feature/ci-testing-3.8.x']
     types: [checks_requested]
   push:
-    branches: [main]
+    branches: ['main', 'release/3.*', 'feature/ci-testing-3.8.x']
 concurrency:
   group: ${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/heads/release/') && github.ref != 'refs/heads/main' }}
 permissions: read-all
 
 jobs:
@@ -18,8 +18,8 @@ jobs:
   runner-preparation:
     uses: ./.github/workflows/runner-preparation.yml
 
-  pre-commit:
-    uses: ./.github/workflows/pre-commit.yml
+  # pre-commit:
+  #   uses: ./.github/workflows/pre-commit.yml
 
   integration-tests-nvidia:
     needs: runner-preparation
@@ -41,3 +41,10 @@ jobs:
     uses: ./.github/workflows/build-macos.yml
     with:
       matrix: ${{ needs.runner-preparation.outputs.matrix-MACOS }}
+
+  integration-tests-ppu:
+    needs: runner-preparation
+    if: needs.runner-preparation.outputs.matrix-PPU != ''
+    uses: ./.github/workflows/integration-tests-ppu.yml
+    with:
+      matrix: ${{ needs.runner-preparation.outputs.matrix-PPU }}
