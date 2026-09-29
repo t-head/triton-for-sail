@@ -108,8 +108,6 @@ jobs:
             echo 'matrix-AMD=[["self-hosted", "gfx90a"], ["amd-gfx942"], ["amd-gfx950"]]' >> "$GITHUB_OUTPUT"
             echo 'matrix-MACOS=[["macos-latest"]]' >> "$GITHUB_OUTPUT"
           else
-            echo 'matrix-NVIDIA=[{"name":"ubuntu-latest","runner_type":"ubuntu-latest","runs_on":"ubuntu-latest"}]' >> "$GITHUB_OUTPUT"
-            echo 'matrix-AMD=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
-            echo 'matrix-MACOS=[["macos-latest"]]' >> "$GITHUB_OUTPUT"
+            # Fork repo: only run PPU integration tests; skip NVIDIA/AMD/MACOS.
             echo 'matrix-PPU=["ZW-M890P", "OAM-810E"]' >> "$GITHUB_OUTPUT"
           fi
