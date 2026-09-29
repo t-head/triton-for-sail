@@ -9,6 +9,8 @@ on:
         value: ${{ jobs.prepare.outputs.matrix-AMD }}
       matrix-MACOS:
         value: ${{ jobs.prepare.outputs.matrix-MACOS }}
+      matrix-PPU:
+        value: ${{ jobs.prepare.outputs.matrix-PPU }}
 
 jobs:
   prepare:
@@ -17,6 +19,7 @@ jobs:
       matrix-NVIDIA: ${{ steps.set-matrix.outputs.matrix-NVIDIA }}
       matrix-AMD: ${{ steps.set-matrix.outputs.matrix-AMD }}
       matrix-MACOS: ${{ steps.set-matrix.outputs.matrix-MACOS }}
+      matrix-PPU: ${{ steps.set-matrix.outputs.matrix-PPU }}
     steps:
       - name: Decide pre-submit integration test enablement
         # Always enable integration tests for pre-submit pull requests.
@@ -105,7 +108,6 @@ jobs:
             echo 'matrix-AMD=[["self-hosted", "gfx90a"], ["amd-gfx942"], ["amd-gfx950"]]' >> "$GITHUB_OUTPUT"
             echo 'matrix-MACOS=[["macos-latest"]]' >> "$GITHUB_OUTPUT"
           else
-            echo 'matrix-NVIDIA=[{"name":"ubuntu-latest","runner_type":"ubuntu-latest","runs_on":"ubuntu-latest"}]' >> "$GITHUB_OUTPUT"
-            echo 'matrix-AMD=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
-            echo 'matrix-MACOS=[["macos-latest"]]' >> "$GITHUB_OUTPUT"
+            # Fork repo: only run PPU integration tests; skip NVIDIA/AMD/MACOS.
+            echo 'matrix-PPU=["ZW-M890P", "OAM-810E"]' >> "$GITHUB_OUTPUT"
           fi

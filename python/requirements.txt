@@ -1,4 +1,5 @@
 setuptools>=40.8.0
+packaging>=22.0
 wheel
 cmake>=3.20,<4.0
 ninja>=1.11.1
