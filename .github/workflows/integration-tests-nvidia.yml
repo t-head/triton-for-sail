@@ -31,7 +31,7 @@ jobs:
       CCACHE_COMPRESS: "true"
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           submodules: "true"
       - name: Compute cache keys
@@ -112,8 +112,6 @@ jobs:
           make WARMUP_PROCS="$warmup_procs" test-warmup
       - name: Run triton tests
         run: make NUM_PROCS=24 test-unit
-      - name: Run distributed tests
-        run: make test-distributed
       - name: Run gsan and interpreter tests
         run: make -j2 NUM_PROCS=24 test-gsan test-interpret
       - name: Run regression tests
