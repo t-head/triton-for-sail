@@ -1,6 +1,7 @@
 autopep8
 isort
 numpy
+einops
 pytest
 pytest-forked
 pytest-xdist
