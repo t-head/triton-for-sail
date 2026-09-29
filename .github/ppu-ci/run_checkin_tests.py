@@ -15,7 +15,7 @@ import sys
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -29,6 +29,7 @@ class TestConfig:
     test_filter: Optional[str] = None    # pytest -k 过滤或 ::node_id
     extra_args: List[str] = field(default_factory=list)  # 额外 pytest 参数
     skip_boards: List[str] = field(default_factory=list)  # 在指定板卡上跳过 (e.g. ["OAM-810E"])
+    env: Dict[str, str] = field(default_factory=dict)     # 注入给 pytest 子进程的环境变量
 
     @property
     def display_name(self) -> str:
@@ -62,16 +63,27 @@ class TestResult:
 # 默认测试配置
 # ---------------------------------------------------------------------------
 
+def _plugin_lib_path(test_dir: str, rel_path: str) -> str:
+    # 定位 pass 插件 .so 的绝对路径。
+    src_path = os.path.join(test_dir, "python", "triton", rel_path)
+    if os.path.exists(src_path):
+        return src_path
+    try:
+        import triton
+        return os.path.join(os.path.dirname(os.path.abspath(triton.__file__)), rel_path)
+    except ImportError:
+        return src_path
+
+
 def get_default_test_configs(test_dir: str) -> List[TestConfig]:
     unit = os.path.join(test_dir, "python", "test", "unit")
 
-    # 主跑批的 --ignore 列表 (绝对路径, 对应 Makefile test-unit 的排除项)
+    # 主跑批的 --ignore 列表：部分case单独测试，部分case由于时间原因选择跳过
     main_ignored = [
         "language/test_line_info.py",
         "language/test_subprocess.py",
+        "language/test_matmul.py",
         "test_debug.py",
-        "plugins/test_dialect_plugin.py",
-        "plugins/test_plugin.py",
         "ppu/perf",
         "ppu/aiu/test_aiu_binary.py",
         "ppu/aiu/test_aiu_chained_dot.py",
@@ -94,52 +106,106 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
             file_path=unit,
             extra_args=main_args,
         ),
-        # 2) subprocess 测试会 spawn 子进程, 单独跑
+        # 1.1) subprocess 测试会 spawn 子进程, 单独跑
         TestConfig(
             file_path=os.path.join(unit, "language", "test_subprocess.py"),
             extra_args=["--tb=short", "-n", "2"],
         ),
-        # 3) test_debug 需要进程隔离 (--forked)
+        # 1.2) test_debug 需要进程隔离 (--forked)
         TestConfig(
             file_path=os.path.join(unit, "test_debug.py"),
             extra_args=["--tb=short", "-n", "2", "--forked"],
         ),
-        # 4) line info 测试
+        # 1.3) line info 测试，需要显式启用 line info
         TestConfig(
             file_path=os.path.join(unit, "language", "test_line_info.py"),
             extra_args=["--tb=short"],
+            env={"TRITON_DISABLE_LINE_INFO": "0"},
         ),
+        # 1.4) Triton pass 插件测试，同Makefile保持一致
+        TestConfig(
+            file_path=os.path.join(unit, "plugins", "test_plugin.py"),
+            extra_args=["-vvv"],
+            env={
+                "TRITON_PASS_PLUGIN_PATH": _plugin_lib_path(
+                    test_dir, os.path.join("plugins", "libTritonPluginsTestLib.so")),
+            },
+        ),
+        # 1.5) MLIR dialect 插件测试，同Makefile保持一致
+        TestConfig(
+            file_path=os.path.join(unit, "plugins", "test_dialect_plugin.py"),
+            extra_args=["-s", "-vvv"],
+            env={
+                "TRITON_PASS_PLUGIN_PATH": _plugin_lib_path(
+                    test_dir, os.path.join("plugins", "libMLIRDialectPlugin.so")),
+            },
+        ),
+        # 1.6) test_matmul 精选用例: 只跑 scaled/mxfp 相关
+        TestConfig(
+            file_path=os.path.join(unit, "language", "test_matmul.py"),
+            extra_args=[
+                "--tb=short", "-n", "2",
+                "-k", "test_block_scale_fp4 or test_mxfp8_mxfp4_matmul or test_simple_persistent_matmul or test_mxfp or test_blocked_scale_mxfp",
+            ],
+        ),
+        # ------------------------ test-interpret ----------------------
+        # # 2) interpreter 模式测试，该模式在CPU上运行，暂时跳过
+        # TestConfig(
+        #     file_path=os.path.join(unit, "cuda"),
+        #     extra_args=[
+        #         "--tb=short", "-s", "-n", "2", "-m", "interpreter",
+        #         os.path.join(unit, "language", "test_core.py"),
+        #         os.path.join(unit, "language", "test_standard.py"),
+        #         os.path.join(unit, "language", "test_random.py"),
+        #         os.path.join(unit, "language", "test_block_pointer.py"),
+        #         os.path.join(unit, "language", "test_subprocess.py"),
+        #         os.path.join(unit, "language", "test_line_info.py"),
+        #         os.path.join(unit, "language", "test_tuple.py"),
+        #         os.path.join(unit, "runtime", "test_launch.py"),
+        #         os.path.join(unit, "runtime", "test_autotuner.py::test_kwargs[False]"),
+        #         os.path.join(test_dir, "python", "tutorials", "06-fused-attention.py::test_op"),
+        #         "--device=cpu",
+        #     ],
+        #     env={"TRITON_INTERPRET": "1"},
+        # ),
         # ------------------------ test-regression ----------------------
-        # 5) regression 回归测试
+        # 3) regression 回归测试
         TestConfig(
             file_path=os.path.join(test_dir, "python", "test", "regression"),
             extra_args=["--tb=short", "-n", "2"],
         ),
         # ------------------------ test-gsan ----------------------
-        # gsan 测试套件 (triton-for-sail 暂无 python/test/gsan 目录, 先注释)
+        # 4) gsan 测试套件 (triton-for-sail 暂无 python/test/gsan 目录, 先注释)
         # TestConfig(
         #     file_path=os.path.join(test_dir, "python", "test", "gsan"),
         #     extra_args=["--tb=short", "-s", "-m", "xdist_group"],
         # ),
-        # ------------------------ test-gluon ----------------------
-        # 7) gluon 教程 — 暂时跳过（PPU 上跳过 gluon tutorials 测试）
+        # ------------------------ test-tutorials ----------------------
+        # 5) tutorials 教程测试
+        # 5.1) 06-fused-attention 正确性测试, 串行跑 (避免显存不足)
+        TestConfig(
+            file_path=os.path.join(test_dir, "python", "tutorials", "06-fused-attention.py"),
+            extra_args=["--tb=short"],
+        ),
+        # 5.2) gluon 教程 — 暂时跳过（PPU 上跳过 gluon tutorials 测试）
         # TestConfig(
         #     file_path=os.path.join(test_dir, "python", "tutorials", "gluon"),
         #     extra_args=["--tb=short", "-v"],
         # ),
-        # 8) gluon 前端测试套件
+        #------------------------ test-gluon ----------------------
+        # 6) gluon 前端测试套件
         TestConfig(
             file_path=os.path.join(test_dir, "python", "test", "gluon"),
             extra_args=["--tb=short", "-n", "1"],
         ),
         # ------------------------ test-triton-kernels ----------------------
-        # 9) triton_kernels 套件 — 暂时跳过（PPU 上跳过 triton_kernels 测试）
+        # 7) triton_kernels 套件 — 暂时跳过（PPU 未构建 triton._C.libproton）
         # TestConfig(
         #     file_path=os.path.join(test_dir, "python", "triton_kernels", "tests"),
         #     extra_args=["--tb=short", "-n", "6"],
         # ),
         # ------------------------ test-proton ----------------------
-        # 10) proton 全部测试 — 暂时跳过（PPU 未构建 triton._C.libproton）
+        # 8) proton 全部测试 — 暂时跳过（PPU 未构建 triton._C.libproton）
         # TestConfig(
         #     file_path=os.path.join(test_dir, "third_party", "proton", "test"),
         #     extra_args=["--tb=short", "-s", "-n", "8"],
@@ -184,21 +250,27 @@ def run_single_test(
     if config.extra_args:
         cmd.extend(config.extra_args)
 
-    # 打印运行信息（flush=True 确保 banner 在 pytest 输出前显示）
-    print(f"\n{'='*70}", flush=True)
-    print(f"[{index + 1}] 正在运行: {config.display_name}", flush=True)
-    print(f"    命令: pytest {target} + {len(cmd)-4} args", flush=True)
+    # 打印运行信息
+    print(f"\n{'='*70}")
+    print(f"[{index + 1}] 正在运行: {config.display_name}")
+    print(f"    命令: pytest {target} + {len(cmd)-4} args")
+    if config.env:
+        print(f"    环境变量: {config.env}")
     if verbose:
         print(f"    文件路径: {config.file_path} | 存在: {os.path.exists(config.file_path)}", flush=True)
     print(f"{'='*70}", flush=True)
 
     start_time = time.time()
+    run_env = os.environ.copy()
+    if config.env:
+        run_env.update(config.env)
     try:
         proc = subprocess.run(
             cmd,
             stdout=None,              # 始终流式输出到 CI log
             stderr=subprocess.PIPE,   # 捕获 stderr 用于失败诊断
             text=True,
+            env=run_env,
         )
         result.returncode = proc.returncode
         result.stderr = proc.stderr or ""
