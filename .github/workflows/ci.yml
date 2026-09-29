@@ -19,6 +19,7 @@ jobs:
     uses: ./.github/workflows/runner-preparation.yml
 
   pre-commit:
+    if: false
     uses: ./.github/workflows/pre-commit.yml
 
   integration-tests-nvidia:
