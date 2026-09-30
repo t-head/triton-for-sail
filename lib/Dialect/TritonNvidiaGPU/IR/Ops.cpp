@@ -49,6 +49,213 @@ namespace mlir {
 namespace triton {
 namespace nvidia_gpu {
 
+// -- PackedArithOp --
+namespace {
+constexpr llvm::StringLiteral Half = "hb";
+constexpr llvm::StringLiteral X2 = "fhb";
+constexpr llvm::StringLiteral Alternate = "542u";
+constexpr llvm::StringLiteral AlternateResult = "54";
+
+struct PackedArithSignatureRule {
+  llvm::StringLiteral operations;
+  StringRef resultTypes;
+  StringRef operandTypes[3];
+  llvm::StringLiteral modifiers;
+  unsigned operandSuffixes;
+};
+} // namespace
+
+static const PackedArithTypeInfo &getPackedArithTypeInfo(Type elementType) {
+  static const struct {
+    TypeID type;
+    PackedArithTypeInfo info;
+  } types[] = {
+      {TypeID::get<Float32Type>(), {"f32x2", 2, 64, 'f'}},
+      {TypeID::get<Float16Type>(), {"f16x2", 2, 32, 'h'}},
+      {TypeID::get<BFloat16Type>(), {"bf16x2", 2, 32, 'b'}},
+      {TypeID::get<Float8E5M2Type>(), {"e5m2x4", 4, 32, '5'}},
+      {TypeID::get<Float8E4M3FNType>(), {"e4m3x4", 4, 32, '4'}},
+      {TypeID::get<IntegerType>(), {"e2m1x4", 4, 16, '2'}},
+      {TypeID::get<Float8E8M0FNUType>(), {"ue8m0x4", 4, 32, 'u'}},
+  };
+  for (const auto &type : types)
+    if (elementType.getTypeID() == type.type)
+      return type.info;
+  llvm_unreachable("unsupported packed arithmetic element type");
+}
+
+static FailureOr<PackedArithInstructionSpec>
+resolvePackedArithInstructionSpec(PackedArithOp op) {
+  auto kind = op.getOpKind();
+  const auto *result = &getPackedArithTypeInfo(op.getType().getElementType());
+  SmallVector<const PackedArithTypeInfo *, 3> operands;
+  for (Value operand : op.getOperands())
+    operands.push_back(&getPackedArithTypeInfo(
+        cast<RankedTensorType>(operand.getType()).getElementType()));
+
+  // clang-format off
+  static constexpr PackedArithSignatureRule signatures[] = {
+      // operations       result           operands                     modifiers  suffixes
+      {"add sub mul",    X2,              {"=", "="},                  "",        0},
+      {"fma",            X2,              {"=", "=", "="},             "rn",      0},
+      {"min max",        Half,            {"=", "="},                  "",        0},
+      {"add sub",        "f",             {Half, "f"},                 "",        2},
+      {"add sub",        "h",             {"f", "f"},                  "rz.ftz",  2},
+      {"add sub",        "b",             {"f", "f"},                  "rz",      2},
+      {"mul",            "h",             {"f", "f"},                  "ftz.rz",  2},
+      {"mul",            "b",             {"f", "f"},                  "rz",      2},
+      {"mul",            Half,            {"=", "!"},                  "",        2},
+      {"fma",            "f",             {Half, "f", "f"},            "rn",      3},
+      {"add sub",        AlternateResult, {Alternate, "="},            "",        1},
+      {"mul",            AlternateResult, {Alternate, Alternate},      "",        2},
+      {"fma",            AlternateResult, {Alternate, Alternate, "="}, "",        2},
+  };
+  // clang-format on
+
+  auto matches = [result](StringRef types, const PackedArithTypeInfo *info) {
+    if (types == "=")
+      return info == result;
+    if (types == "!")
+      return info != result && Half.contains(info->kind);
+    return types.contains(info->kind);
+  };
+  for (const PackedArithSignatureRule &signature : signatures) {
+    if (!StringRef(signature.operations)
+             .contains(stringifyPackedArithOpKind(kind)) ||
+        !matches(signature.resultTypes, result))
+      continue;
+    auto types = ArrayRef(signature.operandTypes).take_front(operands.size());
+    if (!llvm::all_of(llvm::zip_equal(operands, types), [&](auto pair) {
+          return matches(std::get<1>(pair), std::get<0>(pair));
+        }))
+      continue;
+    return PackedArithInstructionSpec{result, std::move(operands),
+                                      signature.modifiers,
+                                      signature.operandSuffixes};
+  }
+  return failure();
+}
+
+PackedArithInstructionSpec getPackedArithInstructionSpec(PackedArithOp op) {
+  auto spec = resolvePackedArithInstructionSpec(op);
+  assert(succeeded(spec) && "expected a verified packed arithmetic operation");
+  return std::move(*spec);
+}
+
+static std::optional<unsigned> inferPackedArithFp4Axis(PackedArithOp op) {
+  auto resultShape = op.getType().getShape();
+  std::optional<unsigned> axis;
+  for (Value operand : op.getOperands()) {
+    auto type = cast<RankedTensorType>(operand.getType());
+    if (!type.getElementType().isInteger(8))
+      continue;
+    if (type.getRank() != resultShape.size())
+      return std::nullopt;
+    auto shape = type.getShape();
+    auto [sourceDim, resultDim] = llvm::mismatch(shape, resultShape);
+    if (sourceDim == shape.end())
+      return std::nullopt;
+    unsigned differing = std::distance(shape.begin(), sourceDim);
+    if (2 * *sourceDim != *resultDim ||
+        !llvm::equal(shape.drop_front(differing + 1),
+                     resultShape.drop_front(differing + 1)) ||
+        (axis && *axis != differing))
+      return std::nullopt;
+    axis = differing;
+  }
+  return axis;
+}
+
+unsigned getPackedArithFp4Axis(PackedArithOp op) {
+  auto axis = inferPackedArithFp4Axis(op);
+  assert(axis && "expected a verified packed arithmetic operation with an "
+                 "FP4 operand");
+  return *axis;
+}
+
+LogicalResult PackedArithOp::verify() {
+  unsigned expectedOperands = getOpKind() == PackedArithOpKind::FMA ? 3 : 2;
+  if (getNumOperands() != expectedOperands)
+    return emitOpError() << stringifyPackedArithOpKind(getOpKind())
+                         << " expects " << expectedOperands
+                         << " operands but got " << getNumOperands();
+
+  auto tensorType = getResult().getType();
+  const auto &resultInfo = getPackedArithTypeInfo(tensorType.getElementType());
+  if (!isa_and_nonnull<DistributedEncodingTrait>(tensorType.getEncoding()))
+    return emitOpError("requires a distributed tensor layout");
+
+  auto instruction = resolvePackedArithInstructionSpec(*this);
+  if (failed(instruction)) {
+    auto diag = emitOpError()
+                << "unsupported " << stringifyPackedArithOpKind(getOpKind())
+                << " signature " << resultInfo.suffix << " <- (";
+    llvm::interleaveComma(getOperands(), diag, [&](Value operand) {
+      diag << getPackedArithTypeInfo(
+                  cast<RankedTensorType>(operand.getType()).getElementType())
+                  .suffix;
+    });
+    return diag << ")";
+  }
+
+  std::optional<unsigned> fp4Axis = inferPackedArithFp4Axis(*this);
+  if (!fp4Axis && llvm::any_of(instruction->operands,
+                               [](auto *info) { return info->isFP4(); }))
+    return emitOpError("requires every fp4 operand to have the result shape "
+                       "with the same single dimension halved");
+
+  unsigned packWidth = resultInfo.lanes;
+  unsigned resultRegisters = getUniqueElemsPerThread(tensorType);
+  if (resultRegisters < packWidth || resultRegisters % packWidth != 0)
+    return emitOpError() << "result layout must provide a multiple of "
+                         << packWidth << " unique elements per thread";
+
+  Attribute canonicalFp4Encoding;
+  if (fp4Axis) {
+    auto *dialect =
+        tensorType.getEncoding()
+            .getDialect()
+            .getRegisteredInterface<triton::DialectInferLayoutInterface>();
+    if (dialect &&
+        failed(dialect->inferFp4ToFpOpEncoding(
+            tensorType.getShape(), *fp4Axis, tensorType.getEncoding(),
+            canonicalFp4Encoding, /*fwdInference=*/false, std::nullopt)))
+      canonicalFp4Encoding = {};
+  }
+
+  for (auto [index, operand] : llvm::enumerate(getOperands())) {
+    auto operandType = cast<RankedTensorType>(operand.getType());
+    const auto &operandInfo = *instruction->operands[index];
+    if (operandInfo.isFP4()) {
+      if (!isa_and_nonnull<DistributedEncodingTrait>(
+              operandType.getEncoding()) ||
+          !canonicalFp4Encoding ||
+          !areLayoutsEquivalent(
+              operandType.getShape(),
+              cast<LayoutEncodingTrait>(canonicalFp4Encoding),
+              cast<LayoutEncodingTrait>(operandType.getEncoding())))
+        return emitOpError() << "fp4 operand " << index
+                             << " must have a layout compatible with the "
+                                "result";
+      continue;
+    }
+    if (operandType.getShape() != tensorType.getShape())
+      return emitOpError() << "operand " << index
+                           << " must have the result shape "
+                           << tensorType.getShape() << ", but got "
+                           << operandType.getShape();
+    if (!isa_and_nonnull<LayoutEncodingTrait>(operandType.getEncoding()) ||
+        !areLayoutsEquivalent(
+            tensorType.getShape(),
+            cast<LayoutEncodingTrait>(operandType.getEncoding()),
+            cast<LayoutEncodingTrait>(tensorType.getEncoding())))
+      return emitOpError() << "operand " << index
+                           << " must have a layout equivalent to the result";
+  }
+
+  return success();
+}
+
 // -- WarpGroupDotOp --
 LogicalResult WarpGroupDotOp::inferReturnTypes(
     MLIRContext *context, std::optional<Location> location, ValueRange operands,
@@ -231,12 +438,28 @@ Type WaitBarrierOp::getPredicateOperandTypeLike() {
   return IntegerType::get(getContext(), 1);
 }
 
+static LogicalResult verifyBarrierCGALayout(Operation *op, Value barrier,
+                                            CGAEncodingAttr expectedCGALayout,
+                                            StringRef barrierName);
+
 // -- ArriveBarrierOp --
 LogicalResult ArriveBarrierOp::verify() {
   if (failed(verifyBarrierType(*this, getAlloc().getType())))
     return failure();
   if (getCount() < 1)
     return emitOpError("count must be greater than or equal to 1");
+  if (isMulticast()) {
+    int numCTAs = triton::gpu::lookupNumCTAs(getOperation());
+    if (numCTAs <= 1)
+      return emitOpError("multicast arrive requires num_ctas > 1");
+    if (getCtaMask() > static_cast<uint32_t>(numCTAs - 1))
+      return emitOpError("ctaMask exceeds numCTAs - 1");
+    auto expectedCGALayout =
+        CGAEncodingAttr::get1DLayout(getContext(), numCTAs);
+    if (failed(verifyBarrierCGALayout(*this, getAlloc(), expectedCGALayout,
+                                      "multicast barrier")))
+      return failure();
+  }
   return success();
 }
 
@@ -1116,6 +1339,28 @@ static LogicalResult verifyScaledLHSOperand(Operation *op, Type elementType,
   return op->emitOpError("unsupported LHS operand type for scaled MMA");
 }
 
+static LogicalResult
+verifyScaleBlockRepOrder(TCGen5MMAScaledOp op,
+                         TensorMemoryScalesEncodingAttr encoding, bool isA) {
+  auto aScaleType = cast<MemDescType>(op.getAScale().getType());
+  auto bScaleType = cast<MemDescType>(op.getBScale().getType());
+  auto expectedOrder = getTensorMemoryScalesBlockRepOrder(
+      op.getOperation(), isA, op.getAType(), op.getBType(),
+      aScaleType.getElementType(), bScaleType.getElementType());
+  if (encoding.getBlockRepOrder() != expectedOrder) {
+    StringRef operandName = isA ? "A" : "B";
+    StringRef expectedOrderName =
+        expectedOrder == TensorMemoryScalesBlockRepOrder::K_THEN_MN ? "kThenMn"
+                                                                    : "mnThenK";
+    return op.emitOpError()
+           << operandName
+           << " scales in tensor memory must use "
+              "#ttng.tensor_memory_scales_encoding<blockRepOrder = "
+           << expectedOrderName << ">";
+  }
+  return success();
+}
+
 LogicalResult TCGen5MMAScaledOp::verify() {
   if (!getIsAsync() && !getBarriers().empty()) {
     return emitOpError("The op is synchronous but a barrier is present.");
@@ -1150,6 +1395,39 @@ LogicalResult TCGen5MMAScaledOp::verify() {
                                       getAType(), getBType())))
       return failure();
   }
+  auto aScaleType = cast<MemDescType>(getAScale().getType());
+  auto bScaleType = cast<MemDescType>(getBScale().getType());
+  auto isScaleBlockRepOrderRelevant = [](MemDescType scaleType) {
+    auto shapePerCTA = getShapePerCTA(scaleType);
+    assert(shapePerCTA.size() >= 2);
+    int64_t rowsPerCTA = shapePerCTA[shapePerCTA.size() - 2];
+    int64_t scalesPerCTA = shapePerCTA.back();
+    // The ordering is relevant only when there are multiple 128x4 scale blocks
+    // from both MN and K dimensions.
+    return rowsPerCTA > 128 && scalesPerCTA > 4;
+  };
+  auto verifyScaleEncoding = [&](MemDescType scaleType,
+                                 bool isA) -> LogicalResult {
+    if (!isa<TensorMemorySpaceAttr>(scaleType.getMemorySpace()))
+      return success();
+    bool isOrderRelevant = isScaleBlockRepOrderRelevant(scaleType);
+    auto encoding =
+        dyn_cast<TensorMemoryScalesEncodingAttr>(scaleType.getEncoding());
+    if (!encoding) {
+      if (!isOrderRelevant)
+        return success();
+      return emitOpError() << (isA ? "A" : "B")
+                           << " scales in tensor memory must use "
+                              "#ttng.tensor_memory_scales_encoding";
+    }
+    if (!isOrderRelevant && encoding.getBlockRepOrder() ==
+                                TensorMemoryScalesBlockRepOrder::MN_THEN_K)
+      return success();
+    return verifyScaleBlockRepOrder(*this, encoding, isA);
+  };
+  if (failed(verifyScaleEncoding(aScaleType, /*isA=*/true)) ||
+      failed(verifyScaleEncoding(bScaleType, /*isA=*/false)))
+    return failure();
   return success();
 }
 
@@ -1426,29 +1704,10 @@ LogicalResult TMEMLoadOp::verify() {
 
   // Validate reduction conditions
   if (redOp) {
-    auto regTy = getType();
-    auto memTy = getSrc().getType();
     auto maxnreg = getContextualMaxNReg(*this);
-    auto encodingInfoOr = computeTMemLdStEncodingInfo(regTy, memTy, maxnreg);
-    if (failed(encodingInfoOr))
-      return emitOpError("failed to compute TMEM encoding info");
-
-    if (encodingInfoOr->unpacked)
-      return emitOpError(
-          "tmem_load reduction requires packed format (unpacked=false)");
-
-    // Verify that N dimension is in registers entirely, and is not sharded
-    // across threads. This could be relaxed in the future to only reduce the
-    // kReg bases along N then cross-warp/block reduction becomes needed.
-    auto kReg = StringAttr::get(regTy.getContext(), "register");
-    int dimM = 0, dimN = 1;
-    auto regDims =
-        toLinearEncoding(regTy).basesPerDim(kReg, /*skipBroadcast=*/true);
-    if (regDims[dimN] != toLinearLayout(regTy).getOutDimSizes().begin()[dimN] ||
-        regDims[dimM] != 1) {
-      return emitOpError("tmem_load reduction with N dimension sharded across "
-                         "threads is not supported.");
-    }
+    if (!supportsTMemLoadReduce(getType(), getSrc().getType(), maxnreg,
+                                [&]() { return emitOpError(); }))
+      return failure();
   }
 
   return triton::gpu::verifyMemoryOpTypes(*this, getSrc().getType(), getType());

@@ -49,6 +49,35 @@ class TTNG_Op<string mnemonic, list<Trait> traits = []> :
        !listconcat(traits, [VerifyTensorLayoutsTrait, VerifyMemDescLayoutsTrait])> {
 }
 
+def TTNG_PackedArithOperandElement : AnyTypeOf<[
+  I8, F8E8M0FNU, F8E4M3FN, F8E5M2, F16, BF16, F32
+], "packed arithmetic operand element">;
+def TTNG_PackedArithResultElement : AnyTypeOf<[
+  F8E4M3FN, F8E5M2, F16, BF16, F32
+], "packed arithmetic result element">;
+
+def TTNG_PackedArithOp : TTNG_Op<"packed_arith", [Pure]> {
+  let summary = "Apply elementwise arithmetic using a packed PTX instruction";
+
+  let description = [{
+    Applies packed x2, mixed-precision, and FP8/FP4/UE8M0 x4 arithmetic.
+    Instruction types, modifiers, and grouping are inferred from tensor types.
+    FP4 uses lower-nibble-first i8 values along the inferred halved dimension.
+  }];
+
+  let arguments = (ins
+    TTNG_PackedArithOpKindAttr:$op_kind,
+    Variadic<RankedTensorOf<[TTNG_PackedArithOperandElement]>>:$operands
+  );
+  let results = (outs RankedTensorOf<[TTNG_PackedArithResultElement]>:$result);
+
+  let assemblyFormat = [{
+    $op_kind $operands attr-dict `:` functional-type($operands, $result)
+  }];
+
+  let hasVerifier = 1;
+}
+
 def TTNG_FenceAsyncSharedOp : TTNG_Op<"fence_async_shared"> {
   let arguments = (ins BoolAttr:$bCluster);
 
@@ -372,6 +401,14 @@ def TTNG_ArriveBarrierOp : TTNG_Op<"arrive_barrier", [
     of at least 1 and decreases the pending arrival count of the mbarrier by
     the specified count.
 
+    When `ctaMask` is non-zero, the arrive is multicast across the cluster.
+    Each bit set in the mask identifies a CTA ID dimension to multicast
+    along. CTA IDs `a` and `b` belong to the same equivalence class iff
+    `a & ~ctaMask == b & ~ctaMask`; all CTAs in a class multicast to each
+    other. Multicast requires `numCTAs > 1`, `0 < ctaMask <= numCTAs - 1`,
+    and the barrier must have the identity CGA layout `[[1], [2], ...]`. The
+    default value of `ctaMask` is 0 (no multicast).
+
     The operation accepts an optional predicate.
 
     Example:
@@ -379,12 +416,14 @@ def TTNG_ArriveBarrierOp : TTNG_Op<"arrive_barrier", [
     ```mlir
     ttng.arrive_barrier %barrier, 2 : !ttg.memdesc<1xi64, #shared, #smem, mutable>
     ttng.arrive_barrier %barrier, 1, %pred : !ttg.memdesc<1xi64, #shared, #smem, mutable>
+    ttng.arrive_barrier %barrier, 1 {ctaMask = 1 : i32} : !ttg.memdesc<2xi64, #shared, #smem, mutable>
     ```
   }];
 
   let arguments = (ins
     Arg<TTG_MemDescType, "", [MemRead<SharedMemory>, MemWrite<SharedMemory>]>:$alloc,
     I32Attr:$count,
+    DefaultValuedOptionalAttr<I32Attr, "0">:$ctaMask,
     Optional<I1>:$pred
   );
 
@@ -394,9 +433,16 @@ def TTNG_ArriveBarrierOp : TTNG_Op<"arrive_barrier", [
 
   let builders = [
     OpBuilder<(ins "Value":$alloc, "uint32_t":$count), [{
-      return build($_builder, $_state, alloc, count, /*pred=*/Value());
+      build($_builder, $_state, alloc, count, /*ctaMask=*/0u, /*pred=*/Value());
+    }]>,
+    OpBuilder<(ins "Value":$alloc, "uint32_t":$count, "Value":$pred), [{
+      build($_builder, $_state, alloc, count, /*ctaMask=*/0u, pred);
     }]>
   ];
+
+  let extraClassDeclaration = [{
+    bool isMulticast() { return getCtaMask() != 0; }
+  }];
 
   let hasVerifier = 1;
 }
