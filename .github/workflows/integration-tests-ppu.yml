@@ -35,7 +35,7 @@ jobs:
         id: ppu-test
         uses: t-head/ppu-scheduler-action@main
         with:
-          image: reg.docker.alibaba-inc.com/ai-tmp/pytorch:2.13.0-ubuntu24.04-hggcrt3-py312-ppu202609231745
+          image: download.t-head.cn/docker_release/pytorch:sdk2.2.0-2.13.0-ubuntu24.04-hggcrt3-py312-20261005
           nnodes: 0
           nproc_per_node: 1
           node_selector: "board-type=${{ matrix.runner }}"
@@ -115,7 +115,7 @@ jobs:
             --xml "$NAS_RESULT_DIR/test_result.xml" \
             --env-info "$NAS_RESULT_DIR/env_info.json" \
             --title "Triton PPU Test Results (${{ matrix.runner }})" \
-            --docker-image "reg.docker.alibaba-inc.com/ai-tmp/pytorch:2.10.0-ubuntu24.04-hggcrt3-py312-ppu202609181903" \
+            --docker-image "download.t-head.cn/docker_release/pytorch:sdk2.2.0-2.13.0-ubuntu24.04-hggcrt3-py312-20261005" \
             --run-number "${{ github.run_number }}" \
             --branch "${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}" \
             --job-status "${{ steps.ppu-test.outputs.job_status }}" \
