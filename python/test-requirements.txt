@@ -2,6 +2,7 @@ autopep8
 einops
 isort
 numpy
+einops
 pytest
 pytest-forked
 pytest-timeout

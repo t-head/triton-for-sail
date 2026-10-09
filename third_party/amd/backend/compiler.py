@@ -29,7 +29,7 @@ def is_in_thread_transpose_enabled(arch):
 
 
 def is_async_copy_enabled(arch):
-    return (arch in ["gfx950", "gfx1250"]) if knobs.amd.use_async_copy is None else knobs.amd.use_async_copy
+    return knobs.amd.use_async_copy
 
 
 @dataclass(frozen=True)
@@ -490,6 +490,8 @@ class HIPBackend(BaseBackend):
         target_features = ''
         if knobs.compilation.enable_asan:
             target_features = '+xnack'
+        if 'gfx11' in options.arch:
+            target_features += ',-real-true16'
         hsaco = amd.assemble_amdgcn(src, options.arch, target_features)
         with tempfile.NamedTemporaryFile() as tmp_out:
             with tempfile.NamedTemporaryFile() as tmp_in:
