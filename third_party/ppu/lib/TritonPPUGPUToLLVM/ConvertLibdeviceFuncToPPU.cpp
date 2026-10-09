@@ -23,6 +23,8 @@
 
 #include "TritonPPUGPUToLLVM/Passes.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringSet.h"
 
 using namespace mlir;
 using namespace mlir::triton;
@@ -49,15 +51,29 @@ struct ConvertLibdeviceFuncToPPU
     auto *ctx = mod.getContext();
     llvm::StringMap<StringAttr> cvtMap;
 
+    // The same libdevice function may appear as both __nv_exp2f (via
+    // math -> NVVM) and __ppu_exp2f (via tt.extern_elementwise). Renaming the
+    // __nv_ one would then redefine an existing symbol, so drop it and repoint
+    // its call sites to the __ppu_ symbol already in the module.
+    llvm::StringSet<> existingNames;
+    mod.walk([&](LLVM::LLVMFuncOp funcOp) {
+      existingNames.insert(funcOp.getName());
+    });
+
     // update declarations/definitions.
+    SmallVector<LLVM::LLVMFuncOp> duplicates;
     mod.walk([&](LLVM::LLVMFuncOp funcOp) {
       StringRef name = funcOp.getName();
-      if (name.starts_with(kOldPrefix)) {
-        std::string newName =
-            (kNewPrefix + name.drop_front(kOldPrefix.size())).str();
-        auto newNameAttr = StringAttr::get(ctx, newName);
-        cvtMap[name] = newNameAttr; // collect functions to convert
+      if (!name.starts_with(kOldPrefix))
+        return;
+      std::string newName =
+          (kNewPrefix + name.drop_front(kOldPrefix.size())).str();
+      cvtMap[name] = StringAttr::get(ctx, newName); // collect functions to convert
+      if (existingNames.count(newName)) {
+        duplicates.push_back(funcOp); // __ppu_ counterpart already exists
+      } else {
         funcOp.setSymName(newName);
+        existingNames.insert(newName);
       }
     });
 
@@ -71,6 +87,10 @@ struct ConvertLibdeviceFuncToPPU
         callOp.setCalleeAttr(FlatSymbolRefAttr::get(ctx, it->second));
       }
     });
+
+    // erase the unused __nv_ duplicates.
+    for (LLVM::LLVMFuncOp funcOp : duplicates)
+      funcOp.erase();
   }
 };
 
