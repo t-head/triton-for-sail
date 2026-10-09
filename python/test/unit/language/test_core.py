@@ -3752,6 +3752,9 @@ def test_scaled_dot(M, N, K, col_a, col_b, rhs_scale, mxfp_type, normal_type, nu
     # to zero. Detailed info is at:
     # https://pytorch.org/docs/stable/notes/numerical_accuracy.html#reduced-precision-fp16-and-bf16-gemms-and-convolutions-on-amd-instinct-mi200-devices
     large_tolerance = is_hip_cdna2()
+    if (is_ppu() and torch.cuda.get_device_capability() < (9, 0) and mxfp_type == "e4m3"
+            and normal_type == "e4m3"):
+        large_tolerance = True
     # For e4m3, gfx11 can slightly exceed the default tolerances in isolated cases
     if is_hip_gfx11() and mxfp_type == "e4m3" and normal_type == "fp16":
         large_tolerance = True
