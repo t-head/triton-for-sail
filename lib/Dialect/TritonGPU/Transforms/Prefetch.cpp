@@ -180,6 +180,10 @@ LogicalResult Prefetcher::initialize() {
                              dstPPUMmaEnc.getVersionMajor() != 2)))
         // Don't rewrite if any other type is found.
         return failure();
+      if (!dstMfmaEnc && (!dstMmaEnc || dstMmaEnc.getVersionMajor() == 1) &&
+          (!dstPPUMmaEnc || (dstPPUMmaEnc.getInstrShape().size() >= 2 &&
+                             dstPPUMmaEnc.getInstrShape()[dstPPUMmaEnc.getInstrShape().size() - 2] == 8)))
+        return failure();
       dotsInFor.push_back(dotOp);
     }
 

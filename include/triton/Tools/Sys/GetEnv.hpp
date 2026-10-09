@@ -45,6 +45,8 @@ inline const std::set<std::string> CACHE_INVALIDATING_ENV_VARS = {
     "TRITON_F32_DEFAULT",
     "TRITON_PREFER_TMEM_16x256_LAYOUT",
     "TRITON_ENABLE_EXPERIMENTAL_CONSAN",
+    "FORCE_USE_M16MMA",
+    "FORCE_USE_M8MMA",
     // clang-format on
 };
 

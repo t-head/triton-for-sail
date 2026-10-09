@@ -152,7 +152,14 @@ def matmul_kernel(
     ],
 )
 @pytest.mark.parametrize("mixed_load", [False, True])
-def test_aiu_matmul(num_stages, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, num_warps, mixed_load):
+@pytest.mark.parametrize("m8_mma", [0, 1])
+def test_aiu_matmul(
+    monkeypatch, num_stages, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, num_warps, mixed_load, m8_mma
+):
+    monkeypatch.setenv("FORCE_USE_M8MMA", str(m8_mma))
+    capability = torch.cuda.get_device_capability()
+    if m8_mma == 1 and not (capability[0] == 8 and capability[1] == 0):
+        pytest.skip("m8 mma only support on ppu1.0")
     device = "cuda"
     torch.manual_seed(42)
     # A = torch.eye(M, dtype=torch.float16, device=device)
@@ -241,7 +248,14 @@ def test_aiu_matmul(num_stages, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, num_warps, m
     ],
 )
 @pytest.mark.parametrize("mixed_load", [False, True])
-def test_aiu_matmul_small_block(num_stages, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, num_warps, mixed_load):
+@pytest.mark.parametrize("m8_mma", [0, 1])
+def test_aiu_matmul_small_block(
+    monkeypatch, num_stages, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, num_warps, mixed_load, m8_mma
+):
+    monkeypatch.setenv("FORCE_USE_M8MMA", str(m8_mma))
+    capability = torch.cuda.get_device_capability()
+    if m8_mma == 1 and not (capability[0] == 8 and capability[1] == 0):
+        pytest.skip("m8 mma only support on ppu1.0")
     device = "cuda"
     torch.manual_seed(42)
     A = torch.randn((M, K), dtype=torch.float16, device=device)
@@ -296,7 +310,15 @@ def test_aiu_matmul_small_block(num_stages, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, 
 @pytest.mark.parametrize("M, N, K", [(16, 16, 16)])
 @pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K", [(16, 16, 16)])
 @pytest.mark.parametrize("mixed_load", [False, True])
-def test_aiu_matmul_16x16_block(num_stages, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, num_warps, mixed_load):
+@pytest.mark.parametrize("m8_mma", [0, 1])
+def test_aiu_matmul_16x16_block(
+    monkeypatch, num_stages, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, num_warps, mixed_load, m8_mma
+):
+    monkeypatch.setenv("FORCE_USE_M8MMA", str(m8_mma))
+    capability = torch.cuda.get_device_capability()
+    if m8_mma == 1 and not (capability[0] == 8 and capability[1] == 0):
+        pytest.skip("m8 mma only support on ppu1.0")
+
     device = "cuda"
     torch.manual_seed(42)
     A = torch.randn((M, K), dtype=torch.float16, device=device)
@@ -344,3 +366,7 @@ def test_aiu_matmul_16x16_block(num_stages, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, 
         )
     ref_out = torch.matmul(A.to(torch.float32), B.to(torch.float32)).to(torch.float16)
     torch.testing.assert_close(ref_out, C, rtol=1e-3, atol=1e-3)
+
+# from _pytest.monkeypatch import MonkeyPatch
+# mp = MonkeyPatch()
+# test_aiu_matmul_16x16_block(mp, 1, 16, 16, 16, 16, 16, 16, 2, False, 1)
