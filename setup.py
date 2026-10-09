@@ -242,7 +242,9 @@ def get_llvm_package_info():
     llvm_hash_path = os.path.join(get_base_dir(), "cmake", "llvm-hash.txt")
     with open(llvm_hash_path, "r") as llvm_hash_file:
         rev = llvm_hash_file.read(8)
-    name = f"llvm-{rev}-{system_suffix}"
+    # Build number of the pre-compiled LLVM artifacts in the blob store.
+    build_number = "1"
+    name = f"llvm-{rev}-{system_suffix}-{build_number}"
     # Create a stable symlink that doesn't include revision
     sym_name = f"llvm-{system_suffix}"
     url = f"https://oaitriton.blob.core.windows.net/public/llvm-builds/{name}.tar.gz"
@@ -494,15 +496,20 @@ class CMakeBuild(build_ext):
         # python directories
         python_include_dir = sysconfig.get_path("platinclude")
         cmake_args = [
-            "-G", "Ninja",  # Ninja is much faster than make
+            "-G",
+            "Ninja",  # Ninja is much faster than make
             "-DCMAKE_MAKE_PROGRAM=" +
             ninja_dir,  # Pass explicit path to ninja otherwise cmake may cache a temporary path
-            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON", "-DLLVM_ENABLE_WERROR=ON",
-            "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=" + extdir, "-DTRITON_BUILD_PYTHON_MODULE=ON",
-            "-DPython3_EXECUTABLE:FILEPATH=" + sys.executable, "-DPython3_INCLUDE_DIR=" + python_include_dir,
+            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+            "-DLLVM_ENABLE_WERROR=ON",
+            "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=" + extdir,
+            "-DTRITON_BUILD_PYTHON_MODULE=ON",
+            "-DPython3_EXECUTABLE:FILEPATH=" + sys.executable,
+            "-DPython3_INCLUDE_DIR=" + python_include_dir,
             "-DTRITON_CODEGEN_BACKENDS=" + ';'.join([b.name for b in backends if not b.is_external]),
             "-DTRITON_PLUGIN_DIRS=" + ';'.join([b.src_dir for b in backends if b.is_external]),
-            "-DTRITON_WHEEL_DIR=" + wheeldir
+            "-DTRITON_WHEEL_DIR=" + wheeldir,
+            f"-DTRITON_VERSION={TRITON_VERSION}",
         ]
         if lit_dir is not None:
             cmake_args.append("-DLLVM_EXTERNAL_LIT=" + lit_dir)
@@ -529,10 +536,10 @@ class CMakeBuild(build_ext):
                 "-DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=lld",
             ]
 
-        if check_env_flag("LLVM_BUILD_SHARED_LIBS"):
-            cmake_args += ["-DLLVM_BUILD_SHARED_LIBS=1"]
+        if check_env_flag("TRITON_EXT_ENABLED"):
+            cmake_args += ["-DTRITON_EXT_ENABLED=1"]
         else:
-            cmake_args += ["-DLLVM_BUILD_SHARED_LIBS=0"]
+            cmake_args += ["-DTRITON_EXT_ENABLED=0"]
 
         # Note that asan doesn't work with binaries that use the GPU, so this is
         # only useful for tools like triton-opt that don't run code on the GPU.
@@ -845,7 +852,7 @@ def get_triton_version_suffix():
 
 
 # keep it separate for easy substitution
-TRITON_VERSION = "3.6.0" + get_triton_version_suffix()
+TRITON_VERSION = "3.7.1" + get_triton_version_suffix()
 
 # Dynamically define supported Python versions and classifiers
 MIN_PYTHON = (3, 10)
