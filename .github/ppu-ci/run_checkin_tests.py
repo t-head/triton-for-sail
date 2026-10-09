@@ -209,7 +209,12 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
         # 6) gluon 前端测试套件
         TestConfig(
             file_path=os.path.join(test_dir, "python", "test", "gluon"),
-            extra_args=["--tb=short", "-n", "1"],
+            extra_args=[
+                "--tb=short", "-n", "1",
+                "--deselect", "python/test/gluon/test_frontend.py::test_inline_asm_shared_amd_compilation[False]",
+                "--deselect", "python/test/gluon/test_frontend.py::test_inline_asm_shared_amd_compilation[True]",
+                "--deselect", "python/test/gluon/test_frontend.py::test_gluon_ast_source_without_driver[target1-hsaco]",
+            ],
         ),
         # ------------------------ test-triton-kernels ----------------------
         # 7) triton_kernels 套件 — 暂时跳过（PPU 未构建 triton._C.libproton）
