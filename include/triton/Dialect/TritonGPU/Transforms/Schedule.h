@@ -4,6 +4,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "mlir/Support/LLVM.h"
+#include "mlir/Support/LogicalResult.h"
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Dialect/TritonGPU/Transforms/PipelineExpander.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -16,7 +17,7 @@ namespace triton {
 namespace gpu {
 
 /// Lower the loops to prepare them for pipeline expansion.
-void lowerLoops(ModuleOp moduleOp);
+LogicalResult lowerLoops(ModuleOp moduleOp);
 
 bool hasGpuBarriers(scf::ForOp forOp);
 bool isSafeToPipeline(scf::ForOp forOp);

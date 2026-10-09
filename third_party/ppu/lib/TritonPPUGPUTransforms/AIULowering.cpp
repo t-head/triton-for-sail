@@ -37,7 +37,9 @@ namespace {
 
 class AIULoadLowering : public OpRewritePattern<AIULoadOp> {
 public:
-  using OpRewritePattern::OpRewritePattern;
+  AIULoadLowering(MLIRContext *context, bool *encounteredInvalidLoad)
+      : OpRewritePattern(context),
+        encounteredInvalidLoad(encounteredInvalidLoad) {}
 
   LogicalResult matchAndRewrite(AIULoadOp op,
                                 PatternRewriter &rewriter) const override {
@@ -65,8 +67,15 @@ public:
     unsigned version = (computeCapability == 80) ? 1 : 2;
     auto loadStrategy =
         LLVM::PPU::AIULoadStrategy(numWarps, tileW, tileC, elemBytes, version);
+    if (failed(loadStrategy)) {
+      *encounteredInvalidLoad = true;
+      return op.emitError()
+             << "unsupported AIU load tile for PPU AIU version " << version
+             << ": channel width is " << tileC * elemBytes
+             << " bytes and contiguous width is " << tileW << " elements";
+    }
     Attribute encoding = PPUAIUSharedEncodingAttr::get(
-        tensorType.getContext(), version, loadStrategy, order, ctaLayout);
+        tensorType.getContext(), version, *loadStrategy, order, ctaLayout);
 
     MemDescType memDescType =
         MemDescType::get(tensorType.getShape(), tensorType.getElementType(),
@@ -86,6 +95,9 @@ public:
     rewriter.replaceOpWithNewOp<LocalLoadOp>(op, op.getType(), alloc);
     return success();
   }
+
+private:
+  bool *encounteredInvalidLoad;
 };
 
 } // namespace
@@ -105,11 +117,13 @@ public:
     MLIRContext *context = &getContext();
     ModuleOp m = getOperation();
 
+    bool encounteredInvalidLoad = false;
     mlir::RewritePatternSet patterns(context);
-    patterns.add<mlir::triton::gpu::AIULoadLowering>(context);
-    if (applyPatternsGreedily(m, std::move(patterns)).failed()) {
+    patterns.add<mlir::triton::gpu::AIULoadLowering>(
+        context, &encounteredInvalidLoad);
+    if (applyPatternsGreedily(m, std::move(patterns)).failed() ||
+        encounteredInvalidLoad)
       signalPassFailure();
-    }
   }
 };
 

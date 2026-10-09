@@ -1316,7 +1316,8 @@ void PPUMmaEncodingAttr::print(AsmPrinter &printer) const {
                       /*rank=*/getRank());
 
   printer << ", instrShape = [" << getInstrShape() << "]}>"
-          << ", vecSize = " << getVecSize() << "}>";
+          << ", vecSize = " << getVecSize();
+  printer << "}>";
 }
 
 //===----------------------------------------------------------------------===//
@@ -2619,10 +2620,11 @@ PPUMmaEncodingAttr::getRepForOperand(ArrayRef<int64_t> shape, int bitwidth,
   }
   // warpSizeK * (warpRepK * VecBitWidth)
   // auto tileBitWidthK = (isAmpere() && bitwidth == 64) ? (4 * 256) : (4 * 64);
+  auto instrShape = getInstrShape();
   auto tileBitWidthK = 4 * 64;
   if (opIdx == 0) {
-    // m x k
-    tileSize.push_back(16);
+    // m x k - M dimension from instrShape
+    tileSize.push_back(instrShape[rank - 2]);
     tileSize.push_back(tileBitWidthK / bitwidth);
   } else {
     // k x n
@@ -2630,11 +2632,7 @@ PPUMmaEncodingAttr::getRepForOperand(ArrayRef<int64_t> shape, int bitwidth,
     // for in-RF (dotOpEnc) operands, but WGMMA only supports in A to be in RF
     // so it's fine if the n is incorrect here
     tileSize.push_back(tileBitWidthK / bitwidth);
-    if (isPPU0010() || isPPU0015()) {
-      tileSize.push_back(16);
-    } else {
-      tileSize.push_back(8);
-    }
+    tileSize.push_back(instrShape[rank - 1]);
   }
 
   SmallVector<int64_t> numRep;

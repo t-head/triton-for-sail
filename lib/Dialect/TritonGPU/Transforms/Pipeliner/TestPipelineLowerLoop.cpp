@@ -23,7 +23,8 @@ struct TestPipelineLowerLoop
   void runOnOperation() override {
     ModuleOp m = getOperation();
 
-    lowerLoops(m);
+    if (failed(lowerLoops(m)))
+      signalPassFailure();
   }
 };
 

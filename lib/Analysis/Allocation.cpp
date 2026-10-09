@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <queue>
 
 #include "mlir/Analysis/Liveness.h"
 #include "mlir/Support/LLVM.h"
@@ -178,6 +179,60 @@ private:
         }
       }
     }
+
+    Value allocResult = op->getResult(0);
+    std::queue<Value> queue;
+    queue.push(allocResult);
+    DenseSet<Value> visitedValues;
+    bool needsM8Padding = false;
+    while (!queue.empty() && !needsM8Padding) {
+      Value currentValue = queue.front();
+      queue.pop();
+      if (!visitedValues.insert(currentValue).second)
+        continue;
+
+      for (OpOperand &use : currentValue.getUses()) {
+        Operation *user = use.getOwner();
+        if (auto localLoad = dyn_cast<triton::gpu::LocalLoadOp>(user)) {
+          auto dstTy = localLoad.getType();
+          auto dotEnc = dyn_cast<triton::gpu::DotOperandEncodingAttr>(
+              dstTy.getEncoding());
+          if (!dotEnc)
+            continue;
+          auto mmaEnc = dyn_cast<triton::gpu::PPUMmaEncodingAttr>(
+              dotEnc.getParent());
+          auto sharedEnc =
+              dyn_cast<triton::gpu::PPUAIUSharedEncodingAttr>(
+                  localLoad.getSrc().getType().getEncoding());
+          if (sharedEnc && sharedEnc.isPPU0010() && mmaEnc &&
+              mmaEnc.isPPU0010() && mmaEnc.getInstrShape().size() >= 2 &&
+              mmaEnc.getInstrShape()[mmaEnc.getInstrShape().size() - 2] == 8 &&
+              dotEnc.getOpIdx() == 1) {
+            needsM8Padding = true;
+            break;
+          }
+        } else if (user->hasTrait<OpTrait::MemDescViewTrait>()) {
+          for (Value result : user->getResults())
+            queue.push(result);
+        } else if (auto branch = dyn_cast<mlir::BranchOpInterface>(user)) {
+          for (auto [successorIndex, successor] :
+               llvm::enumerate(branch->getSuccessors())) {
+            SuccessorOperands successorOperands =
+                branch.getSuccessorOperands(successorIndex);
+            unsigned producedCount =
+                successorOperands.getProducedOperandCount();
+            for (auto [operandIndex, operand] :
+                 llvm::enumerate(successorOperands.getForwardedOperands())) {
+              if (operand == currentValue)
+                queue.push(
+                    successor->getArgument(producedCount + operandIndex));
+            }
+          }
+        }
+      }
+    }
+    if (needsM8Padding)
+      bytes += 16 * 8 * 16 / 8;
 
     int32_t alignment;
     if (mlir::isa<triton::gpu::PPUAIUSharedEncodingAttr>(
