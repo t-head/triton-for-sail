@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from functools import reduce
+import shutil
+from functools import lru_cache, reduce
 from typing import Any, Callable, TYPE_CHECKING, Union, List, Dict
 
 if TYPE_CHECKING:
@@ -56,7 +57,8 @@ def find_paths_if(iterable: Union[IterableType, Any], pred: Callable[[ObjPath, A
 
 
 def is_power_of_two(x):
-    return (x & (x - 1)) == 0
+    # x & (x - 1) is also 0 for x == 0, but 0 is not a power of two, so guard it.
+    return x > 0 and (x & (x - 1)) == 0
 
 
 def validate_block_shape(shape: List[int]):
@@ -155,3 +157,8 @@ def _tuple_create(arg, contents):
     # between them, but only NamedTuple has "_fields" and apparently this is how
     # everyone does the check.
     return type(arg)(*contents) if hasattr(arg, "_fields") else type(arg)(contents)
+
+
+@lru_cache(maxsize=1)
+def is_ppu_device() -> bool:
+    return shutil.which("ppu-smi") is not None

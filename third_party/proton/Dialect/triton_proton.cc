@@ -2,6 +2,7 @@
 #include "Conversion/ProtonGPUToLLVM/Passes.h"
 #include "Conversion/ProtonGPUToLLVM/ProtonAMDGPUToLLVM/Passes.h"
 #include "Conversion/ProtonGPUToLLVM/ProtonNvidiaGPUToLLVM/Passes.h"
+#include "Conversion/ProtonGPUToLLVM/ProtonPPUGPUToLLVM/Passes.h"
 #include "Conversion/ProtonToProtonGPU/Passes.h"
 #include "Dialect/Proton/IR/Dialect.h"
 #include "Dialect/ProtonGPU/IR/Dialect.h"
@@ -98,6 +99,8 @@ void init_triton_proton(py::module &&m) {
 
   ADD_PASS_WRAPPER_0("add_convert_proton_nvidia_gpu_to_llvm",
                      proton::gpu::createConvertProtonNvidiaGPUToLLVMPass);
+  ADD_PASS_WRAPPER_0("add_convert_proton_ppu_gpu_to_llvm",
+                     proton::gpu::createConvertProtonPPUGPUToLLVMPass);
   ADD_PASS_WRAPPER_1("add_convert_proton_amd_gpu_to_llvm",
                      proton::gpu::createConvertProtonAMDGPUToLLVMPass,
                      const std::string &);

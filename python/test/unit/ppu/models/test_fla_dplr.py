@@ -1,5 +1,6 @@
 from typing import Optional
 
+import pytest
 import torch
 import triton
 import triton.language as tl
@@ -135,6 +136,15 @@ def chunk_dplr_fwd_A_kernel_intra_sub_intra(
         tl.store(Aak + o_A + j, b_A_ak.to(dtype=Aqk.dtype.element_ty, fp_downcast_rounding="rtne"), mask=m_A)
 
 
+@pytest.mark.parametrize(
+    ('B', 'T', 'H', 'D', 'scale', 'gate_logit_normalizer', 'mask_p', 'dtype'),
+    [
+        pytest.param(*test, id="B{0}_T{1}_H{2}_D{3}_scale{4}_normalizer{5}_maskp{6}_{7}".format(*test))
+        for test in [
+            (1, 63, 1, 64, 1, 1, 0, torch.float16),
+        ]
+    ]
+)
 def test_chunk(
     B: int,
     T: int,

@@ -1,12 +1,6 @@
 """
 Multi-head attention kernel in Gluon
 """
-# ruff: noqa: E402
-import hip
-
-# Needed for internal dev flow for now; will remove later
-hip.hip.hipInit(0)
-
 import os
 import sys
 import inspect
@@ -18,7 +12,7 @@ import torch
 import math
 
 from triton import cdiv
-from triton.language.core import _aggregate as aggregate
+from triton.language.core import PropagateNan
 from triton.tools.mxfp import MXFP4Tensor, MXScaleTensor
 from triton.experimental import gluon
 import triton.experimental.gluon.language as ttgl
@@ -27,7 +21,7 @@ from triton.experimental.gluon.language import expand_dims
 from triton.experimental.gluon.language.amd import warp_pipeline_stage
 from triton.experimental.gluon.language.amd.gfx1250 import wmma_scaled
 from triton.experimental.gluon.language.amd.gfx1250 import tdm
-from triton.experimental.gluon.language.amd.gfx1250 import buffer_load, buffer_store
+from triton.experimental.gluon.language.amd.gfx1250 import buffer_load
 from triton.experimental.gluon.language.amd.gfx1250 import get_wmma_scale_layout
 
 # Handle imports for both pytest (module context) and direct execution
@@ -37,16 +31,38 @@ except ImportError:
     from gfx1250_utils import static_profile, composition
 
 # ===-----------------------------------------------------------------------===#
+# Max/min Utilities
+# ===-----------------------------------------------------------------------===#
+
+_MAX_PROPAGATE_NAN_ALL = ttgl.constexpr(PropagateNan.ALL)
+
+
+@gluon.jit
+def elementwise_max_prop_nan(a, b):
+    return ttgl.maximum(a, b, propagate_nan=_MAX_PROPAGATE_NAN_ALL)
+
+
+@gluon.jit
+def reduce_max_prop_nan(input, axis=None, keep_dims=False):
+    """Returns the max of the input tensor along the provided axis.
+
+    We need this customized impl rather than ttgl.max in order to control NaN
+    behavior. Ignoring NaN would incur extra overhead on AMD GPUs."""
+    return ttgl.reduce(input, axis, elementwise_max_prop_nan, keep_dims=keep_dims)
+
+
+# ===-----------------------------------------------------------------------===#
 # Kernel Utilities
 # ===-----------------------------------------------------------------------===#
 
 
 @gluon.constexpr_function
-def get_shared_layout(shape, padding=False, transposed=False):
+def get_shared_layout(shape, padding=False, transposed=False, clamp=False):
     """Default shared memory layout for TDM.
 
     When `padding=True`, use a padded shared memory layout to reduce LDS bank
-    conflicts.
+    conflicts. When `clamp=True`, we will clamp the padding_interval to be no
+    more than the inner dimension of the block.
     """
     if not padding:
         return ttgl.SwizzledSharedLayout(1, 1, 1, [1, 0])
@@ -58,7 +74,7 @@ def get_shared_layout(shape, padding=False, transposed=False):
     ## least 256 elements.
     ## On the other hand, we only need to add padding after a row of
     ## elements. So we also want the padding_interval to be at least inner_dim.
-    padding_interval = max(inner_dim, 256)
+    padding_interval = inner_dim if clamp else max(inner_dim, 256)
     ## For K tensor, we use ds_load_b128 and 16 x 8-bit element is the vector size
     ## For V tensor, there are 3 cases
     ## 1. V is HEAD_SZ contiguous. In this case, ds_load_tr8_b64 is
@@ -115,64 +131,7 @@ def get_wmma_layout(shape, num_warps, packed=False, preshuffled=False, warp_axis
     return ttgl.amd.AMDWMMALayout(3, True, warp_bases, reg_bases, instr_shape, rank=rank)
 
 
-@gluon.constexpr_function
-def get_store_layout(shape, num_warps):
-    """
-    The goal of this layout is to store contiguous data as much as possible.
-    Assume we are storing fp32 data. The inner dim is head_sz, which can be
-    either 128 or 64. For the normal wmma layout for a block of 16x16, we have
-    2 threads in a row, and each thread stores 8 elements. We can follow
-    the "2 threads in a row" manner, so that for head_sz=128, each thread
-    stores 64 elements / 256B; for head_sz=64, each thread stores 32 elements /
-    128B.
-    """
-    dim_outer, dim_inner = shape
-
-    # Ensure storing 4 contiguous elements = 128 bits
-    reg = [[0, 1], [0, 2]]
-    tile_inner = 4
-    # Distribute 16 lanes for outer dim to align with the wmma layout
-    lane = [[1, 0], [2, 0], [4, 0], [8, 0]]
-    tile_outer = 16
-    # Let each lane store half of inner dim.
-    assert tile_inner <= dim_inner // 2
-    while tile_inner < dim_inner // 2:
-        reg.append([0, tile_inner])
-        tile_inner <<= 1
-    # Let the other 16 lanes store the other half of inner dim.
-    lane.append([0, tile_inner])
-    # Distribute warps for outer dim.
-    warp = []
-    while 2**len(warp) < num_warps:
-        if tile_outer < dim_outer:
-            warp.append([tile_outer, 0])
-            tile_outer <<= 1
-        else:
-            warp.append([0, 0])
-    # Repeat the layout to cover the rest of outer dim.
-    while tile_outer < dim_outer:
-        reg.append([tile_outer, 0])
-        tile_outer <<= 1
-
-    return ttgl.DistributedLinearLayout(reg, lane, warp, [], shape)
-
-
-@gluon.jit
-def split_n(x, n: ttgl.constexpr = 2):
-    """
-    Recursively split a 2D tensor along the N-dimension into `n` pieces.
-    """
-    layout: ttgl.constexpr = x.type.layout
-    if n == 1:
-        return (x, )
-    else:
-        a0, a1 = x.reshape([x.shape[0], 2, x.shape[1] // 2]).permute(0, 2, 1).split()
-        a0 = ttgl.convert_layout(a0, layout, assert_trivial=True)
-        a1 = ttgl.convert_layout(a1, layout, assert_trivial=True)
-        return (split_n(a0, n // 2) + split_n(a1, n // 2))
-
-
-@aggregate
+@gluon.aggregate
 class MemoryBlock:
     """
     MemoryBlock groups variables to describe a block of 2D/3D tensor in global memory.
@@ -217,7 +176,7 @@ class MemoryBlock:
         return MemoryBlock(base, offs, mask, block_shape)
 
 
-@aggregate
+@gluon.aggregate
 class MemoryUnit:
     """
     MemoryUnit wraps a global-memory tensor descriptor and its corresponding shared-memory slots.
@@ -254,7 +213,7 @@ class MemoryUnit:
         return MemoryUnit(smem, desc)
 
 
-@aggregate
+@gluon.aggregate
 class KVMemory:
     k_mem: MemoryUnit
     v_mem: MemoryUnit
@@ -417,7 +376,7 @@ class KVMemory:
         return buffer
 
 
-@aggregate
+@gluon.aggregate
 class KVScaleMemory:
     k_mem: MemoryUnit
     v_mem: MemoryUnit
@@ -572,7 +531,7 @@ class KVScaleMemory:
         return buffer
 
 
-@aggregate
+@gluon.aggregate
 class AttentionConfigBase:
     Q_TYPE: ttgl.constexpr  # the data type for Q, either 'e5m2' or 'e4m3'
     P_TYPE: ttgl.constexpr  # the data type for P; we always assume P_TYPE == Q_TYPE
@@ -614,7 +573,7 @@ class AttentionConfigBase:
 
 
 @composition
-@aggregate
+@gluon.aggregate
 class GlobalScaledAttentionConfig:
     base: AttentionConfigBase
 
@@ -623,7 +582,6 @@ class GlobalScaledAttentionConfig:
     p_layout: ttgl.constexpr
     v_layout: ttgl.constexpr
     acc_layout: ttgl.constexpr
-    store_layout: ttgl.constexpr
 
     # Whether the layout convert between QK and P is trivial - no data movement. This can happen when we use
     # k_width=8 for P and V, which effectively makes QK and P have the same layout.
@@ -672,7 +630,6 @@ class GlobalScaledAttentionConfig:
         self.p_layout = ttgl.constexpr(p_layout)
         self.v_layout = ttgl.constexpr(v_layout)
         self.acc_layout = ttgl.constexpr(acc_layout)
-        self.store_layout = ttgl.constexpr(get_store_layout([BLOCK_M, HEAD_SZ], NUM_WARPS))
 
         self.KV_PACK_DIV = ttgl.constexpr(2 if KV_TYPE == 'e2m1' else 1)
         self.SUBTILE = ttgl.constexpr(SUBTILE)
@@ -680,7 +637,7 @@ class GlobalScaledAttentionConfig:
         self.CONVERT_LAYOUT_TRIVIAL = ttgl.constexpr(True if P_K_WIDTH == 8 else False)
 
 
-@aggregate
+@gluon.aggregate
 class GlobalScaledAttentionProgram:
     cfg: GlobalScaledAttentionConfig
 
@@ -892,8 +849,8 @@ class GlobalScaledAttentionProgram:
 
             qk = self.compute_qk(q, q_scale, k, k_scale, zero)
 
-            m = ttgl.max(qk, -1)
-            m_ij = ttgl.maximum(m_i, m)
+            m = reduce_max_prop_nan(qk, -1)
+            m_ij = elementwise_max_prop_nan(m_i, m)
             m_ij_scaled = m_ij * sm_scale
             qk_shifted = qk * sm_scale - expand_dims(m_ij_scaled, -1)
             p = ttgl.exp2(qk_shifted)
@@ -944,8 +901,8 @@ class GlobalScaledAttentionProgram:
 
         self.issue_global_load_k(2, buf=0)  # ................................. iter 2
 
-        m = ttgl.max(qk, -1)  # ............................................... iter 0
-        m_ij = ttgl.maximum(m_i, m)
+        m = reduce_max_prop_nan(qk, -1)  # .................................... iter 0
+        m_ij = elementwise_max_prop_nan(m_i, m)
         m_ij_scaled = m_ij * sm_scale
         qk_shifted = qk * sm_scale - expand_dims(m_ij_scaled, -1)
         p = ttgl.exp2(qk_shifted)
@@ -979,8 +936,8 @@ class GlobalScaledAttentionProgram:
             self.issue_global_load_k(i + 3, buf=b, pred=pred)  # .............. iter i+3
 
             acc = self.compute_pv(p, p_scale, v, v_scale, acc)  # ............. iter i
-            m = ttgl.max(qk, -1)  # ........................................... iter i+1
-            m_ij = ttgl.maximum(m_i, m)
+            m = reduce_max_prop_nan(qk, -1)  # ................................ iter i+1
+            m_ij = elementwise_max_prop_nan(m_i, m)
             m_ij_scaled = m_ij * sm_scale
             qk_shifted = qk * sm_scale - expand_dims(m_ij_scaled, -1)
             p = ttgl.exp2(qk_shifted)
@@ -1003,8 +960,8 @@ class GlobalScaledAttentionProgram:
         v = self.shared_load_v(buf=0)
 
         acc = self.compute_pv(p, p_scale, v, v_scale, acc)  # ................. iter end-2
-        m = ttgl.max(qk, -1)  # ............................................... iter end-1
-        m_ij = ttgl.maximum(m_i, m)
+        m = reduce_max_prop_nan(qk, -1)  # .................................... iter end-1
+        m_ij = elementwise_max_prop_nan(m_i, m)
         m_ij_scaled = m_ij * sm_scale
         qk_shifted = qk * sm_scale - expand_dims(m_ij_scaled, -1)
         p = ttgl.exp2(qk_shifted)
@@ -1066,8 +1023,8 @@ class GlobalScaledAttentionProgram:
         self.issue_global_load_v(0, sub_idx=1, buf=0)  # ...................... iter 0
 
         qk = self.concat_subtile(qk0, qk1)  # ................................. iter 0
-        m = ttgl.max(qk, -1)
-        m_ij = ttgl.maximum(m_i, m)
+        m = reduce_max_prop_nan(qk, -1)
+        m_ij = elementwise_max_prop_nan(m_i, m)
         m_ij_scaled = m_ij * sm_scale
         self.issue_global_load_k(2, sub_idx=0, buf=0)  # ...................... iter 2
 
@@ -1109,8 +1066,8 @@ class GlobalScaledAttentionProgram:
             self.async_wait(4)  # ............................................. iter i
             v1 = self.shared_load_v(sub_idx=1, buf=a)
             qk = self.concat_subtile(qk0, qk1)  # ............................. iter i+1
-            m = ttgl.max(qk, -1)
-            m_ij = ttgl.maximum(m_i, m)
+            m = reduce_max_prop_nan(qk, -1)
+            m_ij = elementwise_max_prop_nan(m_i, m)
             m_ij_scaled = m_ij * sm_scale
             self.issue_global_load_k(i + 3, sub_idx=0, buf=b, pred=pred)  # ... iter i+3
 
@@ -1151,8 +1108,8 @@ class GlobalScaledAttentionProgram:
         qk1 = self.compute_qk(q, q_scale, k1, k_scale, zero)
 
         qk = self.concat_subtile(qk0, qk1)
-        m = ttgl.max(qk, -1)
-        m_ij = ttgl.maximum(m_i, m)
+        m = reduce_max_prop_nan(qk, -1)
+        m_ij = elementwise_max_prop_nan(m_i, m)
         m_ij_scaled = m_ij * sm_scale
         qk0_shifted = qk0 * sm_scale - expand_dims(m_ij_scaled, -1)
         qk1_shifted = qk1 * sm_scale - expand_dims(m_ij_scaled, -1)
@@ -1221,8 +1178,8 @@ class GlobalScaledAttentionProgram:
         self.issue_global_load_v(0, sub_idx=1, buf=0)  # ...................... iter 0
 
         qk = self.concat_subtile(qk0, qk1)  # ................................. iter 0
-        m = ttgl.max(qk, -1)
-        m_ij = ttgl.maximum(m_i, m)
+        m = reduce_max_prop_nan(qk, -1)
+        m_ij = elementwise_max_prop_nan(m_i, m)
         m_ij_scaled = m_ij * sm_scale
         self.issue_global_load_k(2, sub_idx=0, buf=0)  # ...................... iter 2
 
@@ -1269,8 +1226,8 @@ class GlobalScaledAttentionProgram:
             with warp_pipeline_stage("compute2"):
                 acc0 = self.compute_pv(p, p_scale, v0, v_scale, acc0)  # ...... iter i
                 qk = self.concat_subtile(qk0, qk1)  # ......................... iter i+1
-                m = ttgl.max(qk, -1)
-                m_ij = ttgl.maximum(m_i, m)
+                m = reduce_max_prop_nan(qk, -1)
+                m_ij = elementwise_max_prop_nan(m_i, m)
                 m_ij_scaled = m_ij * sm_scale
 
             self.async_wait(4)
@@ -1318,8 +1275,8 @@ class GlobalScaledAttentionProgram:
         qk1 = self.compute_qk(q, q_scale, k1, k_scale, zero)
 
         qk = self.concat_subtile(qk0, qk1)
-        m = ttgl.max(qk, -1)
-        m_ij = ttgl.maximum(m_i, m)
+        m = reduce_max_prop_nan(qk, -1)
+        m_ij = elementwise_max_prop_nan(m_i, m)
         m_ij_scaled = m_ij * sm_scale
 
         qk0_shifted = qk0 * sm_scale - expand_dims(m_ij_scaled, -1)
@@ -1381,8 +1338,8 @@ class GlobalScaledAttentionProgram:
 
         self.issue_global_load_v(1, buf=1)  # ................................. iter 1
 
-        m = ttgl.max(qk, -1)  # ............................................... iter 0
-        m_ij = ttgl.maximum(m_i, m)
+        m = reduce_max_prop_nan(qk, -1)  # .................................... iter 0
+        m_ij = elementwise_max_prop_nan(m_i, m)
         m_ij_scaled = m_ij * sm_scale
         qk_shifted = qk * sm_scale - expand_dims(m_ij_scaled, -1)
         p = ttgl.exp2(qk_shifted)
@@ -1414,8 +1371,8 @@ class GlobalScaledAttentionProgram:
             v = self.shared_load_v(buf=a)  # .................................. iter i
 
             acc = self.compute_pv(p, p_scale, v, v_scale, acc)  # ............. iter i
-            m = ttgl.max(qk, -1)  # ........................................... iter i+1
-            m_ij = ttgl.maximum(m_i, m)
+            m = reduce_max_prop_nan(qk, -1)  # ................................ iter i+1
+            m_ij = elementwise_max_prop_nan(m_i, m)
             m_ij_scaled = m_ij * sm_scale
             qk_shifted = qk * sm_scale - expand_dims(m_ij_scaled, -1)
             p = ttgl.exp2(qk_shifted)
@@ -1440,8 +1397,8 @@ class GlobalScaledAttentionProgram:
         v = self.shared_load_v(buf=a)  # ...................................... iter end-2
 
         acc = self.compute_pv(p, p_scale, v, v_scale, acc)  # ................. iter end-2
-        m = ttgl.max(qk, -1)  # ............................................... iter end-1
-        m_ij = ttgl.maximum(m_i, m)
+        m = reduce_max_prop_nan(qk, -1)  # .................................... iter end-1
+        m_ij = elementwise_max_prop_nan(m_i, m)
         m_ij_scaled = m_ij * sm_scale
         qk_shifted = qk * sm_scale - expand_dims(m_ij_scaled, -1)
         p = ttgl.exp2(qk_shifted)
@@ -1471,7 +1428,7 @@ class GlobalScaledAttentionProgram:
 
 
 @composition
-@aggregate
+@gluon.aggregate
 class BlockScaledAttentionConfig:
     base: AttentionConfigBase
 
@@ -1488,7 +1445,6 @@ class BlockScaledAttentionConfig:
     v_scale_layout: ttgl.constexpr
 
     acc_layout: ttgl.constexpr
-    store_layout: ttgl.constexpr
 
     # Whether to use per-block scaling for P; if False, use an uniform scale of 1.0.
     P_SCALING: ttgl.constexpr
@@ -1553,7 +1509,6 @@ class BlockScaledAttentionConfig:
         self.p_scale_layout = ttgl.constexpr(p_scale_layout)
         self.v_scale_layout = ttgl.constexpr(v_scale_layout)
         self.acc_layout = ttgl.constexpr(acc_layout)
-        self.store_layout = ttgl.constexpr(get_store_layout([BLOCK_M, HEAD_SZ], NUM_WARPS))
 
         self.KV_PACK_DIV = ttgl.constexpr(2 if KV_TYPE == 'e2m1' else 1)
         self.SUBTILE = ttgl.constexpr(SUBTILE)
@@ -1562,7 +1517,7 @@ class BlockScaledAttentionConfig:
         self.P_SCALING = ttgl.constexpr(P_SCALING)
 
 
-@aggregate
+@gluon.aggregate
 class BlockScaledAttentionProgram:
     cfg: BlockScaledAttentionConfig
 
@@ -1619,6 +1574,8 @@ class BlockScaledAttentionProgram:
         ttgl.static_assert(SEQLEN_K % SPLIT_K == 0)
 
         if SEQLEN_Q == SEQLEN_K:
+            off_hk = off_h // GROUP_SZ
+
             q_off = SEQLEN_Q * HEAD_SZ * (NUM_Q_HEADS * off_z + off_h) + \
                     BLOCK_M * HEAD_SZ * off_m
             q_blk = MemoryBlock.initialize(  #
@@ -1636,6 +1593,8 @@ class BlockScaledAttentionProgram:
                 layout=cfg.q_scale_layout)
 
         else:
+            off_hk = off_h
+
             q_off = GROUP_SZ * HEAD_SZ * (NUM_GROUPS * off_z + off_h) + \
                     BLOCK_M * HEAD_SZ * off_m
             q_scale_off = GROUP_SZ * (HEAD_SZ // 32) * (NUM_GROUPS * off_z + off_h) + \
@@ -1664,11 +1623,11 @@ class BlockScaledAttentionProgram:
                     block_shape=[1, BLOCK_M, HEAD_SZ // 32],  #
                     layout=cfg.q_scale_layout)
 
-        k_off = [kv_mem.k_shape[2] * (kv_mem.k_shape[1] * off_z + off_h), 0]
-        v_off = [kv_mem.v_shape[2] * (kv_mem.v_shape[1] * off_z + off_h), 0]
+        k_off = [kv_mem.k_shape[2] * (kv_mem.k_shape[1] * off_z + off_hk), 0]
+        v_off = [kv_mem.v_shape[2] * (kv_mem.v_shape[1] * off_z + off_hk), 0]
 
-        k_scale_off = [kv_scale_mem.k_shape[2] * (kv_scale_mem.k_shape[1] * off_z + off_h), 0]
-        v_scale_off = [kv_scale_mem.v_shape[2] * (kv_scale_mem.v_shape[1] * off_z + off_h), 0]
+        k_scale_off = [kv_scale_mem.k_shape[2] * (kv_scale_mem.k_shape[1] * off_z + off_hk), 0]
+        v_scale_off = [kv_scale_mem.v_shape[2] * (kv_scale_mem.v_shape[1] * off_z + off_hk), 0]
 
         return BlockScaledAttentionProgram(  #
             cfg,  #
@@ -1800,7 +1759,7 @@ class BlockScaledAttentionProgram:
 
         x = ttgl.reshape(x, [outer_dim, inner_dim // block_size, block_size])
         x_abs = ttgl.abs(x)
-        x_max = ttgl.max(x_abs, axis=2)
+        x_max = reduce_max_prop_nan(x_abs, axis=2)
 
         dequant_scale = x_max / fp8_max
         dequant_scale = (dequant_scale.to(ttgl.uint32, bitcast=True) + 0x007FFFFF) & 0x7F800000
@@ -1880,8 +1839,8 @@ class BlockScaledAttentionProgram:
 
             qk = self.compute_qk(q, q_scale, k, k_scale, zero)
 
-            m = ttgl.max(qk, -1)
-            m_ij = ttgl.maximum(m_i, m)
+            m = reduce_max_prop_nan(qk, -1)
+            m_ij = elementwise_max_prop_nan(m_i, m)
             m_ij_scaled = m_ij * sm_scale
             qk_shifted = qk * sm_scale - expand_dims(m_ij_scaled, -1)
             p = ttgl.exp2(qk_shifted)
@@ -1934,8 +1893,8 @@ class BlockScaledAttentionProgram:
         self.issue_global_load_k(2, buf=0)  # ................................. iter 2
         self.issue_global_load_k_scale(2, buf=0)  # ........................... iter 2
 
-        m = ttgl.max(qk, -1)  # ............................................... iter 0
-        m_ij = ttgl.maximum(m_i, m)
+        m = reduce_max_prop_nan(qk, -1)  # .................................... iter 0
+        m_ij = elementwise_max_prop_nan(m_i, m)
         m_ij_scaled = m_ij * sm_scale
         qk_shifted = qk * sm_scale - expand_dims(m_ij_scaled, -1)
         p = ttgl.exp2(qk_shifted)
@@ -1973,8 +1932,8 @@ class BlockScaledAttentionProgram:
             self.issue_global_load_k_scale(i + 3, buf=b, pred=pred)  # ........ iter i+3
 
             acc = self.compute_pv(p, p_scale, v, v_scale, acc)  # ............. iter i
-            m = ttgl.max(qk, -1)  # ........................................... iter i+1
-            m_ij = ttgl.maximum(m_i, m)
+            m = reduce_max_prop_nan(qk, -1)  # ................................ iter i+1
+            m_ij = elementwise_max_prop_nan(m_i, m)
             m_ij_scaled = m_ij * sm_scale
             qk_shifted = qk * sm_scale - expand_dims(m_ij_scaled, -1)
             p = ttgl.exp2(qk_shifted)
@@ -2000,8 +1959,8 @@ class BlockScaledAttentionProgram:
         v_scale = self.shared_load_v_scale(buf=0)
 
         acc = self.compute_pv(p, p_scale, v, v_scale, acc)  # ................. iter end-2
-        m = ttgl.max(qk, -1)  # ............................................... iter end-1
-        m_ij = ttgl.maximum(m_i, m)
+        m = reduce_max_prop_nan(qk, -1)  # .................................... iter end-1
+        m_ij = elementwise_max_prop_nan(m_i, m)
         m_ij_scaled = m_ij * sm_scale
         qk_shifted = qk * sm_scale - expand_dims(m_ij_scaled, -1)
         p = ttgl.exp2(qk_shifted)
@@ -2065,8 +2024,8 @@ class BlockScaledAttentionProgram:
         self.issue_global_load_v(0, sub_idx=1, buf=0)  # ...................... iter 0
 
         qk = self.concat_subtile(qk0, qk1)  # ................................. iter 0
-        m = ttgl.max(qk, -1)
-        m_ij = ttgl.maximum(m_i, m)
+        m = reduce_max_prop_nan(qk, -1)
+        m_ij = elementwise_max_prop_nan(m_i, m)
         m_ij_scaled = m_ij * sm_scale
         self.issue_global_load_k(2, sub_idx=0, buf=0)  # ...................... iter 2
         self.issue_global_load_k_scale(2, buf=0)  # ........................... iter 2
@@ -2116,8 +2075,8 @@ class BlockScaledAttentionProgram:
             self.async_wait(5)  # ............................................. iter i
             v1 = self.shared_load_v(sub_idx=1, buf=a)
             qk = self.concat_subtile(qk0, qk1)  # ............................. iter i+1
-            m = ttgl.max(qk, -1)
-            m_ij = ttgl.maximum(m_i, m)
+            m = reduce_max_prop_nan(qk, -1)
+            m_ij = elementwise_max_prop_nan(m_i, m)
             m_ij_scaled = m_ij * sm_scale
             self.issue_global_load_k(i + 3, sub_idx=0, buf=b, pred=pred)  # ... iter i+3
             self.issue_global_load_k_scale(i + 3, buf=b, pred=pred)  # ........ iter i+3
@@ -2165,8 +2124,8 @@ class BlockScaledAttentionProgram:
         qk1 = self.compute_qk(q, q_scale, k1, k1_scale, zero)
 
         qk = self.concat_subtile(qk0, qk1)
-        m = ttgl.max(qk, -1)
-        m_ij = ttgl.maximum(m_i, m)
+        m = reduce_max_prop_nan(qk, -1)
+        m_ij = elementwise_max_prop_nan(m_i, m)
         m_ij_scaled = m_ij * sm_scale
 
         qk0_shifted = qk0 * sm_scale - expand_dims(m_ij_scaled, -1)
@@ -2239,8 +2198,8 @@ class BlockScaledAttentionProgram:
         self.issue_global_load_v(0, sub_idx=1, buf=0)  # ...................... iter 0
 
         qk = self.concat_subtile(qk0, qk1)  # ................................. iter 0
-        m = ttgl.max(qk, -1)
-        m_ij = ttgl.maximum(m_i, m)
+        m = reduce_max_prop_nan(qk, -1)
+        m_ij = elementwise_max_prop_nan(m_i, m)
         m_ij_scaled = m_ij * sm_scale
         self.issue_global_load_k(2, sub_idx=0, buf=0)  # ...................... iter 2
         self.issue_global_load_k_scale(2, buf=0)  # ........................... iter 2
@@ -2293,8 +2252,8 @@ class BlockScaledAttentionProgram:
             with warp_pipeline_stage("compute2"):
                 acc0 = self.compute_pv(p, p_scale, v0, v0_scale, acc0)  # ..... iter i
                 qk = self.concat_subtile(qk0, qk1)  # ......................... iter i+1
-                m = ttgl.max(qk, -1)
-                m_ij = ttgl.maximum(m_i, m)
+                m = reduce_max_prop_nan(qk, -1)
+                m_ij = elementwise_max_prop_nan(m_i, m)
                 m_ij_scaled = m_ij * sm_scale
 
             self.async_wait(7)
@@ -2349,8 +2308,8 @@ class BlockScaledAttentionProgram:
         qk1 = self.compute_qk(q, q_scale, k1, k1_scale, zero)
 
         qk = self.concat_subtile(qk0, qk1)
-        m = ttgl.max(qk, -1)
-        m_ij = ttgl.maximum(m_i, m)
+        m = reduce_max_prop_nan(qk, -1)
+        m_ij = elementwise_max_prop_nan(m_i, m)
         m_ij_scaled = m_ij * sm_scale
 
         qk0_shifted = qk0 * sm_scale - expand_dims(m_ij_scaled, -1)
@@ -2415,8 +2374,8 @@ class BlockScaledAttentionProgram:
         self.issue_global_load_v(1, buf=1)  # ................................. iter 1
         self.issue_global_load_v_scale(1, buf=1)  # ........................... iter 1
 
-        m = ttgl.max(qk, -1)  # ............................................... iter 0
-        m_ij = ttgl.maximum(m_i, m)
+        m = reduce_max_prop_nan(qk, -1)  # .................................... iter 0
+        m_ij = elementwise_max_prop_nan(m_i, m)
         m_ij_scaled = m_ij * sm_scale
         qk_shifted = qk * sm_scale - expand_dims(m_ij_scaled, -1)
         p = ttgl.exp2(qk_shifted)
@@ -2452,8 +2411,8 @@ class BlockScaledAttentionProgram:
             v_scale = self.shared_load_v_scale(buf=a)
 
             acc = self.compute_pv(p, p_scale, v, v_scale, acc)  # ............. iter i
-            m = ttgl.max(qk, -1)  # ........................................... iter i+1
-            m_ij = ttgl.maximum(m_i, m)
+            m = reduce_max_prop_nan(qk, -1)  # ................................ iter i+1
+            m_ij = elementwise_max_prop_nan(m_i, m)
             m_ij_scaled = m_ij * sm_scale
             qk_shifted = qk * sm_scale - expand_dims(m_ij_scaled, -1)
             p = ttgl.exp2(qk_shifted)
@@ -2481,8 +2440,8 @@ class BlockScaledAttentionProgram:
         v_scale = self.shared_load_v_scale(buf=a)
 
         acc = self.compute_pv(p, p_scale, v, v_scale, acc)  # ................. iter end-2
-        m = ttgl.max(qk, -1)  # ............................................... iter end-1
-        m_ij = ttgl.maximum(m_i, m)
+        m = reduce_max_prop_nan(qk, -1)  # .................................... iter end-1
+        m_ij = elementwise_max_prop_nan(m_i, m)
         m_ij_scaled = m_ij * sm_scale
         qk_shifted = qk * sm_scale - expand_dims(m_ij_scaled, -1)
         p = ttgl.exp2(qk_shifted)
@@ -2534,40 +2493,22 @@ def store_output(  #
     if SEQLEN_Q == SEQLEN_K:
         ttgl.static_assert(SPLIT_K == 1)
 
-        o_off = SEQLEN_Q * HEAD_SZ * (NUM_Q_HEADS * off_z + off_h) + \
-                BLOCK_M * HEAD_SZ * off_m
-        o_blk = MemoryBlock.initialize(  #
-            o_ptr + o_off,  #
-            shape=[SEQLEN_Q, HEAD_SZ],  #
-            block_shape=[BLOCK_M, HEAD_SZ],  #
-            layout=cfg.store_layout)
-
         l_recip = 1 / l_i
         acc = acc * expand_dims(l_recip, -1)
-        o = acc.to(o_blk.dtype)
-        o = ttgl.convert_layout(o, cfg.store_layout)
-        buffer_store(o, o_blk.ptr, o_blk.offs, o_blk.mask)
+
+        o_base = SEQLEN_Q * HEAD_SZ * (NUM_Q_HEADS * off_z + off_h)
+        o_shape = [SEQLEN_Q, HEAD_SZ]
+
     else:
         GROUP_SZ: ttgl.constexpr = NUM_Q_HEADS // NUM_K_HEADS
         NUM_GROUPS: ttgl.constexpr = NUM_K_HEADS
 
         if SPLIT_K == 1:
-            o_off = GROUP_SZ * HEAD_SZ * (NUM_GROUPS * off_z + off_h) + \
-                    BLOCK_M * HEAD_SZ * off_m
-            o_blk = MemoryBlock.initialize(  #
-                o_ptr + o_off,  #
-                shape=[GROUP_SZ, HEAD_SZ],  #
-                block_shape=[BLOCK_M, HEAD_SZ],  #
-                layout=cfg.store_layout)
-
             l_recip = 1 / l_i
             acc = acc * expand_dims(l_recip, -1)
-            o = acc.to(o_blk.dtype)
-            o = ttgl.convert_layout(o, cfg.store_layout)
-            buffer_store(o, o_blk.ptr, o_blk.offs, o_blk.mask)
+
         else:
-            # LDS reduction for split-k
-            m_ij = ttgl.max(m_i, 0)
+            m_ij = reduce_max_prop_nan(m_i, 0)
             m_ij_scaled = m_ij * sm_scale
             m_diff = m_i * sm_scale - expand_dims(m_ij_scaled, 0)
             alpha = ttgl.exp2(m_diff)
@@ -2577,10 +2518,7 @@ def store_output(  #
             acc = acc.reshape(shape)
 
             acc_smem_layout: ttgl.constexpr = ttgl.PaddedSharedLayout.with_identity_for([[HEAD_SZ, 4]], shape, [1, 0])
-            acc_smem = ttgl.allocate_shared_memory(  #
-                acc.dtype,  #
-                shape,  #
-                acc_smem_layout)
+            acc_smem = ttgl.allocate_shared_memory(acc.dtype, shape, acc_smem_layout)
             acc_smem.store(acc)
 
             acc_layout: ttgl.constexpr = ttgl.BlockedLayout([1, HEAD_SZ // NUM_WARPS // 2], [16, 2], [1, NUM_WARPS],
@@ -2595,15 +2533,22 @@ def store_output(  #
             l_recip = ttgl.permute(l_recip, [1, 0])
             l_recip = ttgl.convert_layout(l_recip, acc.type.layout)
             acc = acc * l_recip
-            o_off = GROUP_SZ * HEAD_SZ * (NUM_GROUPS * off_z + off_h) + \
-                    BLOCK_M * HEAD_SZ * off_m
-            o_blk = MemoryBlock.initialize(  #
-                o_ptr + o_off,  #
-                shape=[GROUP_SZ, HEAD_SZ],  #
-                block_shape=[BLOCK_M, HEAD_SZ],  #
-                layout=acc_layout)
 
-            buffer_store(acc, o_blk.ptr, o_blk.offs)
+        o_base = GROUP_SZ * HEAD_SZ * (NUM_GROUPS * off_z + off_h)
+        o_shape = [GROUP_SZ, HEAD_SZ]
+
+    o_smem_layout: ttgl.constexpr = get_shared_layout([BLOCK_M, HEAD_SZ], padding=True, clamp=True)
+    o_desc = tdm.make_tensor_descriptor(  #
+        base=o_ptr + o_base,  #
+        shape=o_shape,  #
+        strides=[HEAD_SZ, 1],  #
+        block_shape=[BLOCK_M, HEAD_SZ],  #
+        layout=o_smem_layout)
+
+    o = acc.to(o_ptr.dtype.element_ty)
+    o_smem = ttgl.allocate_shared_memory(o_ptr.dtype.element_ty, [BLOCK_M, HEAD_SZ], o_smem_layout)
+    o_smem.store(o)
+    tdm.async_store(o_desc, [off_m * BLOCK_M, 0], o_smem)
 
 
 @gluon.jit
@@ -2737,8 +2682,6 @@ def attn_fwd(  #
 
     if seqlen_q == seqlen_k:
         assert split_k == 1
-        group_sz = num_q_heads // num_k_heads
-        assert group_sz == 1
         # q: [BATCH, NUM_Q_HEADS, SEQLEN_Q, HEAD_SZ]
         # k: [BATCH, NUM_K_HEADS, SEQLEN_K, HEAD_SZ]
         # v: [BATCH, NUM_K_HEADS, SEQLEN_K, HEAD_SZ]
@@ -2974,6 +2917,8 @@ def get_fwd_test_cases(block_scaling: bool):
              for batch in [1]
              for seqlen_q, seqlen_k, num_q_heads, num_k_heads in [
                  (1024, 1024, 1, 1),
+                 (1024, 1024, 4, 1),
+                 (1024, 1024, 4, 2),
                  (1, 1024, 1, 1),
                  (1, 8192, 64, 1),
                  (1, 8192, 64, 2),
@@ -2996,7 +2941,7 @@ def get_fwd_test_cases(block_scaling: bool):
     for test in tests:
         seqlen_q, seqlen_k, num_q_heads, num_k_heads = test[3:7]
         if seqlen_q == seqlen_k:
-            # MHA Prefill
+            # MHA/GQA Prefill
             param.append((*test, *configs["4warp_128x128_loop"]))
             param.append((*test, *configs["4warp_128x128_pipeline"]))
             param.append((*test, *configs["4warp_256x128_pipeline"]))

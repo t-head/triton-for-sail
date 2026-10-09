@@ -205,7 +205,7 @@ struct ConvertLayoutOpSwizzlingConversion
       } else if (isBlockSync) {
         targetInfo.barrier(loc, rewriter, triton::gpu::AddrSpace::Local);
       } else {
-        targetInfo.clusterBarrier(loc, rewriter);
+        targetInfo.clusterBarrier(loc, rewriter, /*sourceOp=*/nullptr);
       }
     };
     auto dropBlock = [&](const LinearLayout &cvt) {

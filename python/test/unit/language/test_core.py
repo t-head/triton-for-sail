@@ -38,7 +38,6 @@ from triton._internal_testing import (
     is_hip_rdna4,
     is_hip_gfx1250,
     is_xpu,
-    get_arch,
     torch_float8_dtypes,
     torch_dtypes,
     numpy_random,
@@ -555,6 +554,29 @@ def test_shift_op(dtype_x, dtype_y, op, num_ctas, device):
     _test_binary(dtype_x, dtype_y, expr, numpy_expr, device=device, num_ctas=num_ctas, y_low=0, y_high=bw)
 
 
+@pytest.mark.interpreter
+def test_interpreter_ashr_does_not_mutate_uint64_rhs(device):
+
+    @triton.jit
+    def kernel(Z, X, Y, BLOCK: tl.constexpr):
+        off = tl.arange(0, BLOCK)
+        x = tl.load(X + off)
+        y = tl.load(Y + off)
+        _ = x >> y
+        z = y + (1 << 63)
+        tl.store(Z + off, z)
+
+    x = np.array([-1, -8, -(1 << 62), 2], dtype=np.int64)
+    y = np.array([0, 1, 63, 1], dtype=np.uint64)
+    z = np.empty_like(y)
+
+    z_tri = to_triton(z, device=device, dst_type="uint64")
+    x_tri = to_triton(x, device=device)
+    y_tri = to_triton(y, device=device, dst_type="uint64")
+    kernel[(1, )](z_tri, x_tri, y_tri, BLOCK=y.size)
+    np.testing.assert_equal(to_numpy(z_tri), y + np.uint64(1 << 63))
+
+
 # ---------------
 # test compare ops
 # ---------------
@@ -915,6 +937,25 @@ def test_unary_op(dtype_x, expr, num_ctas, device):
     _test_unary(dtype_x, expr, device=device, num_ctas=num_ctas)
 
 
+@triton.jit
+def _neg_signed_zero_kernel(x_ptr, y_ptr):
+    offsets = tl.arange(0, 2)
+    x = tl.load(x_ptr + offsets)
+    tl.store(y_ptr + offsets, -x)
+
+
+@pytest.mark.interpreter
+def test_neg_preserves_signed_zero(device):
+    x = np.array([0.0, -0.0], dtype=np.float32)
+    y = np.empty_like(x)
+    x_tri = to_triton(x, device=device)
+    y_tri = to_triton(y, device=device)
+
+    _neg_signed_zero_kernel[(1, )](x_tri, y_tri)
+
+    np.testing.assert_array_equal(np.signbit(to_numpy(y_tri)), np.array([True, False]))
+
+
 # ----------------
 # test math ops
 # ----------------
@@ -1021,11 +1062,34 @@ def test_precise_math(expr_prec, expr_ref, num_ctas, device):
     kernel = patch_kernel(kernel, {'PREC_CALC': expr_prec, 'REF_CALC': expr_ref})
 
     kernel[(1, )](x, y, out, out_ref, BLOCK=shape[0], num_ctas=num_ctas)
-    if expr_prec.count('sqrt') > 0 and is_ppu():
-        # PPU0010 only supports "sqrt.f32"; "sqrt.f64" is approximated.
+    if expr_prec.count('sqrt') > 0 and is_ppu() and torch.cuda.get_device_capability() < (9, 0):
+        # PPU 1.x approximates f64 sqrt through its f32 instruction.
         torch.testing.assert_close(out, out_ref)
     else:
         assert torch.all(out == out_ref)  # bitwise exact
+
+
+@pytest.mark.interpreter
+def test_fdiv_ieee_rounding(device):
+
+    @triton.jit
+    def kernel(X, Y, OUT_IEEE, OUT_RN, BLOCK: tl.constexpr):
+        offs = tl.arange(0, BLOCK)
+        x = tl.load(X + offs)
+        y = tl.load(Y + offs)
+        ieee = tl.math.fdiv(x, y, ieee_rounding=True)
+        rn = tl.math.div_rn(x, y)
+        tl.store(OUT_IEEE + offs, ieee)
+        tl.store(OUT_RN + offs, rn)
+
+    shape = (128, )
+    x = torch.randn(shape, dtype=torch.float32, device=device)
+    y = torch.randn(shape, dtype=torch.float32, device=device) + 1e-6
+    out_ieee = torch.zeros(shape, dtype=torch.float32, device=device)
+    out_rn = torch.zeros(shape, dtype=torch.float32, device=device)
+
+    kernel[(1, )](x, y, out_ieee, out_rn, BLOCK=shape[0], num_ctas=1)
+    assert torch.all(out_ieee == out_rn)  # bitwise exact
 
 
 # ----------------
@@ -1293,6 +1357,30 @@ def test_noinline(mode, device):
     elif mode == "shared":
         ref = torch.full((16, 16), 16, device=device, dtype=torch.float32)
         assert torch.equal(z, ref + x + y)
+
+
+@triton.jit(noinline=True)
+def noinline_load_block_fn(ptr, BLOCK_SIZE: tl.constexpr):
+    offsets = tl.arange(0, BLOCK_SIZE)
+    return tl.load(ptr + offsets)
+
+
+def test_noinline_returns_tensor(device):
+
+    @triton.jit
+    def kernel(X, Y, Z, BLOCK_SIZE: tl.constexpr):
+        x = noinline_load_block_fn(X, BLOCK_SIZE)
+        y = noinline_load_block_fn(Y, BLOCK_SIZE)
+        offsets = tl.arange(0, BLOCK_SIZE)
+        tl.store(Z + offsets, x + y)
+
+    BLOCK_SIZE = 128
+    torch.manual_seed(0)
+    x = torch.randn(BLOCK_SIZE, device=device, dtype=torch.float32)
+    y = torch.randn(BLOCK_SIZE, device=device, dtype=torch.float32)
+    z = torch.empty_like(x)
+    kernel[(1, )](x, y, z, BLOCK_SIZE=BLOCK_SIZE, num_warps=1)
+    assert torch.equal(z, x + y)
 
 
 # ---------------
@@ -1673,6 +1761,44 @@ def test_atomic_cas(sem, num_ctas, dtype_str, device):
     if not is_cuda():
         return
     assert f"atom.global.{sem_str}" in h.asm["ptx"]
+
+
+@pytest.mark.skipif(not is_cuda() or torch.cuda.get_device_capability()[0] < 9,
+                    reason="num_ctas > 1 requires NVIDIA SM90+ (Hopper)")
+def test_scalar_atomic_cas_multicta_result(device):
+
+    @triton.jit
+    def kernel(lock, output, BLOCK_SIZE: tl.constexpr):
+        old = tl.atomic_cas(lock, 0, 1)
+        offsets = tl.arange(0, BLOCK_SIZE)
+        tl.store(output + offsets, old)
+
+    block_size = 512
+    lock = torch.full((1, ), 7, device=device, dtype=torch.int32)
+    output = torch.empty((block_size, ), device=device, dtype=torch.int32)
+    kernel[(1, )](lock, output, BLOCK_SIZE=block_size, num_ctas=4)
+    torch.testing.assert_close(output, torch.full_like(output, 7))
+
+
+@pytest.mark.skipif(not is_cuda() or torch.cuda.get_device_capability()[0] < 9,
+                    reason="num_ctas > 1 requires NVIDIA SM90+ (Hopper)")
+@pytest.mark.parametrize("size", [1, 4, 16, 128, 512])
+def test_tensor_atomic_cas_multicta_result(size, device):
+
+    @triton.jit
+    def kernel(lock, output, SIZE: tl.constexpr):
+        offsets = tl.arange(0, SIZE)
+        old = tl.atomic_cas(
+            lock + offsets,
+            tl.zeros((SIZE, ), tl.int32),
+            tl.full((SIZE, ), 1, tl.int32),
+        )
+        tl.store(output + offsets, old)
+
+    lock = torch.arange(7, size + 7, device=device, dtype=torch.int32)
+    output = torch.empty_like(lock)
+    kernel[(1, )](lock, output, SIZE=size, num_ctas=4)
+    torch.testing.assert_close(output, lock)
 
 
 @pytest.mark.interpreter
@@ -2317,6 +2443,114 @@ def test_max_min_with_nan(device):
 
     min_kernel[(1, )](x, y, BLOCK_SIZE=BLOCK_SIZE)
     assert y[0] == float('-inf')
+
+
+@pytest.mark.interpreter
+def test_argmax_argmin_with_nan(device):
+    # In triton, argmax/argmin should also follow the "nan ignore" style,
+    # consistent with tl.max/tl.min. NaN should be skipped, returning the
+    # index of the largest/smallest finite value.
+    @triton.jit
+    def argmax_kernel(x_ptr, val_ptr, idx_ptr, N: tl.constexpr, BLOCK: tl.constexpr):
+        offsets = tl.arange(0, BLOCK)
+        mask = offsets < N
+        x = tl.load(x_ptr + offsets, mask=mask, other=-float("inf"))
+        val = tl.max(x, axis=0)
+        idx = tl.argmax(x, axis=0)
+        tl.store(val_ptr, val)
+        tl.store(idx_ptr, idx)
+
+    @triton.jit
+    def argmin_kernel(x_ptr, val_ptr, idx_ptr, N: tl.constexpr, BLOCK: tl.constexpr):
+        offsets = tl.arange(0, BLOCK)
+        mask = offsets < N
+        x = tl.load(x_ptr + offsets, mask=mask, other=float("inf"))
+        val = tl.min(x, axis=0)
+        idx = tl.argmin(x, axis=0)
+        tl.store(val_ptr, val)
+        tl.store(idx_ptr, idx)
+
+    # argmax: [nan, 6, 8] -> max=8.0, argmax=2
+    x = torch.tensor([float("nan"), 6.0, 8.0], dtype=torch.float32, device=device)
+    val = torch.empty((), dtype=torch.float32, device=device)
+    idx = torch.empty((), dtype=torch.int32, device=device)
+    argmax_kernel[(1, )](x, val, idx, N=3, BLOCK=4)
+    assert val.item() == 8.0, f"expected 8.0, got {val.item()}"
+    assert idx.item() == 2, f"expected 2, got {idx.item()}"
+
+    # argmin: [nan, 6, 8] -> min=6.0, argmin=1
+    val.zero_()
+    idx.zero_()
+    argmin_kernel[(1, )](x, val, idx, N=3, BLOCK=4)
+    assert val.item() == 6.0, f"expected 6.0, got {val.item()}"
+    assert idx.item() == 1, f"expected 1, got {idx.item()}"
+
+    # argmax: NaN at end [3, 5, nan] -> max=5.0, argmax=1
+    x_nan_end = torch.tensor([3.0, 5.0, float("nan")], dtype=torch.float32, device=device)
+    val.zero_()
+    idx.zero_()
+    argmax_kernel[(1, )](x_nan_end, val, idx, N=3, BLOCK=4)
+    assert val.item() == 5.0, f"expected 5.0, got {val.item()}"
+    assert idx.item() == 1, f"expected 1, got {idx.item()}"
+
+
+@pytest.mark.interpreter
+def test_argmax_argmin_tie_break_fast_with_nan(device):
+    # tl.argmax/argmin with tie_break_left=False should also ignore NaN,
+    # consistent with the tie_break_left=True behaviour and JIT hardware
+    # semantics (fmaxf/fminf treat NaN as missing values).
+    # Regression test for: https://github.com/triton-lang/triton/issues/10697
+    @triton.jit
+    def argmax_fast_kernel(x_ptr, val_ptr, idx_ptr, N: tl.constexpr, BLOCK: tl.constexpr):
+        offsets = tl.arange(0, BLOCK)
+        mask = offsets < N
+        x = tl.load(x_ptr + offsets, mask=mask, other=-float("inf"))
+        val = tl.max(x, axis=0)
+        idx = tl.argmax(x, axis=0, tie_break_left=False)
+        tl.store(val_ptr, val)
+        tl.store(idx_ptr, idx)
+
+    @triton.jit
+    def argmin_fast_kernel(x_ptr, val_ptr, idx_ptr, N: tl.constexpr, BLOCK: tl.constexpr):
+        offsets = tl.arange(0, BLOCK)
+        mask = offsets < N
+        x = tl.load(x_ptr + offsets, mask=mask, other=float("inf"))
+        val = tl.min(x, axis=0)
+        idx = tl.argmin(x, axis=0, tie_break_left=False)
+        tl.store(val_ptr, val)
+        tl.store(idx_ptr, idx)
+
+    val = torch.empty((), dtype=torch.float32, device=device)
+    idx = torch.empty((), dtype=torch.int32, device=device)
+
+    # argmax: [nan, 6, 8] -> max=8.0, argmax=2
+    x = torch.tensor([float("nan"), 6.0, 8.0], dtype=torch.float32, device=device)
+    argmax_fast_kernel[(1, )](x, val, idx, N=3, BLOCK=4)
+    assert val.item() == 8.0, f"expected 8.0, got {val.item()}"
+    assert idx.item() == 2, f"expected 2, got {idx.item()}"
+
+    # argmin: [nan, 6, 8] -> min=6.0, argmin=1
+    val.zero_()
+    idx.zero_()
+    argmin_fast_kernel[(1, )](x, val, idx, N=3, BLOCK=4)
+    assert val.item() == 6.0, f"expected 6.0, got {val.item()}"
+    assert idx.item() == 1, f"expected 1, got {idx.item()}"
+
+    # argmax: NaN at end [3, 5, nan] -> max=5.0, argmax=1
+    x_nan_end = torch.tensor([3.0, 5.0, float("nan")], dtype=torch.float32, device=device)
+    val.zero_()
+    idx.zero_()
+    argmax_fast_kernel[(1, )](x_nan_end, val, idx, N=3, BLOCK=4)
+    assert val.item() == 5.0, f"expected 5.0, got {val.item()}"
+    assert idx.item() == 1, f"expected 1, got {idx.item()}"
+
+    # argmin: NaN in middle [3, nan, 1] -> min=1.0, argmin=2
+    x_nan_mid = torch.tensor([3.0, float("nan"), 1.0], dtype=torch.float32, device=device)
+    val.zero_()
+    idx.zero_()
+    argmin_fast_kernel[(1, )](x_nan_mid, val, idx, N=3, BLOCK=4)
+    assert val.item() == 1.0, f"expected 1.0, got {val.item()}"
+    assert idx.item() == 2, f"expected 2, got {idx.item()}"
 
 
 def get_reduced_dtype(dtype_str, op):
@@ -3153,6 +3387,12 @@ def get_test_dot_base_cases():
 
 
 # M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dtype, out_dtype, kpack, mma_nonk_size
+def get_test_dot_small_fp64_cases():
+    return [(*shape, 1, False, False, 'none', 'ieee', 'float64', 'float64', 1, None)
+            for shape in [(8, 8, 4), (8, 8, 8), (16, 8, 4), (8, 8, 16)]]
+
+
+# M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dtype, out_dtype, kpack, mma_nonk_size
 def get_test_dot_softmax():
     return [(128, 128, 64, 8, False, False, 'softmax', 'ieee', 'float16', 'float32', 1, None)]
 
@@ -3226,6 +3466,21 @@ def get_test_dot_small_mn_mfma_cases():
             for in_dtype, out_dtype in [('float16', 'float16'), ('float32', 'float32')]]
 
 
+# M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dtype,
+# out_dtype, kpack, mma_nonk_size
+def get_test_dot_kpack_kwidth_mfma_cases():
+    if not is_hip_cdna():
+        return []
+    return [
+        # Small K with kpack=2 forces the kPack guard for symmetric MFMA shapes.
+        (64, 64, 16, 4, False, False, 'None', 'ieee', 'float16', 'float32', 2, 16),
+        (64, 64, 16, 4, False, False, 'None', 'ieee', 'bfloat16', 'float32', 2, 16),
+        # Asymmetric 64x4 / 4x64 MFMA shapes with kpack=2.
+        (64, 4, 32, 1, False, False, 'None', 'ieee', 'float32', 'float32', 2, None),
+        (4, 64, 32, 1, False, False, 'None', 'ieee', 'float32', 'float32', 2, None),
+    ]
+
+
 def get_test_dot_double_rate_cases():
     if not (is_hip_cdna() or is_hip_gfx1250()):
         return []
@@ -3242,11 +3497,29 @@ def get_test_dot_vdot2_cases():
             (4, 32, 32, 4, False, False, 'None', 'ieee', 'bfloat16', 'float32', 1, None)]
 
 
+def get_test_dot_small_mn_wmma_cases():
+    if not is_hip_gfx1250():
+        return []
+    return [(*shape_nw, False, False, 'none', 'ieee', 'float16', 'float32', 1, None)
+            for shape_nw in [(8, 8, 32, 1), (8, 32, 32, 1), (32, 8, 32, 1)]]
+
+
+def get_test_dot_small_k_wmma_cases():
+    if not is_hip_gfx1250():
+        return []
+    return [(16, 64, k_size, 4, False, False, 'none', 'ieee', 'float32', 'float32', 1, None) for k_size in [2]] + \
+           [(16, 64, k_size, 4, False, False, 'none', 'ieee', 'float16', 'float32', 1, None) for k_size in [2, 4, 8, 16, 32]] + \
+           [(16, 64, k_size, 4, False, False, 'none', 'ieee', 'float8e5', 'float32', 1, None) for k_size in [2, 4, 8, 16, 32, 64]]
+
+
 def get_test_small_dots_cases():
     if not (is_cuda() or is_ppu()):
         return []
     return [(2, 4, 32, 1, False, False, 'None', 'ieee', 'float16', 'float32', 1, None),
-            (1, 2, 32, 1, False, False, 'None', 'ieee', 'float8e5', 'float32', 1, None)]
+            (1, 2, 32, 1, False, False, 'None', 'ieee', 'float8e5', 'float32', 1, None),
+            # N=8: TF32 K=8 (wgmma.m64n8k8, sm90+) and FP16 K=16 (wgmma.m64n8k16)
+            (64, 8, 8, 4, False, False, 'None', 'tf32', 'float32', 'float32', 1, None),
+            (64, 8, 16, 4, False, False, 'None', 'ieee', 'float16', 'float32', 1, None)]
 
 
 @pytest.mark.interpreter
@@ -3262,8 +3535,12 @@ def get_test_small_dots_cases():
     get_test_dot_fp8_output_cases() + \
     get_test_dot_small_k_mfma_cases() + \
     get_test_dot_small_mn_mfma_cases() + \
+    get_test_dot_kpack_kwidth_mfma_cases() + \
+    get_test_dot_small_mn_wmma_cases() + \
+    get_test_dot_small_k_wmma_cases() + \
     get_test_dot_softmax() + \
-    get_test_small_dots_cases())
+    get_test_small_dots_cases() + \
+    get_test_dot_small_fp64_cases())
 @pytest.mark.parametrize("num_ctas", num_ctas_list)
 def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dtype, out_dtype, kpack, mma_nonk_size,
              num_ctas, device):
@@ -3274,7 +3551,9 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
             pytest.skip(f"input_precision {input_precision} is not supported in the interpreter")
     else:
         if not is_hip() and K < 16:
-            pytest.skip("small dots are supported only on HIP at the moment")
+            tf32_n8 = (in_dtype == 'float32' and N == 8 and K == 8 and input_precision == 'tf32')
+            if is_ppu() or (in_dtype != 'float64' and not tf32_n8):
+                pytest.skip("small dots are supported only on HIP at the moment")
         if is_cuda() or is_ppu():
             capability = torch.cuda.get_device_capability()
 
@@ -3475,12 +3754,15 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
     # make sure ld/st are vectorized
     ptx = pgm.asm['ptx']
 
-    if (K > 16 or N > 16 or M > 16) and (M * N // (num_warps * 32) >= 4):
-        # XXX: skip small sizes because they are not vectorized
+    # XXX: skip small sizes because they are not vectorized; with runtime
+    # strides, v4 needs the contiguous dim >= 16 (K for loads, N for stores).
+    enough_work = (M * N // (num_warps * 32) >= 4) and (K > 16 or N > 16 or M > 16)
+    if enough_work and K >= 16:
         if 'float64' in in_dtype:
             assert 'ld.global.v2.b64' in ptx
         else:
             assert 'ld.global.v4' in ptx
+    if enough_work and N >= 16:
         if 'float8' in in_dtype:
             assert 'st.global.v2' in ptx
         elif 'float64' in in_dtype:
@@ -3515,7 +3797,7 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
         else:
             assert re.search(r'[mma|wgmma.mma_async].sync.aligned.m\d+n\d+k16(?:.row.col)?.f16.f16.f16', ptx)
     elif in_dtype == 'int8':
-        if is_tcgen5 and capability[0:2] != (10, 3):
+        if is_tcgen5 and capability[1] not in (3, 7):
             assert re.search(r'tcgen05.mma.cta_group::1.kind::i8', ptx)
         elif capability[0] == 7 and capability[1] == 5:  # Turing
             assert 'mma.sync.aligned.m8n8k16.row.col.satfinite.s32.s8.s8.s32' in ptx
@@ -3538,6 +3820,7 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
         assert re.search(pattern, ptx, flags=re.DOTALL)
 
 
+@pytest.mark.interpreter
 @pytest.mark.parametrize("M, N, K, col_a, col_b, rhs_scale, mxfp_type, normal_type, num_warps, mma, kpack",
                          [(M, N, K, col_a, col_b, rhs_scale, mxfp_type, normal_type, 4, mma, kpack)
                           for M, N, K in itertools.product([32, 64, 128], [32, 64, 128], [64, 128])
@@ -3548,6 +3831,9 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
                           for mma in (mma_nonk_sizes if is_hip() else [16])
                           for kpack in ([1, 2] if (is_hip() and not (is_hip_cdna4() or is_hip_gfx1250())) else [1])])
 def test_scaled_dot(M, N, K, col_a, col_b, rhs_scale, mxfp_type, normal_type, num_warps, mma, kpack, device):
+    if is_interpreter() and normal_type != "fp16":
+        pytest.skip("bfloat16 is not supported in the interpreter")
+
     is_SM120 = False
     if is_cuda() or is_ppu():
         cc = torch.cuda.get_device_capability()
@@ -3790,11 +4076,16 @@ def test_scaled_dot(M, N, K, col_a, col_b, rhs_scale, mxfp_type, normal_type, nu
     # CDNA2 devices use reduced precision fp16 and bf16 and flush input and output denormal values
     # to zero. Detailed info is at:
     # https://pytorch.org/docs/stable/notes/numerical_accuracy.html#reduced-precision-fp16-and-bf16-gemms-and-convolutions-on-amd-instinct-mi200-devices
-    large_tolerance = is_hip_cdna2() or (is_ppu() and mxfp_type == "e4m3" and normal_type == "e4m3")
+    large_tolerance = is_hip_cdna2()
+    if (is_ppu() and torch.cuda.get_device_capability() < (9, 0) and mxfp_type == "e4m3"
+            and normal_type == "e4m3"):
+        large_tolerance = True
     # For e4m3, RDNA3 can slightly exceed the default tolerances in isolated cases
     if is_hip_rdna3() and mxfp_type == "e4m3" and normal_type == "fp16":
         large_tolerance = True
     if is_SM120:
+        large_tolerance = True
+    if mxfp_type == 'e4m3' and is_interpreter():
         large_tolerance = True
     atol = 2e-4 if large_tolerance else 1e-5
     rtol = 2e-2 if large_tolerance else 1e-2
@@ -4290,7 +4581,7 @@ def test_masked_load_shared_memory(dtype, device):
 
 
 @pytest.mark.interpreter
-@pytest.mark.parametrize("cache", ["", ".ca", ".cg", ".cv"])
+@pytest.mark.parametrize("cache", ["", ".ca", ".cg", ".cs", ".cv"])
 def test_load_cache_modifier(cache, device):
     src = torch.empty(128, device=device)
     dst = torch.empty(128, device=device)
@@ -4304,34 +4595,77 @@ def test_load_cache_modifier(cache, device):
     pgm = _kernel[(1, )](dst, src, CACHE=cache)
 
     if is_hip():
-        target_arch = get_arch()
-        # TODO: support testing for remaining architectures
-        if 'gfx94' not in target_arch:
-            return
         amdgcn = pgm.asm['amdgcn']
-        cg_cache_modifier_str = 'nt'
-        cv_cache_modifier_str = 'sc0 sc1'
         buffer_load_line = [line for line in amdgcn.splitlines() if "buffer_load" in line]
         global_load_line = [line for line in amdgcn.splitlines() if "global_load" in line]
-        load_line = global_load_line[0] if global_load_line else buffer_load_line[0]
-        if cache == '' or cache == '.ca':
-            assert cg_cache_modifier_str not in load_line
-        if cache == '.cg':
-            assert cg_cache_modifier_str in load_line
-        if cache == '.cv':
-            assert cv_cache_modifier_str in load_line
+        compiled_cache_modifiers = "invalid"
+        expected_cache_modifiers = {}
+        if is_hip_cdna() or is_hip_cdna2():
+            # cache modifiers are not properly supported on CDNA1 and CDNA2, just check that kernel runs
+            return
+        if buffer_load_line:
+            # ", [0-9a-z]" matches last operand, which is expected to be constant
+            # (offen)? matches an optional flag, the rest is expected to be cache related flags
+            m = re.match(".*, [0-9a-z]* (offen)? *(.*)$", buffer_load_line[0])
+            compiled_cache_modifiers = m.group(2)
+            if is_hip_cdna():
+                expected_cache_modifiers = {"": "", \
+                                            ".ca": "", \
+                                            ".cg": "sc0 nt", \
+                                            ".cs": "sc0 nt", \
+                                            ".cv": "sc0 sc1"}
+            elif is_hip_rdna3():
+                expected_cache_modifiers = {"": "", \
+                                            ".ca": "", \
+                                            ".cg": "glc", \
+                                            ".cs": "glc slc dlc", \
+                                            ".cv": "glc slc dlc"}
+            elif is_hip_rdna4() or is_hip_gfx1250():
+                expected_cache_modifiers = {"": "", \
+                                            ".ca": "", \
+                                            ".cg": "scope:SCOPE_DEV", \
+                                            ".cs": "th:TH_LOAD_NT", \
+                                            ".cv": "th:TH_LOAD_BYPASS scope:SCOPE_SYS"}
+        else:
+            assert global_load_line
+            # .*, [0-9a-z\[\]:]* matches last operand
+            # (scale_offset)? optional flag, the reset is expected to be cache flags
+            m = re.match(".*, [0-9a-z\\[\\]:]*( scale_offset)? *(.*)$", global_load_line[0])
+            compiled_cache_modifiers = m.group(2)
+
+            if is_hip_cdna():
+                expected_cache_modifiers = {"": "", \
+                                            ".ca": "", \
+                                            ".cg": "nt", \
+                                            ".cs": "nt", \
+                                            ".cv": "sc0 sc1"}
+            elif is_hip_rdna3():
+                expected_cache_modifiers = {"": "", \
+                                            ".ca": "", \
+                                            ".cg": "slc dlc", \
+                                            ".cs": "slc dlc", \
+                                            ".cv": "glc dlc"}
+            elif is_hip_rdna4() or is_hip_gfx1250():
+                expected_cache_modifiers = {"": "", \
+                                            ".ca": "", \
+                                            ".cg": "th:TH_LOAD_NT", \
+                                            ".cs": "th:TH_LOAD_NT", \
+                                            ".cv": "th:TH_LOAD_NT scope:SCOPE_SYS"}
+        for cache_mod in expected_cache_modifiers:
+            if cache_mod == cache:
+                assert compiled_cache_modifiers == expected_cache_modifiers[cache_mod]
+            else:
+                assert compiled_cache_modifiers != expected_cache_modifiers[cache_mod] or expected_cache_modifiers[
+                    cache_mod] == expected_cache_modifiers[cache]
 
     if is_cuda():
         ptx = pgm.asm['ptx']
-        if cache == '':
-            assert 'ld.global.ca' not in ptx
-            assert 'ld.global.cg' not in ptx
-        if cache == '.cg':
-            assert 'ld.global.cg' in ptx
-            assert 'ld.global.ca' not in ptx
-        if cache == '.ca':
-            assert 'ld.global.ca' in ptx
-            assert 'ld.global.cg' not in ptx
+        all_modifiers = ['.ca', '.cg', '.cs', '.cv']
+        for modifier in all_modifiers:
+            if modifier == cache:
+                assert f'ld.global{modifier}' in ptx
+            else:
+                assert f'ld.global{modifier}' not in ptx
 
 
 @pytest.mark.interpreter
@@ -4432,53 +4766,81 @@ def test_store_cache_modifier(cache, device):
     pgm = _kernel[(1, )](dst, src, CACHE=cache)
 
     if is_hip():
-        target_arch = get_arch()
-        # TODO: support testing for remaining architectures
-        if 'gfx94' not in target_arch:
-            return
         amdgcn = pgm.asm['amdgcn']
-        cs_cache_modifier_str = 'nt'
-        wt_cache_modifier_str = 'sc0 sc1'
+
         buffer_store_line = [line for line in amdgcn.splitlines() if "buffer_store" in line]
         global_store_line = [line for line in amdgcn.splitlines() if "global_store" in line]
-        store_line = global_store_line[0] if global_store_line else buffer_store_line[0]
-        if cache == '' or cache == '.cg':
-            assert cs_cache_modifier_str not in store_line
-            assert wt_cache_modifier_str not in store_line
-        if cache == '.cs':
-            assert cs_cache_modifier_str in store_line
-            assert wt_cache_modifier_str not in store_line
-        if cache == '.wt':
-            assert cs_cache_modifier_str not in store_line
-            assert wt_cache_modifier_str in store_line
+        compiled_cache_modifiers = "invalid"
+        expected_cache_modifiers = {}
+        if is_hip_cdna() or is_hip_cdna2():
+            # cache modifiers are not properly supported on CDNA1 and CDNA2, just check that kernel runs
+            return
+        if buffer_store_line:
+            # ", [0-9a-z]" matches last operand, which is expected to be constant
+            # (offen)? matches an optional flag, the rest is expected to be cache related flags
+            m = re.match(".*, [0-9a-z]* (offen)? *(.*)$", buffer_store_line[0])
+            compiled_cache_modifiers = m.group(2)
+            if is_hip_cdna():
+                expected_cache_modifiers = {"": "", \
+                                            ".wb": "", \
+                                            ".cg": "", \
+                                            ".cs": "sc0 nt", \
+                                            ".wt": "sc0 sc1"}
+            elif is_hip_rdna3():
+                expected_cache_modifiers = {"": "", \
+                                            ".wb": "", \
+                                            ".cg": "", \
+                                            ".cs": "glc slc dlc", \
+                                            ".wt": "glc slc dlc"}
+            elif is_hip_rdna4() or is_hip_gfx1250():
+                expected_cache_modifiers = {"": "", \
+                                            ".wb": "", \
+                                            ".cg": "scope:SCOPE_DEV", \
+                                            ".cs": "th:TH_STORE_NT"}
+                if is_hip_rdna4():
+                    expected_cache_modifiers[".wt"] = "scope:SCOPE_SYS"
+                elif is_hip_gfx1250():
+                    expected_cache_modifiers[".wt"] = "th:TH_STORE_BYPASS scope:SCOPE_SYS"
+        else:
+            assert global_store_line
+            # .*, [0-9a-z\[\]:]* matches last operand
+            # (scale_offset)? optional flag, the reset is expected to be cache flags
+            m = re.match(".*, [0-9a-z\\[\\]:]*( scale_offset)? *(.*)$", global_store_line[0])
+            compiled_cache_modifiers = m.group(2)
+
+            if is_hip_cdna():
+                expected_cache_modifiers = {"": "", \
+                                            ".wb": "", \
+                                            ".cg": "", \
+                                            ".cs": "nt", \
+                                            ".wt": "sc0 sc1"}
+            elif is_hip_rdna3():
+                expected_cache_modifiers = {"": "", \
+                                            ".wb": "", \
+                                            ".cg": "", \
+                                            ".cs": "glc slc dlc", \
+                                            ".wt": "dlc"}
+            elif is_hip_rdna4() or is_hip_gfx1250():
+                expected_cache_modifiers = {"": "", \
+                                            ".wb": "", \
+                                            ".cg": "", \
+                                            ".cs": "th:TH_STORE_NT", \
+                                            ".wt": "th:TH_STORE_NT scope:SCOPE_SYS"}
+        for cache_mod in expected_cache_modifiers:
+            if cache_mod == cache:
+                assert compiled_cache_modifiers == expected_cache_modifiers[cache_mod]
+            else:
+                assert compiled_cache_modifiers != expected_cache_modifiers[cache_mod] or expected_cache_modifiers[
+                    cache_mod] == expected_cache_modifiers[cache]
 
     if is_cuda():
         ptx = pgm.asm['ptx']
-        if cache == '':
-            assert 'st.global.wb' not in ptx
-            assert 'st.global.cg' not in ptx
-            assert 'st.global.cs' not in ptx
-            assert 'st.global.wt' not in ptx
-        if cache == '.wb':
-            assert 'st.global.wb' in ptx
-            assert 'st.global.cg' not in ptx
-            assert 'st.global.cs' not in ptx
-            assert 'st.global.wt' not in ptx
-        if cache == '.cg':
-            assert 'st.global.wb' not in ptx
-            assert 'st.global.cg' in ptx
-            assert 'st.global.cs' not in ptx
-            assert 'st.global.wt' not in ptx
-        if cache == '.cs':
-            assert 'st.global.wb' not in ptx
-            assert 'st.global.cg' not in ptx
-            assert 'st.global.cs' in ptx
-            assert 'st.global.wt' not in ptx
-        if cache == '.wt':
-            assert 'st.global.wb' not in ptx
-            assert 'st.global.cg' not in ptx
-            assert 'st.global.cs' not in ptx
-            assert 'st.global.wt' in ptx
+        all_modifiers = ['.wb', '.cg', '.cs', '.wt']
+        for modifier in all_modifiers:
+            if modifier == cache:
+                assert f'st.global{modifier}' in ptx
+            else:
+                assert f'st.global{modifier}' not in ptx
 
 
 @pytest.mark.interpreter
@@ -5510,15 +5872,16 @@ def test_constexpr_assignment(literal, tensor_ty):
     def kernel(input_literal: tl.constexpr, tensor_type: tl.constexpr):
         patched_literal: tl.constexpr = PATCHED
         # Sanity checks
-        tl.static_assert(patched_literal.type == constexpr_type(PATCHED))
-        tl.static_assert(input_literal.type == constexpr_type(PATCHED))
+        tl.static_assert(patched_literal.type == (PATCHED).type)
+        tl.static_assert(input_literal.type == (PATCHED).type)
 
         assigned_literal: tl.constexpr = input_literal
-        tl.static_assert(assigned_literal.type == constexpr_type(PATCHED))
+        tl.static_assert(assigned_literal.type == (PATCHED).type)
         tl.static_assert(assigned_literal == patched_literal)
 
         if tensor_type is not None:
             assigned_variable = input_literal
+            tl.static_assert(input_literal.type == constexpr_type(PATCHED))
             tl.static_assert(assigned_variable.type == tensor_type)
 
     kernel_patched = patch_kernel(kernel, {'PATCHED': f"{literal}"})
@@ -5927,6 +6290,7 @@ def test_num_ctas_pre_sm90(device, fresh_knobs):
 # -----------------------
 
 
+@pytest.mark.interpreter
 @pytest.mark.parametrize("dtype", ['float16', 'float32'])
 @pytest.mark.parametrize("propagate_nan", ['NONE', 'ALL'])
 @pytest.mark.parametrize("func", ['minimum', 'maximum', 'clamp'])
@@ -6795,7 +7159,7 @@ def test_libdevice_rint(dtype_str, device):
     x0_np = np.random.uniform(iinfo32.min, iinfo32.max + 1, size)
     x1_np = np.random.uniform(iinfo64.min, iinfo64.max + 1, size)
     x2_np = np.array([-2.5, -1.5, -0.5, -0., 0., 0.5, 1.5, 2.5, float("inf"), -float("inf"), float("nan")])
-    x_np = np.concat((x0_np, x1_np, x2_np))
+    x_np = np.concatenate((x0_np, x1_np, x2_np)).astype(dtype_str)
     x_tri = to_triton(x_np, device=device, dst_type=dtype_str)
 
     @triton.jit

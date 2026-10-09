@@ -19,6 +19,7 @@ from triton._internal_testing import (
     is_hip,
     is_hip_cdna2,
     is_hip_cdna4,
+    is_ppu,
     supports_tma,
     supports_ws,
 )
@@ -174,7 +175,7 @@ def test_record(method, fresh_knobs, tmp_path: pathlib.Path):
 
     # check llir line info
     llir_lines = pgm.asm["llir"].splitlines()
-    clock_instr = "clock" if is_cuda() else "memtime"
+    clock_instr = "clock" if is_cuda() or is_ppu() else "memtime"
     clock_loc = None
     for line in llir_lines:
         if clock_instr not in line or "!dbg" not in line:
@@ -767,8 +768,12 @@ def test_overhead(tmp_path: pathlib.Path):
 
     session0_single_time, session0_loop_time = session_kernel_time("session0")
     session1_single_time, session1_loop_time = session_kernel_time("session1")
-    single_threshold = 1.2 if is_cuda() else 1.5
-    loop_threshold = 2.0 if is_cuda() else 3.0
+    if is_cuda():
+        single_threshold, loop_threshold = 1.2, 2.0
+    elif is_ppu():
+        single_threshold, loop_threshold = 2.0, 3.0
+    else:
+        single_threshold, loop_threshold = 1.5, 3.0
     assert session1_single_time / session0_single_time < single_threshold, "Simple kernel overhead too high"
     assert session1_loop_time / session0_loop_time < loop_threshold, "Loop kernel overhead too high"
 
@@ -983,7 +988,7 @@ def test_gluon_clc_profile(tmp_path: pathlib.Path, profile_data: str, file_suffi
                 y = gl.load(y_ptr + offsets, mask)
                 gl.store(out_ptr + offsets, x + y, mask)
 
-            clc.try_cancel(clc_result, clc_bar, multicast=True)
+            clc.try_cancel(clc_result, clc_bar)
             mbarrier.expect(clc_bar, 16)
             mbarrier.wait(clc_bar, phase)
 

@@ -6,6 +6,8 @@ Profile correctness tests involving GPU kernels should be placed in `test_profil
 
 import pytest
 import json
+import torch
+import triton
 import triton.profiler as proton
 import triton.profiler.metric as metric
 import pathlib
@@ -13,6 +15,7 @@ from types import SimpleNamespace
 from triton.profiler.hooks.hook import HookManager
 from triton.profiler.hooks.launch import LaunchHook
 from triton.profiler.hooks.instrumentation import InstrumentationHook
+from triton.profiler.metric import transform_tensor_metrics
 from triton._internal_testing import is_hip
 
 
@@ -39,6 +42,33 @@ def test_profile_single_session(tmp_path: pathlib.Path):
     assert session_id2 == session_id1 + 1
     assert pathlib.Path("test.hatchet").exists()
     pathlib.Path("test.hatchet").unlink()
+
+
+def test_roofline_scalar_metric_types():
+    scalar_metrics, tensor_metrics = transform_tensor_metrics({
+        "flops": 1,
+        "flops16": 2,
+        "flops32": [5, 6],
+        "flops64": torch.tensor([7, 8], dtype=torch.int64),
+        "bytes": 3.0,
+        "custom": 4,
+    })
+
+    assert tensor_metrics == {}
+    assert scalar_metrics["flops"] == 1.0
+    assert type(scalar_metrics["flops"]) is float
+    assert scalar_metrics["flops16"] == 2.0
+    assert type(scalar_metrics["flops16"]) is float
+    assert scalar_metrics["flops32"] == [5.0, 6.0]
+    assert scalar_metrics["flops64"] == [7.0, 8.0]
+    assert scalar_metrics["bytes"] == 3
+    assert type(scalar_metrics["bytes"]) is int
+    assert scalar_metrics["custom"] == 4
+    assert type(scalar_metrics["custom"]) is int
+
+    scalar_metrics, tensor_metrics = transform_tensor_metrics({"bytes": torch.tensor([9.0, 10.0])})
+    assert tensor_metrics == {}
+    assert scalar_metrics["bytes"] == [9, 10]
 
 
 def test_profile_multiple_sessions(tmp_path: pathlib.Path):
@@ -69,7 +99,7 @@ def test_profile_mode(tmp_path: pathlib.Path):
         try:
             proton.start(str(temp_file0.with_suffix("")), mode="pcsampling")
         except Exception as e:
-            assert "RoctracerProfiler: unsupported mode: pcsampling" in str(e)
+            assert "unsupported mode: pcsampling" in str(e)
         finally:
             proton.finalize()
     else:
@@ -529,3 +559,17 @@ def test_data_api(tmp_path: pathlib.Path):
     proton.data.clear(session_id, phase=2, clear_up_to_phase=True)
 
     proton.finalize()
+
+
+def test_ppu_uses_sdk_cupti_path(monkeypatch, fresh_knobs):
+    import importlib
+    import os
+
+    profile_module = importlib.import_module("triton.profiler.profile")
+    monkeypatch.setattr(profile_module, "is_ppu_device", lambda: True)
+    monkeypatch.setattr(triton.runtime.driver.active, "get_current_target", lambda: SimpleNamespace(arch=100))
+    fresh_knobs.proton.cupti_lib_dir = "/ppu/cupti"
+    fresh_knobs.proton.cupti_lib_blackwell_dir = "/nvidia/blackwell/cupti"
+    monkeypatch.delenv("TRITON_CUPTI_LIB_PATH", raising=False)
+    profile_module._check_env("cupti")
+    assert os.environ["TRITON_CUPTI_LIB_PATH"] == "/ppu/cupti"
