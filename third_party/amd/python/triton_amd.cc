@@ -1,6 +1,5 @@
 #include "Dialect/TritonAMDGPU/IR/Dialect.h"
 #include "TritonAMDGPUToLLVM/Passes.h"
-#include "TritonAMDGPUToLLVM/TargetUtils.h"
 #include "TritonAMDGPUTransforms/Passes.h"
 #include "amd/include/hipblas_instance.h"
 #include "amd/include/hipblas_types.h"
@@ -9,6 +8,7 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Target/LLVMIR/Dialect/ROCDL/ROCDLToLLVMIRTranslation.h"
 #include "passes.h"
+#include "triton/Dialect/TritonInstrument/Transforms/Passes.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/GlobalVariable.h"
@@ -30,7 +30,7 @@
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/SourceMgr.h"
-#include "llvm/TargetParser/TargetParser.h"
+#include "llvm/TargetParser/AMDGPUTargetParser.h"
 #include <array>
 #include <optional>
 #include <pybind11/pybind11.h>
@@ -54,17 +54,17 @@ void init_triton_amd_passes_ttgpuir(py::module &&m) {
         [](mlir::PassManager &pm, const std::string &arch, bool ftz) {
           pm.addPass(createConvertBuiltinFuncToLLVMPass(arch, ftz));
         });
-  m.def("insert_instruction_sched_hints", [](mlir::PassManager &pm,
-                                             const std::string &variant) {
-    pm.addPass(createTritonAMDGPUInsertInstructionSchedHintsPass(variant));
+  m.def("add_prepare_consan_captures", [](mlir::PassManager &pm) {
+    mlir::triton::instrument::TritonInstrumentPrepareConSanCapturesOptions
+        options;
+    options.target = "amd";
+    pm.addPass(
+        mlir::triton::instrument::createTritonInstrumentPrepareConSanCaptures(
+            options));
   });
-  m.def("lower_instruction_sched_hints",
-        [](mlir::PassManager &pm, const std::string &arch, int32_t numStages) {
-          pm.addPass(createTritonAMDGPULowerInstructionSchedHintsPass(
-              arch, numStages));
-        });
-  ADD_PASS_WRAPPER_0("add_allocate_shared_memory",
-                     mlir::triton::createAllocateAMDGPUSharedMemory);
+  ADD_PASS_OPTION_WRAPPER_1("add_allocate_shared_memory",
+                            mlir::triton::createAllocateAMDGPUSharedMemoryPass,
+                            const std::string &);
   ADD_PASS_OPTION_WRAPPER_3("add_accelerate_matmul",
                             mlir::createTritonAMDGPUAccelerateMatmul,
                             const std::string, int, int);
@@ -118,8 +118,11 @@ void init_triton_amd_passes_ttgpuir(py::module &&m) {
   ADD_PASS_OPTION_WRAPPER_1("add_update_async_wait_count",
                             mlir::createTritonAMDGPUUpdateAsyncWaitCount,
                             std::string);
+  ADD_PASS_WRAPPER_0("add_optimize_descriptor_encoding",
+                     mlir::createTritonAMDGPUOptimizeDescriptorEncoding);
   ADD_PASS_WRAPPER_0("add_convert_to_tensor_ops",
                      mlir::createTritonAMDGPUConvertToTensorOps);
+  mlir::registerConSanAMDHooks();
   m.def("add_in_thread_transpose", [](mlir::PassManager &pm) {
     pm.addNestedPass<mlir::triton::FuncOp>(
         mlir::createTritonAMDGPUInThreadTranspose());
@@ -327,7 +330,7 @@ static std::optional<std::string> lldInvoke(const char *inPath,
   std::array args{"ld.lld", "--threads=1", "-shared", inPath, "-o", outPath};
   std::string errString;
   llvm::raw_string_ostream errStream(errString);
-  auto lldRes = lld::lldMain(args, llvm::outs(), llvm::errs(),
+  auto lldRes = lld::lldMain(args, llvm::outs(), errStream,
                              {{lld::Gnu, &lld::elf::link}});
   bool noErrors = (!lldRes.retCode && lldRes.canRunAgain);
   if (!noErrors) {
@@ -447,8 +450,7 @@ void init_triton_amd(py::module &&m) {
         std::unique_ptr<llvm::MCSubtargetInfo> sti(
             target->createMCSubtargetInfo(triple, arch, features));
 
-        llvm::MCContext ctx(triple, mai.get(), mri.get(), sti.get(), &srcMgr,
-                            &mcOptions);
+        llvm::MCContext ctx(triple, *mai, *mri, *sti, &srcMgr);
         std::unique_ptr<llvm::MCObjectFileInfo> mofi(
             target->createMCObjectFileInfo(ctx, /*PIC=*/false,
                                            /*LargeCodeModel=*/false));
@@ -475,7 +477,7 @@ void init_triton_amd(py::module &&m) {
         std::unique_ptr<llvm::MCAsmParser> parser(
             createMCAsmParser(srcMgr, ctx, *mcStreamer, *mai));
         std::unique_ptr<llvm::MCTargetAsmParser> tap(
-            target->createMCAsmParser(*sti, *parser, *mcii, mcOptions));
+            target->createMCAsmParser(*sti, *parser, *mcii));
         if (!tap)
           throw std::runtime_error("assembler initializtion error");
 

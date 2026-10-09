@@ -35,6 +35,8 @@ public:
 
   bool supportMaximumMinimum() const override;
 
+  unsigned getReductionTreeArity(Operation *combinerOp) const override;
+
   Value getClusterCTAId(RewriterBase &rewriter, Location loc) const override;
 
   Value ballot(RewriterBase &rewriter, Location loc, Type type,
@@ -43,15 +45,15 @@ public:
   void barrier(Location loc, RewriterBase &rewriter,
                triton::gpu::AddrSpace targets) const override;
 
-  void clusterBarrier(Location loc, RewriterBase &rewriter) const override;
+  void clusterBarrier(Location loc, RewriterBase &rewriter,
+                      Operation *sourceOp) const override;
 
   void warpSync(Location loc, RewriterBase &rewriter) const override;
 
   void storeDShared(RewriterBase &rewriter, Location loc, Value ptr,
-                    std::optional<Value> ctaId, Value val,
-                    Value pred) const override;
+                    Value ctaId, Value val, Value pred) const override;
   Value loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
-                    std::optional<Value> ctaId, Type elemTy, Value pred,
+                    Value ctaId, Type elemTy, Value pred,
                     Operation *localLoadOp = nullptr) const override;
 
   bool supportLdMatrix() const override { return computeCapability >= 75; }

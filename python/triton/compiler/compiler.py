@@ -521,7 +521,7 @@ class CompiledKernel:
                 raise_(OutOfResources(self.metadata.shared, max_shared, "shared memory"))
             if hasattr(self.metadata, "tmem_size") and self.metadata.tmem_size is not None:
                 # Use blackwell max tmem size for now, this should be moved in device properties
-                max_tmem_size = 512  # tmem size in number of columns
+                max_tmem_size = 576 if self.metadata.target.arch == 107 else 512
                 if self.metadata.tmem_size > max_tmem_size:
                     raise_(OutOfResources(self.metadata.tmem_size, max_tmem_size, "tensor memory"))
             if knobs.runtime.kernel_load_start_hook is not None:

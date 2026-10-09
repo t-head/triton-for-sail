@@ -478,10 +478,12 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
   auto mmaType = getMmaType(op);
 
   const auto &mmaInstructions = mmaInstrTix;
-  auto rank = dTensorTy.getRank();
-  auto elemsPerThread = triton::gpu::getElemsPerThread(dTensorTy);
-  auto batchOffset =
-      elemsPerThread[rank - 2] * elemsPerThread[rank - 1] / numCPackedElem;
+  // The batch dim is the slowest-varying register dim of the mma layout, so
+  // each batch occupies a contiguous chunk of fc. Do not derive this from
+  // getElemsPerThread: when all the M/N register bases of the accumulator are
+  // broadcast (e.g. N smaller than the instruction N per thread), they are
+  // accounted to the batch dim and the stride would collapse to 1.
+  unsigned batchOffset = repBatch > 0 ? fc.size() / repBatch : fc.size();
   auto callMma = [&](unsigned b, unsigned m, unsigned n, unsigned k) {
     unsigned colsPerThread = repN * 4;
     mlir::triton::ppu::TIXBuilder builder;

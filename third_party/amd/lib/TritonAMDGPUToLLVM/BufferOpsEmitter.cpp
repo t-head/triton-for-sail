@@ -8,6 +8,7 @@
 #include "BufferOpsEmitter.h"
 
 using namespace triton::AMD;
+using mlir::triton::amdgpu::ISAFamily;
 
 namespace {
 
@@ -122,7 +123,7 @@ Value BufferEmitter::emitLoad(Type type, Value rsrcDesc, Value offset,
   return data;
 }
 
-ROCDL::RawPtrBufferLoadLdsOp
+ROCDL::RawPtrBufferLoadAsyncLdsOp
 BufferEmitter::emitLoadToLds(Type type, Value byteWidth, Value rsrcDesc,
                              Value offset, Value dst, Value pred,
                              triton::CacheModifier cm) {
@@ -130,8 +131,11 @@ BufferEmitter::emitLoadToLds(Type type, Value byteWidth, Value rsrcDesc,
   SmallVector<Value, 6> commonArgs;
   fillCommonArgs(type, rsrcDesc, offset, pred, cm, /*isBufferLoad=*/true,
                  commonArgs);
-  Type bufferType = getBufferOpType(type, false);
-  return ROCDL::RawPtrBufferLoadLdsOp::create(
+
+  // buffer_load_to_lds is only supported on gfx942/gfx950 which always use
+  // asyncmark. Emit the async intrinsic so LLVM's SIInsertWaitcnts tracks
+  // these operations via asyncmark/wait_asyncmark.
+  return ROCDL::RawPtrBufferLoadAsyncLdsOp::create(
       rewriter, loc, TypeRange{},
       ValueRange{
           commonArgs[0], // Buffer descriptor
@@ -141,8 +145,7 @@ BufferEmitter::emitLoadToLds(Type type, Value byteWidth, Value rsrcDesc,
           b.i32_val(0),  // LDS offset
           commonArgs[2], // Instruction offset
           commonArgs[3], // AUX
-      },
-      ArrayRef<NamedAttribute>());
+      });
 }
 
 Value BufferEmitter::emitAtomicCAS(Type type, Value rsrcDesc, Value offset,
@@ -187,6 +190,14 @@ Value BufferEmitter::emitAtomicRMW(RMWOp rmwType, Type type, Value rsrcDesc,
   //   LLVM verifier to fail. When this is fixed, the ROCDL ops should be used
   //   here.
   auto rmwOpStr = stringifyRMWOp(rmwType).str();
+  // RMWOp::MAX / MIN stringify to "max" / "min", which are not real AMDGPU
+  // buffer-atomic intrinsic suffixes. The valid suffixes are
+  // .{s,u,f}{max,min}. RMWOp::UMAX and RMWOp::UMIN already stringify to
+  // "umax" / "umin" and need no override.
+  if (rmwType == RMWOp::MAX || rmwType == RMWOp::MIN) {
+    StringRef prefix = isa<FloatType>(getElementTypeOrSelf(type)) ? "f" : "s";
+    rmwOpStr = (prefix + rmwOpStr).str();
+  }
   auto instrinsic = "llvm.amdgcn.raw.ptr.buffer.atomic." + rmwOpStr;
   auto bufferAtomicRMW = LLVM::createLLVMIntrinsicCallOp(
       rewriter, loc, instrinsic, bufferType, args);

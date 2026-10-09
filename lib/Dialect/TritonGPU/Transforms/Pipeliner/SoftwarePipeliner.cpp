@@ -16,7 +16,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/Schedule.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
-#include "triton/Tools/Sys/Dump.hpp"
+#include "triton/Tools/Sys/Dump.h"
 //===----------------------------------------------------------------------===//
 // This file will create a schedule that will be handed over to the pipeline
 // expander.
@@ -176,7 +176,10 @@ struct PipelinePass : public impl::TritonGPUPipelineBase<PipelinePass> {
     ModuleOp moduleOp = getOperation();
     // Transform the loop by introducing async operations to prepare it for
     // pipeline expansion.
-    lowerLoops(moduleOp);
+    if (failed(lowerLoops(moduleOp))) {
+      signalPassFailure();
+      return;
+    }
     if (dumpIntermediateSteps) {
       ::mlir::triton::tools::mlirDumpsOrDbgs()
           << "// -----// SoftwarePipeliner internal IR Dump After: LowerLoops\n"

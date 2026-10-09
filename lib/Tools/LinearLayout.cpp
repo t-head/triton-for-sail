@@ -797,6 +797,18 @@ bool LinearLayout::isTrivialOver(ArrayRef<StringAttr> dimNames) const {
          sublayoutIsZero(dimNames, remainingOutDimNames);
 }
 
+bool LinearLayout::isIdentityOnOutDim(StringAttr dim) const {
+  if (!hasInDim(dim) || !hasOutDim(dim))
+    return false;
+  SmallVector<StringAttr> otherInDims;
+  for (StringAttr inDim : getInDimNames()) {
+    if (inDim != dim)
+      otherInDims.push_back(inDim);
+  }
+  return squareSublayoutIsIdentity(*this, {dim}) &&
+         sublayoutIsZero(otherInDims, {dim});
+}
+
 std::optional<LinearLayout>
 LinearLayout::quotient(ArrayRef<StringAttr> dimNames) const {
   if (llvm::any_of(dimNames,
@@ -1061,9 +1073,11 @@ LinearLayout LinearLayout::invertAndCompose(const LinearLayout &outer) const {
   // this dimension.
   SmallVector<StringAttr> identityDims;
   for (auto dim : A.getInDimNames()) {
-    if (B.hasInDim(dim) &&
-        A.sublayout(dim, outDims) == B.sublayout(dim, outDims)) {
-      identityDims.push_back(dim);
+    if (B.hasInDim(dim)) {
+      auto aSub = A.sublayout(dim, outDims);
+      auto bSub = B.sublayout(dim, outDims);
+      if (aSub.equalIgnoringOutDimSizes(bSub))
+        identityDims.push_back(dim);
     }
   }
   SmallVector<StringAttr> ANonIdentityInDims;

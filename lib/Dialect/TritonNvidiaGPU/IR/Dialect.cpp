@@ -24,7 +24,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/TritonGPUInterfaces.h"
-#include "triton/Tools/Sys/GetEnv.hpp"
+#include "triton/Tools/Sys/GetEnv.h"
 
 #include <numeric>
 
@@ -49,7 +49,7 @@ namespace mlir {
 namespace triton {
 namespace nvidia_gpu {
 
-static constexpr int numTmemRows = 128;
+namespace {
 
 FailureOr<gpu::CGAEncodingAttr> parseCGALayoutRankTwo(AsmParser &parser) {
   Attribute attr;
@@ -62,6 +62,26 @@ FailureOr<gpu::CGAEncodingAttr> parseCGALayoutRankTwo(AsmParser &parser) {
 
 void printCGALayoutRankTwo(AsmPrinter &printer, gpu::CGAEncodingAttr cgaAttr) {
   gpu::printCGAAttr(printer, cgaAttr);
+}
+
+} // namespace
+
+TensorMemoryScalesBlockRepOrder getTensorMemoryScalesBlockRepOrder(
+    Operation *op, bool isA, ScaleDotElemType aType, ScaleDotElemType bType,
+    Type aScaleElemType, Type bScaleElemType) {
+  ModuleOp mod = op->getParentOfType<ModuleOp>();
+  auto targetAttr = mod->getAttrOfType<StringAttr>(gpu::AttrTargetName);
+  bool isRubin = targetAttr && targetAttr.getValue() == "cuda:107";
+  // Rubin NVFP4 uses different orders for A and B:
+  // A scales must advance along K before the next M tile, while B scales keep
+  // the default order that advances along N before the next K tile.
+  bool isRubinNVFP4xNVFP4 = isRubin && aType == ScaleDotElemType::E2M1 &&
+                            bType == ScaleDotElemType::E2M1 &&
+                            isa<Float8E4M3FNType>(aScaleElemType) &&
+                            isa<Float8E4M3FNType>(bScaleElemType);
+  return (isRubinNVFP4xNVFP4 && isA)
+             ? TensorMemoryScalesBlockRepOrder::K_THEN_MN
+             : TensorMemoryScalesBlockRepOrder::MN_THEN_K;
 }
 
 TMemAllocation getTmemAllocSizes(MemDescType memDescType) {
@@ -204,7 +224,9 @@ getDistributedLayoutForTmemLdSt(const LinearLayout &ll, TMemAccessAtom atom,
       // Software padding with just one column
       return getDistributedLayoutForTmemLdSt(ll, atom, numWarps, 32);
     } else {
-      assert(false && "Should not happen");
+      // This can fail for fp4_padded layouts as we don't support implicit
+      // padding and unpadding upon load yet.
+      return std::nullopt;
     }
   }
   // getTileLayout returns the layout for a bitwidth of 32
@@ -325,15 +347,6 @@ getDistributedLayoutForTmemLdSt(gpu::MemDescType memType, TMemAccessAtom atom,
 DistributedEncodingTrait getDefaultLayoutForTmemLdSt(gpu::MemDescType memType,
                                                      unsigned numWarps) {
   auto *ctx = memType.getContext();
-  bool prefer16x256 =
-      triton::tools::getBoolEnv("TRITON_PREFER_TMEM_16x256_LAYOUT");
-  if (prefer16x256) {
-    auto layout = getDistributedLayoutForTmemLdSt(
-        memType, TMemAccessAtom::I16x256b, numWarps);
-    if (layout) {
-      return LinearEncodingAttr::get(ctx, std::move(*layout));
-    }
-  }
   auto layout = getDistributedLayoutForTmemLdSt(
       memType, TMemAccessAtom::I32x32b, numWarps);
   assert(layout);
@@ -413,11 +426,10 @@ bool isDistributedLayoutTMemCompatible(Operation *op,
   return succeeded(computeTMemLdStEncodingInfo(tensorType, memType, maxnreg));
 }
 
-LogicalResult
-TensorMemoryEncodingAttr::verify(function_ref<InFlightDiagnostic()> emitError,
-                                 unsigned blockM, unsigned blockN,
-                                 unsigned colStride,
-                                 gpu::CGAEncodingAttr cgaLayout, bool twoCTAs) {
+LogicalResult TensorMemoryEncodingAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, unsigned blockM,
+    unsigned blockN, unsigned colStride, gpu::CGAEncodingAttr cgaLayout,
+    bool twoCTAs, bool fp4Padded) {
   if (cgaLayout.getRank() != 2) {
     return emitError() << "CGALayout must have rank 2";
   }
@@ -444,12 +456,17 @@ TensorMemoryEncodingAttr::verify(function_ref<InFlightDiagnostic()> emitError,
     return emitError() << "colStride must be 1, 2, or 4 but got "
                        << "but got " << colStride;
   }
+  if (fp4Padded && colStride != 1) {
+    return emitError() << "fp4Padded tensor memory layout requires colStride "
+                          "1 but got "
+                       << colStride;
+  }
   return success();
 }
 
 LogicalResult TensorMemoryScalesEncodingAttr::verify(
     function_ref<InFlightDiagnostic()> emitError,
-    gpu::CGAEncodingAttr cgaLayout) {
+    gpu::CGAEncodingAttr cgaLayout, TensorMemoryScalesBlockRepOrder) {
   if (cgaLayout.getRank() != 2) {
     return emitError() << "CGALayout must have rank 2";
   }
@@ -490,16 +507,57 @@ LogicalResult impl::verifyMMAv5Op(Operation *op) {
 #include "triton/Dialect/TritonNvidiaGPU/IR/Types.cpp.inc"
 
 //===----------------------------------------------------------------------===//
+// TensorDescIm2ColType Printer/Parser
+//===----------------------------------------------------------------------===//
+// Format: !ttng.tensordesc_im2col<64x128xf16>
+//         !ttng.tensordesc_im2col<64x128xf16, #shared>
+Type TensorDescIm2ColType::parse(AsmParser &parser) {
+  if (failed(parser.parseLess()))
+    return Type();
+
+  SmallVector<int64_t> shape;
+  if (failed(parser.parseDimensionList(shape, /*allowDynamic=*/false)))
+    return Type();
+
+  Type elementType;
+  if (failed(parser.parseType(elementType)))
+    return Type();
+
+  Attribute sharedLayout;
+  if (succeeded(parser.parseOptionalComma())) {
+    if (failed(parser.parseAttribute(sharedLayout)))
+      return Type();
+  }
+
+  if (failed(parser.parseGreater()))
+    return Type();
+
+  Location loc = parser.getEncodedSourceLoc(parser.getCurrentLocation());
+  return TensorDescIm2ColType::getChecked(loc, parser.getContext(), shape,
+                                          elementType, sharedLayout);
+}
+
+void TensorDescIm2ColType::print(AsmPrinter &printer) const {
+  printer << "<";
+  for (auto dim : getShape())
+    printer << dim << "x";
+  printer << getElementType();
+  if (getSharedLayout())
+    printer << ", " << getSharedLayout();
+  printer << ">";
+}
+
+//===----------------------------------------------------------------------===//
 // TensorDescIm2ColType Verifier
 //===----------------------------------------------------------------------===//
 LogicalResult
 TensorDescIm2ColType::verify(function_ref<InFlightDiagnostic()> emitError,
-                             RankedTensorType blockType) {
-  // blockType must be rank 2 for im2col mode
-  if (blockType.getRank() != 2) {
+                             ArrayRef<int64_t> shape, Type elementType,
+                             Attribute sharedLayout) {
+  if (shape.size() != 2) {
     return emitError()
-           << "TensorDescIm2ColType requires rank-2 blockType, got rank "
-           << blockType.getRank();
+           << "TensorDescIm2ColType requires rank-2 shape, got rank "
+           << shape.size();
   }
   return success();
 }
