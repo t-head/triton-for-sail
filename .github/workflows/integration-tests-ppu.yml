@@ -75,6 +75,7 @@ jobs:
             fi
             # Build and install Triton (editable install)
             export TRITON_IR_FORMATTER_PATH=$PPU_SDK/bin/llvm-irformatter
+            export MAX_JOBS=16
             pip install pybind11 setuptools==68.1.2
             pip install -e . -v || { echo "[FATAL] triton editable build failed"; exit 1; }
             # Verify the imported triton is the source-built editable one (resolves under /workspace/source)
