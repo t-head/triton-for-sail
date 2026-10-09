@@ -99,10 +99,15 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
             file_path=os.path.join(unit, "language", "test_subprocess.py"),
             extra_args=["--tb=short", "-n", "2"],
         ),
-        # 3) test_debug 需要进程隔离 (--forked)
+        # 3) test_debug — global --forked would fork the xdist worker after
+        #    the module-scoped process_pool fixture has already initialised
+        #    CUDA, causing "Cannot re-initialize CUDA in forked subprocess".
+        #    Without --forked, xdist (-n 2) is retained; most cases already
+        #    isolate via run_in_process (forkserver pool), while
+        #    test_static_assert runs in-process (compile-only, no device use).
         TestConfig(
             file_path=os.path.join(unit, "test_debug.py"),
-            extra_args=["--tb=short", "-n", "2", "--forked"],
+            extra_args=["--tb=short", "-n", "2"],
         ),
         # 4) line info 测试
         TestConfig(
