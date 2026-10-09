@@ -93,9 +93,17 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
     main_args = ["--tb=short", "-n", "2"]
     for rel in main_ignored:
         main_args.append(f"--ignore={os.path.join(unit, rel)}")
-    # CI 层函数级 deselect: 硬编码 SM90/参数缺失导致必然失败的用例
+    # CI 层函数级 deselect: 硬编码 SM90/参数缺失导致必然失败/跨后端不支持的用例
     main_args += [
         "--deselect", "python/test/unit/language/test_compile_only.py::test_fp8_compiles_for_multiple_architectures_cuda",
+        "--deselect", "python/test/unit/language/test_compile_only.py::test_fp8_compiles_for_multiple_architectures_hip",
+        "--deselect", "python/test/unit/test_knobs.py::test_nvidia_register_pressure_scheduler_hook[True]",
+        "--deselect", "python/test/unit/test_knobs.py::test_amd_llvm_options_concurrent",
+        "--deselect", "python/test/unit/test_knobs.py::test_amd_codegen_inlines_functions_from_bitcode",
+        "--deselect", "python/test/unit/test_knobs.py::test_amd_codegen_options_restored[dump_ir]",
+        "--deselect", "python/test/unit/test_knobs.py::test_amd_codegen_options_restored[enable_timing]",
+        "--deselect", "python/test/unit/test_knobs.py::test_amd_codegen_reports_invalid_llvm_ir",
+        "--deselect", "python/test/unit/test_knobs.py::test_amd_codegen_assembles_object_with_private_llvm",
         "--deselect", "python/test/unit/ppu/models/test_fla_dplr.py::test_chunk",
     ]
 

@@ -78,7 +78,7 @@ jobs:
             # Cap build parallelism for the PPU CI pod to avoid OOM during LLVM/C++ compile
             export MAX_JOBS=16
             # Skip unnecessary toolchain downloads
-            export TRITON_DOWNLOAD_NVIDIA_TOOLCHAIN=OFF
+            export TRITON_DOWNLOAD_BACKEND_TOOLCHAINS=OFF
             pip install -r python/requirements.txt
             pip install -e . --no-build-isolation -v || { echo "[FATAL] triton editable build failed"; exit 1; }
             # Verify the imported triton is the source-built editable one (resolves under /workspace/source)
