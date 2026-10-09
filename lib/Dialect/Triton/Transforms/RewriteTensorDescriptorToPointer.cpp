@@ -272,6 +272,21 @@ struct RewriteMakeTensorDesc : OpConversionPattern<triton::MakeTensorDescOp> {
   }
 };
 
+static bool hasSubtractionInChain(Value v, int depth = 0) {
+  if (depth > 10)
+    return false;
+  auto *defOp = v.getDefiningOp();
+  if (!defOp)
+    return false; // block arg (e.g. function param), not from subtraction
+  if (isa<arith::SubIOp>(defOp))
+    return true;
+  for (auto operand : defOp->getOperands()) {
+    if (hasSubtractionInChain(operand, depth + 1))
+      return true;
+  }
+  return false;
+}
+
 struct RewriteLoadPattern : OpConversionPattern<triton::DescriptorLoadOp> {
   using OpConversionPattern<triton::DescriptorLoadOp>::OpConversionPattern;
 
@@ -291,6 +306,22 @@ struct RewriteLoadPattern : OpConversionPattern<triton::DescriptorLoadOp> {
     auto other = generateOther(rewriter, loc, descTy, desc.paddingOption);
 
     if (isAIU) {
+      // Check if the last dimension index's computation chain contains a
+      // subtraction (arith.SubIOp). This is a heuristic to detect
+      // descending-order loop indices like (N - 1 - k) * BLOCK_K, which can
+      // produce negative offsets when the pipeliner pre-fetches beyond the loop
+      // bounds. ppu.cp.async.aiu requires start_c >= 0, so descriptor loads
+      // with potentially-negative offsets should not be converted to AIU loads.
+      bool hasDescendingIndex = hasSubtractionInChain(op.getIndices().back());
+      if (hasDescendingIndex) {
+        auto newLoad = rewriter.replaceOpWithNewOp<triton::LoadOp>(
+            op, generatePtr(rewriter, loc, blockShape, desc, offsets),
+            generateMask(rewriter, loc, blockShape, desc, offsets), other,
+            triton::CacheModifier::NONE, triton::EvictionPolicy::NORMAL, false);
+        newLoad->setAttrs(filterSegmentSizes(op->getAttrs()));
+        return llvm::success();
+      }
+
       // promote to use AIU to load
       assert(blockShape.size() == desc.shape.size());
       assert(blockShape.size() == offsets.size());
@@ -305,11 +336,23 @@ struct RewriteLoadPattern : OpConversionPattern<triton::DescriptorLoadOp> {
       }
 
       Value loadRes = op.getResult();
-      if (loadRes.hasOneUse() &&
-          dyn_cast<triton::TransOp>(loadRes.use_begin()->getOwner())) {
+
+      // Check if any user is a TransOp
+      bool hasTransUse = false;
+      for (auto &use : loadRes.getUses()) {
+        if (dyn_cast<triton::TransOp>(use.getOwner())) {
+          hasTransUse = true;
+          break;
+        }
+      }
+
+      bool hasSingleTransUse = loadRes.hasOneUse() && hasTransUse;
+      if (hasSingleTransUse) {
+        // The only use is a TransOp: fuse the transpose into the AIU load by
+        // reversing offsets/shape/order, so the AIU reads the transposed
+        // tile directly (no shared-memory transpose needed).
         auto TransOp =
             dyn_cast<triton::TransOp>(loadRes.use_begin()->getOwner());
-
         auto newLoad = rewriter.replaceOpWithNewOp<triton::AIULoadOp>(
             op, TransOp.getResult().getType(), desc.base,
             llvm::to_vector(llvm::reverse(i32Offsets)),
@@ -317,9 +360,10 @@ struct RewriteLoadPattern : OpConversionPattern<triton::DescriptorLoadOp> {
             llvm::to_vector(llvm::reverse(order)), triton::CacheModifier::NONE,
             triton::EvictionPolicy::NORMAL);
         newLoad->setAttrs(filterSegmentSizes(op->getAttrs()));
-
         TransOp.replaceAllUsesWith(newLoad.getResult());
       } else {
+        // Normal AIU load (including multi-use with TransOp: the TransOp is
+        // handled downstream by memdesc_trans on the same shared buffer).
         auto newLoad = rewriter.replaceOpWithNewOp<triton::AIULoadOp>(
             op, op.getResult().getType(), desc.base, i32Offsets, desc.shape,
             order, triton::CacheModifier::NONE, triton::EvictionPolicy::NORMAL);
