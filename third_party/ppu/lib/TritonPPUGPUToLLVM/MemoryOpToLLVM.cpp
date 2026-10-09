@@ -306,15 +306,17 @@ LogicalResult lowerPPULdMatrix(
                      ? i32_ty
                      : static_cast<Type>(LLVM::LLVMStructType::getLiteral(
                            ctx, SmallVector<Type>(nVecs, i32_ty)));
-    Value res = rewriter
+    auto ldmatrixOp = rewriter
                     .create<triton::ppugpu::PPULoadMatrixOp>(
                         loc, matTy, vecAddr,
-                        /*needTrans=*/transpose, Opb8bLdmatrix)
-                    .getResult();
+                        /*needTrans=*/transpose, Opb8bLdmatrix);
+    if (isPPU0015)
+      ldmatrixOp->setAttr("is_0015", rewriter.getUnitAttr());
+    Value res = ldmatrixOp.getResult();
 
     // Extract result into srcVals
     bool needExchange = false;
-    if (isPPU0015 && dotEnc && dotEnc.getOpIdx() == (transpose ? 0 : 1)) {
+    if (isPPU0015 && dotEnc && dotEnc.getOpIdx() == 1) {
       needExchange = true;
     }
     if (needExchange) {
