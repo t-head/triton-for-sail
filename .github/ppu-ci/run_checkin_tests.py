@@ -107,6 +107,30 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
         "--deselect", "python/test/unit/ppu/models/test_fla_dplr.py::test_chunk",
     ]
 
+    # 1.2) test_debug — static deselect for overflow-sanitizer params that
+    #       require driver stderr inspection ("device-side assert" message +
+    #       "{dtype} overflow detected for operation {op}" on stderr).  PPU does
+    #       not emit these diagnostics, so the assertion always fails.
+    #       Criteria: debug=True AND should_overflow=True across the three
+    #       parametrize tables (add 5 + mul 3 + sub 2 = 10 params).
+    #       All other params (debug=False, should_overflow=False) are retained.
+    _test_debug_deselects = [
+        # --- test_sanitize_int_add_overflow (5) ---
+        "--deselect", "python/test/unit/test_debug.py::test_sanitize_int_add_overflow[-2147483648--1-int32-int32-True-True]",
+        "--deselect", "python/test/unit/test_debug.py::test_sanitize_int_add_overflow[2147483647-1-int32-int32-True-True]",
+        "--deselect", "python/test/unit/test_debug.py::test_sanitize_int_add_overflow[2147483647-100-int32-int32-True-True]",
+        "--deselect", "python/test/unit/test_debug.py::test_sanitize_int_add_overflow[-32768--1-int16-int16-True-True]",
+        "--deselect", "python/test/unit/test_debug.py::test_sanitize_int_add_overflow[32767-1-int16-int16-True-True]",
+        # --- test_sanitize_int_mul_overflow (3) ---
+        "--deselect", "python/test/unit/test_debug.py::test_sanitize_int_mul_overflow[1073741824-4-int32-int32-True-True]",
+        "--deselect", "python/test/unit/test_debug.py::test_sanitize_int_mul_overflow[1073741824-2-int32-int32-True-True]",
+        "--deselect", "python/test/unit/test_debug.py::test_sanitize_int_mul_overflow[-1073741824--4-int32-int32-True-True]",
+        # --- test_sanitize_int_sub_overflow (2) ---
+        "--deselect", "python/test/unit/test_debug.py::test_sanitize_int_sub_overflow[-2147483648-1-int32-int32-True-True]",
+        "--deselect", "python/test/unit/test_debug.py::test_sanitize_int_sub_overflow[2147483647--1-int32-int32-True-True]",
+    ]
+    _test_debug_args = ["--tb=short", "-n", "2"] + _test_debug_deselects
+
     return [
         # ------------------------ test-unit ----------------------
         # 1) 主跑批: 整个 python/test/unit，但是ignore一部分文件
@@ -127,7 +151,7 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
         #       test_static_assert runs in-process (compile-only, no device use).
         TestConfig(
             file_path=os.path.join(unit, "test_debug.py"),
-            extra_args=["--tb=short", "-n", "2"],
+            extra_args=_test_debug_args,
         ),
         # 1.3) line info 测试，需要显式启用 line info
         TestConfig(
