@@ -1,5 +1,4 @@
 autopep8
-einops
 isort
 numpy
 einops
