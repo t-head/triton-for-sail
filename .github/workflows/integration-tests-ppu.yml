@@ -75,8 +75,12 @@ jobs:
             fi
             # Build and install Triton (editable install)
             export TRITON_IR_FORMATTER_PATH=$PPU_SDK/bin/llvm-irformatter
+<<<<<<< Updated upstream
             # Cap build parallelism for the PPU CI pod to avoid OOM during LLVM/C++ compile
             export MAX_JOBS=16
+=======
+            export TRITON_DOWNLOAD_NVIDIA_TOOLCHAIN=OFF
+>>>>>>> Stashed changes
             pip install -r python/requirements.txt
             pip install -e . --no-build-isolation -v || { echo "[FATAL] triton editable build failed"; exit 1; }
             # Verify the imported triton is the source-built editable one (resolves under /workspace/source)
