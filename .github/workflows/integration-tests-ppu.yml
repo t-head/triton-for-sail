@@ -73,6 +73,24 @@ jobs:
             else
               echo "[INFO] confirmed: no triton importable before source build"
             fi
+            # ── Triton dep cache: copy pre-seeded LLVM/deps from NAS to ~/.triton ──
+            TRITON_DEP_CACHE=/mnt/wl_nas/cache/triton
+            _llvm=$( (python3 -c "import json;print(json.load(open('cmake/llvm-info.json'))['llvm_hash'])" 2>/dev/null || cat cmake/llvm-hash.txt 2>/dev/null) | cut -c1-8)
+            _dep=$(cat cmake/*.json cmake/*.txt 2>/dev/null | sha256sum | cut -c1-8)
+            _src=$TRITON_DEP_CACHE/llvm-${_llvm}-${_dep}
+            _dst=${TRITON_HOME:-$HOME}/.triton
+            if [ -n "$_llvm" ] && [ -f "$_src/SEEDED_BY" ] && [ -d "$_src/.triton" ]; then
+              echo "[triton-cache] copy $_src/.triton -> $_dst"
+              mkdir -p "$_dst"
+              if cp -a "$_src/.triton/." "$_dst/"; then
+                find "$_dst/llvm" -maxdepth 1 -type l -delete 2>/dev/null || true
+              else
+                echo "[triton-cache] copy failed, fallback to download"
+                rm -rf "$_dst"
+              fi
+            else
+              echo "[triton-cache] no cache for llvm-${_llvm}-${_dep}, skip"
+            fi
             # Build and install Triton (editable install)
             export TRITON_IR_FORMATTER_PATH=$PPU_SDK/bin/llvm-irformatter
             export MAX_JOBS=16
