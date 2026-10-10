@@ -93,17 +93,9 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
     main_args = ["--tb=short", "-n", "2"]
     for rel in main_ignored:
         main_args.append(f"--ignore={os.path.join(unit, rel)}")
-    # CI 层函数级 deselect: 硬编码 SM90/参数缺失导致必然失败/跨后端不支持的用例
+    # CI 层函数级 deselect: 硬编码 SM90/参数缺失导致必然失败的用例
     main_args += [
         "--deselect", "python/test/unit/language/test_compile_only.py::test_fp8_compiles_for_multiple_architectures_cuda",
-        "--deselect", "python/test/unit/language/test_compile_only.py::test_fp8_compiles_for_multiple_architectures_hip",
-        "--deselect", "python/test/unit/test_knobs.py::test_nvidia_register_pressure_scheduler_hook[True]",
-        "--deselect", "python/test/unit/test_knobs.py::test_amd_llvm_options_concurrent",
-        "--deselect", "python/test/unit/test_knobs.py::test_amd_codegen_inlines_functions_from_bitcode",
-        "--deselect", "python/test/unit/test_knobs.py::test_amd_codegen_options_restored[dump_ir]",
-        "--deselect", "python/test/unit/test_knobs.py::test_amd_codegen_options_restored[enable_timing]",
-        "--deselect", "python/test/unit/test_knobs.py::test_amd_codegen_reports_invalid_llvm_ir",
-        "--deselect", "python/test/unit/test_knobs.py::test_amd_codegen_assembles_object_with_private_llvm",
         "--deselect", "python/test/unit/ppu/models/test_fla_dplr.py::test_chunk",
     ]
 
@@ -233,12 +225,7 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
         # 6) gluon 前端测试套件
         TestConfig(
             file_path=os.path.join(test_dir, "python", "test", "gluon"),
-            extra_args=[
-                "--tb=short", "-n", "1",
-                "--deselect", "python/test/gluon/test_frontend.py::test_inline_asm_shared_amd_compilation[False]",
-                "--deselect", "python/test/gluon/test_frontend.py::test_inline_asm_shared_amd_compilation[True]",
-                "--deselect", "python/test/gluon/test_frontend.py::test_gluon_ast_source_without_driver[target1-hsaco]",
-            ],
+            extra_args=["--tb=short", "-n", "1"],
         ),
         # ------------------------ test-triton-kernels ----------------------
         # 7) triton_kernels 套件 — 暂时跳过（PPU 未构建 triton._C.libproton）

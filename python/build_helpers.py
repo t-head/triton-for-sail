@@ -811,14 +811,9 @@ def get_nvidia_toolchain_packages():
 
 
 def download_and_copy_dependencies(helper_args: BuildHelperArgs):
-    download_toolchains = check_env_flag("TRITON_DOWNLOAD_BACKEND_TOOLCHAINS", "ON")
-    if download_toolchains:
-        download_and_copy_amd_codegen(helper_args)
+    download_and_copy_amd_codegen(helper_args)
 
     for package in get_nvidia_toolchain_packages():
-        # Proton needs CUDA/CUPTI headers.
-        if not download_toolchains and package.src_path != "include":
-            continue
         download_and_copy(
             name=package.name,
             src_func=lambda system, arch, version, package=package:
