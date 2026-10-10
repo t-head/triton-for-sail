@@ -1,7 +1,5 @@
-import functools
 import os
 import re
-import shutil
 import numpy as np
 import torch
 import triton
@@ -11,6 +9,7 @@ from typing import Optional, Set, Union
 import pytest
 
 from numpy.random import RandomState
+from triton._utils import is_ppu_device
 from triton.runtime.jit import TensorWrapper, reinterpret, type_canonicalisation_dict
 
 int_dtypes = ['int8', 'int16', 'int32', 'int64']
@@ -35,14 +34,9 @@ def get_current_target():
     return triton.runtime.driver.active.get_current_target()
 
 
-@functools.lru_cache(maxsize=1)
-def _is_ppu_device():
-    return shutil.which("ppu-smi") is not None
-
-
 def is_cuda():
     target = get_current_target()
-    return False if target is None else target.backend == "cuda" and not _is_ppu_device()
+    return False if target is None else target.backend == "cuda" and not is_ppu_device()
 
 
 def is_ampere_or_newer():
@@ -71,7 +65,7 @@ def is_sm12x():
 
 def is_ppu():
     target = get_current_target()
-    return False if target is None else target.backend == "cuda" and _is_ppu_device()
+    return False if target is None else target.backend == "cuda" and is_ppu_device()
 
 
 def is_hip():
