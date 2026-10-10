@@ -28,6 +28,7 @@ from pathlib import Path
 from triton.runtime.build import compile_module_from_src
 from triton.runtime import _allocation
 from triton.backends.compiler import GPUTarget
+from triton._utils import is_ppu_device
 from triton.backends.driver import GPUDriver
 
 dirname = os.path.dirname(os.path.realpath(__file__))
@@ -746,7 +747,7 @@ class PPUDriver(GPUDriver):
     def is_active():
         try:
             import torch
-            return torch.cuda.is_available() and (torch.version.hip is None)
+            return torch.cuda.is_available() and (torch.version.hip is None) and is_ppu_device()
         except ImportError:
             return False
 

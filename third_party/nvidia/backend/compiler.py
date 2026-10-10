@@ -3,6 +3,7 @@ from triton._C.libtriton import ir, passes, llvm, nvidia
 from triton import knobs
 from triton._instrumentation import instrument as _instrument, is_enabled
 from triton.runtime.errors import PTXASError
+from triton._utils import is_ppu_device
 
 from dataclasses import dataclass
 import functools
@@ -176,7 +177,7 @@ class CUDABackend(BaseBackend):
 
     @staticmethod
     def supports_target(target: GPUTarget):
-        return target.backend == 'cuda'
+        return target.backend == 'cuda' and not is_ppu_device()
 
     def _parse_arch(self, arch):
         pattern = r"^sm(\d+)$"

@@ -22,6 +22,7 @@
 from triton.backends.compiler import BaseBackend, GPUTarget, Language
 from triton._C.libtriton import ir, passes, llvm, ppu
 from triton import knobs
+from triton._utils import is_ppu_device
 from triton._instrumentation import instrument as _instrument, is_enabled
 
 from dataclasses import dataclass
@@ -206,7 +207,7 @@ class PPUBackend(BaseBackend):
 
     @staticmethod
     def supports_target(target: GPUTarget):
-        return target.backend == "cuda"
+        return target.backend == "cuda" and is_ppu_device()
 
     def _parse_arch(self, arch):
         pattern = r"^sm(\d+)$"

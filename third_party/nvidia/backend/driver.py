@@ -9,6 +9,7 @@ from triton._instrumentation import is_enabled
 from triton.runtime.build import compile_module_from_file
 from triton.runtime import _allocation
 from triton.backends.compiler import GPUTarget
+from triton._utils import is_ppu_device
 from triton.backends.driver import GPUDriver, decompose_descriptor, expand_signature, wrap_handle_tensordesc_impl
 
 dirname = os.path.dirname(os.path.realpath(__file__))
@@ -387,7 +388,7 @@ class CudaDriver(GPUDriver):
 
     @staticmethod
     def is_active():
-        return _cuda_driver_is_active()
+        return _cuda_driver_is_active() and not is_ppu_device()
 
     def map_python_to_cpp_type(self, ty: str) -> str:
         return ty_to_cpp(ty)
