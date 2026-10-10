@@ -9,6 +9,7 @@ from triton.runtime.build import compile_module_from_file
 from triton.runtime import _allocation
 from triton.backends.compiler import GPUTarget
 from triton.backends.driver import GPUDriver, decompose_descriptor, expand_signature, wrap_handle_tensordesc_impl
+from triton._utils import is_ppu_device
 
 dirname = os.path.dirname(os.path.realpath(__file__))
 include_dirs = [os.path.join(dirname, "include")]
@@ -386,8 +387,8 @@ class CudaDriver(GPUDriver):
         # active driver from forked workers.
         torch = sys.modules.get("torch")
         if torch is not None:
-            return torch.cuda.is_available() and torch.version.hip is None
-        return _cuda_driver_is_active()
+            return torch.cuda.is_available() and torch.version.hip is None and not is_ppu_device()
+        return _cuda_driver_is_active() and not is_ppu_device()
 
     def map_python_to_cpp_type(self, ty: str) -> str:
         return ty_to_cpp(ty)

@@ -1,15 +1,8 @@
 from __future__ import annotations
 
-import functools
 import os
-import shutil
 
 from ..backends import backends, DriverBase
-
-
-@functools.lru_cache(maxsize=1)
-def _is_ppu_device() -> bool:
-    return shutil.which("ppu-smi") is not None
 
 
 def _create_driver() -> DriverBase:
@@ -23,9 +16,6 @@ def _create_driver() -> DriverBase:
         return driver()
 
     active_drivers = [x.driver for x in backends.values() if x.driver.is_active()]
-    if len(active_drivers) == 2 and all(backends[name].driver in active_drivers for name in ("nvidia", "ppu")):
-        preferred = "ppu" if _is_ppu_device() else "nvidia"
-        active_drivers = [backends[preferred].driver]
     if len(active_drivers) != 1:
         raise RuntimeError(f"{len(active_drivers)} active drivers ({active_drivers}). There should only be one.")
     return active_drivers[0]()
