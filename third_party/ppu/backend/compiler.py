@@ -84,14 +84,52 @@ def get_ppu_llc_version():
     return version
 
 
+def _parse_version(version):
+    return tuple(int(x) for x in version.split("."))
+
+
+@functools.lru_cache()
+def get_ppu_sdk_version():
+    """Return the dotted version of the "sdk version" field reported by
+    `ppu-llc --version`, or None if the field is missing.
+    """
+    match = re.search(r"^\s*sdk version:\s*(\d+(?:\.\d+)*)", get_ppu_llc_version(), re.MULTILINE)
+    return match.group(1) if match else None
+
+
+def ppu_sdk_version_at_least(version):
+    """Whether `ppu-llc --version` reports an sdk version >= `version`.
+
+    Returns False when the sdk version is not reported at all, so that
+    features guarded by a version check stay disabled on older toolchains.
+    """
+    reported = get_ppu_sdk_version()
+    if reported is None:
+        return False
+    reported, expected = _parse_version(reported), _parse_version(version)
+    length = max(len(reported), len(expected))
+    pad = lambda v: v + (0, ) * (length - len(v))
+    return pad(reported) >= pad(expected)
+
+
 @functools.lru_cache(None)
 def file_hash(path):
     with open(path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
 
 
-def sm_arch_from_capability(capability: int):
-    return f"sm_{capability}"
+PPU_ARCH_FROM_CAPABILITY = {
+    80: "ppu001",
+    89: "ppu0015",
+}
+
+
+def ppu_arch_from_capability(capability: int):
+    arch = PPU_ARCH_FROM_CAPABILITY.get(int(capability))
+    if arch is None:
+        raise RuntimeError(f"Unsupported compute capability {capability} for the PPU backend. "
+                           f"Supported capabilities are {sorted(PPU_ARCH_FROM_CAPABILITY)}.")
+    return arch
 
 
 def llir_get_kernel_name(llir: str) -> str:
@@ -476,13 +514,19 @@ please share the reproducer above with Triton project.
                 "--enable-threadIdx-x-div32-always-uniform=true",
             ]
 
+            if ppu_sdk_version_at_least("2.2.0"):
+                extra_options += [
+                    "--ppu-backend-options",
+                    "--disable-expensive-opts=true",
+                ]
+
             # Disable ppu-llc optimizations if requested
             disable_opt = ["--opt-level", "0"] if knobs.ppu.disable_ppu_llc_opt else []
 
             # Accept more ppu-llc options if provided
             ppu_llc_extra_options = opt.ppu_llc_options.split(" ") if opt.ppu_llc_options else []
 
-            arch = sm_arch_from_capability(capability)
+            arch = ppu_arch_from_capability(capability)
 
             fsrc.name = fsrcformatted
 
@@ -496,7 +540,7 @@ please share the reproducer above with Triton project.
                 "-v",
                 *disable_opt,
                 *ppu_llc_extra_options,
-                f"--gpu-name={arch}",
+                f"--ppu-arch={arch}",
                 fsrc.name,
                 "-o",
                 fbin,

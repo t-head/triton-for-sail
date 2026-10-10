@@ -44,6 +44,14 @@ Value convertLayout(int opIdx, ConversionPatternRewriter &rewriter,
                     ArrayRef<unsigned> aiuLoad);
 }
 
+namespace SharedToDotOperandPPUAIUV1m8 {
+Value convertLayout(int opIdx, ConversionPatternRewriter &rewriter,
+                    Location loc, Value tensor, DotOperandEncodingAttr encoding,
+                    const SharedMemoryObject &smemObj,
+                    const LLVMTypeConverter *typeConverter, Value thread,
+                    ArrayRef<unsigned> aiuLoad);
+}
+
 namespace SharedToDotOperandPPUAIUV2 {
 Value convertLayout(int opIdx, ConversionPatternRewriter &rewriter,
                     Location loc, Value tensor,
@@ -125,6 +133,7 @@ LogicalResult lowerPPULdMatrix(
 
   bool isPPU0010 = false;
   bool isPPU0015 = false;
+  bool useM8MMA = false;
   auto dotEnc = dyn_cast<DotOperandEncodingAttr>(tensorTy.getEncoding());
   if (dotEnc) {
     auto mmaEncoding =
@@ -132,6 +141,8 @@ LogicalResult lowerPPULdMatrix(
     if (mmaEncoding && (mmaEncoding.isPPU0010() || mmaEncoding.isPPU0015())) {
       isPPU0010 = mmaEncoding.isPPU0010();
       isPPU0015 = mmaEncoding.isPPU0015();
+      useM8MMA = mmaEncoding.getInstrShape().size() >= 2 &&
+                  mmaEncoding.getInstrShape()[mmaEncoding.getInstrShape().size() - 2] == 8;
     }
   }
   if (!isPPU0010 && !isPPU0015)
@@ -164,7 +175,6 @@ LogicalResult lowerPPULdMatrix(
   assert(llvmOpCount == nullptr && "NYI");
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   auto *ctx = tensorTy.getContext();
-  auto regL = toLinearLayout(tensorTy.getShape(), tensorTy.getEncoding());
   auto memL = toLinearLayout(memDescType.getShape(), memDescType.getEncoding());
   auto cvt = minimalCvtLayout(memDescType, tensorTy);
 
@@ -187,7 +197,7 @@ LogicalResult lowerPPULdMatrix(
     return failure();
 
   bool Opb8bLdmatrix =
-      isPPU0010 && bitwidth == 8 && dotEnc.getOpIdx() == 1 && transpose;
+      isPPU0010 && !useM8MMA && bitwidth == 8 && dotEnc.getOpIdx() == 1 && transpose;
   if (bitwidth == 8 && transpose && !Opb8bLdmatrix)
     return failure();
 
@@ -196,10 +206,6 @@ LogicalResult lowerPPULdMatrix(
     return failure();
 
   auto srcVals = SmallVector<Value>{};
-
-  // Remove broadcasting on the register dimension
-  auto removeBroadcast = actionRemoveBroadcastedRegs(cvt);
-  cvt = removeBroadcast.apply(cvt);
 
   std::optional<ColumnAction> maybePermutation;
   LinearLayout tile;
@@ -292,7 +298,17 @@ LogicalResult lowerPPULdMatrix(
 
   // Elements per op
   auto nVecs = 1 << vec;
-  if (isPPU0010 && Opb8bLdmatrix)
+  bool useLDmatx2 = false;
+  if (useM8MMA) {
+    const int vecElems =
+        std::min(regToSharedLayout.getNumConsecutiveInOut(),
+                 maxVecElems.value_or(std::numeric_limits<int>::max()));
+    auto vecTy = vec_ty(llvmElemTy, vecElems);
+    auto numElems = vecTy.getNumElements();
+    auto numElemsI32 = numElems * bitwidth / 32;
+    useLDmatx2 = numElemsI32 == 2; // use ppu.ldmatrix.x2 for PPUv1m8
+  }
+  if ((useM8MMA && useLDmatx2) || (isPPU0010 && !useM8MMA && Opb8bLdmatrix))
     nVecs = 2;
   auto elemsPerVec = 32 / bitwidth;
   auto step = nVecs * elemsPerVec;
@@ -306,15 +322,17 @@ LogicalResult lowerPPULdMatrix(
                      ? i32_ty
                      : static_cast<Type>(LLVM::LLVMStructType::getLiteral(
                            ctx, SmallVector<Type>(nVecs, i32_ty)));
-    Value res = rewriter
+    auto ldmatrixOp = rewriter
                     .create<triton::ppugpu::PPULoadMatrixOp>(
                         loc, matTy, vecAddr,
-                        /*needTrans=*/transpose, Opb8bLdmatrix)
-                    .getResult();
+                        /*needTrans=*/transpose, Opb8bLdmatrix);
+    if (isPPU0015)
+      ldmatrixOp->setAttr("is_0015", rewriter.getUnitAttr());
+    Value res = ldmatrixOp.getResult();
 
     // Extract result into srcVals
     bool needExchange = false;
-    if (isPPU0015 && dotEnc && dotEnc.getOpIdx() == (transpose ? 0 : 1)) {
+    if (isPPU0015 && dotEnc && dotEnc.getOpIdx() == 1) {
       needExchange = true;
     }
     if (needExchange) {
@@ -344,12 +362,6 @@ LogicalResult lowerPPULdMatrix(
     }
   }
 
-  // Undo the permutation and the removeBroadcast
-  if (maybePermutation.has_value()) {
-    auto invPerm = maybePermutation.value().inverse();
-    srcVals = invPerm.apply(srcVals);
-  }
-  srcVals = broadcastAs(srcVals, regL);
   auto structTy = LLVM::LLVMStructType::getLiteral(
       ctx, SmallVector<Type>(srcVals.size(), llvmElemTy));
   src = packLLElements(loc, typeConverter, srcVals, rewriter, structTy);
@@ -507,8 +519,14 @@ public:
     Value res;
     if (auto sharedEnc = cast<PPUAIUSharedEncodingAttr>(srcTy.getEncoding())) {
       auto aiuLoad = sharedEnc.getAIUStrategy();
-      if (mmaEncoding.isPPU0010()) {
+      auto instrShape = mmaEncoding.getInstrShape();
+      bool isM8MMA = instrShape.size() >= 2 && instrShape[instrShape.size() - 2] == 8;
+      if (mmaEncoding.isPPU0010() && !isM8MMA) {
         res = SharedToDotOperandPPUAIUV1::convertLayout(
+            dotEnc.getOpIdx(), rewriter, loc, src, dotEnc, smemObj,
+            getTypeConverter(), getThreadId(rewriter, loc), aiuLoad);
+      } else if (mmaEncoding.isPPU0010() && isM8MMA) {
+        res = SharedToDotOperandPPUAIUV1m8::convertLayout(
             dotEnc.getOpIdx(), rewriter, loc, src, dotEnc, smemObj,
             getTypeConverter(), getThreadId(rewriter, loc), aiuLoad);
       } else if (mmaEncoding.isPPU0015()) {

@@ -69,7 +69,13 @@ def matmul_kernel_aiu(
         (64, 64, 256),
     ],
 )
-def test_aiu_matmul(num_stages, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, num_warps):
+@pytest.mark.parametrize("m8_mma", [0, 1])
+def test_aiu_matmul(monkeypatch, num_stages, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, num_warps, m8_mma):
+    monkeypatch.setenv("FORCE_USE_M8MMA", str(m8_mma))
+    capability = torch.cuda.get_device_capability()
+    if m8_mma == 1 and not (capability[0] == 8 and capability[1] == 0):
+        pytest.skip("m8 mma only support on ppu1.0")
+
     device = "cuda"
 
     torch.manual_seed(42)

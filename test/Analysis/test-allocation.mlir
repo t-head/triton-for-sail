@@ -31,6 +31,10 @@
 #PADDED_SHARED_1_16x256 = #ttg.padded_shared<[128:+4, 256:+8] {order = [1, 0], shape = [16, 256]}>
 #PADDED_SHARED_2_16x256 = #ttg.padded_shared<[64:+2, 128:+4, 256:+8] {order = [1, 0], shape = [16, 256]}>
 
+#M8_MMA = #ttg.ppu_mma<{versionMajor = 1, versionMinor = 0, warpsPerCTA = [4, 1], instrShape = [8, 8, 16], vecSize = 2}>
+#M8_DOT_B = #ttg.dot_op<{opIdx = 1, parent = #M8_MMA, kWidth = 2}>
+#PPU_AIU_SHARED = #ttg.ppu_aiu_shared<{versionMajor = 1, AIUStrategy = [16, 16, 16, 16, 32], order = [1, 0]}>
+
 #smem = #ttg.shared_memory
 
 module attributes {"ttg.num-warps" = 4 : i32, "ttg.num-ctas" = 1 : i32} {
@@ -1001,6 +1005,66 @@ tt.func @padded_shared_layout_multi_tier() {
   // expected-remark @+2 {{offset = 0, size = 4466}}
   // (16 * 256 + 2 * 63 + 4 * 31 + 8 * 15) * 1B = 4466B
   %alloc1 = ttg.local_alloc : () -> !ttg.memdesc<16x256xi8, #PADDED_SHARED_2_16x256, #ttg.shared_memory, mutable>
+  tt.return
+}
+
+// PPU0010 operand-B M8MMA loads require exactly 256 bytes beyond the base
+// 8x8xf16 allocation, including through CFG forwarding.
+// expected-remark @below {{m8mma_direct}}
+tt.func @m8mma_direct() {
+  // expected-remark @below {{offset = 0, size = 384}}
+  %alloc = ttg.local_alloc : () -> !ttg.memdesc<8x8xf16, #PPU_AIU_SHARED, #smem, mutable>
+  %value = ttg.local_load %alloc : !ttg.memdesc<8x8xf16, #PPU_AIU_SHARED, #smem, mutable> -> tensor<8x8xf16, #M8_DOT_B>
+  "use"(%value) : (tensor<8x8xf16, #M8_DOT_B>) -> ()
+  tt.return
+}
+
+// expected-remark @below {{m8mma_cf_br}}
+tt.func @m8mma_cf_br() {
+  // expected-remark @below {{offset = 0, size = 384}}
+  %alloc = ttg.local_alloc : () -> !ttg.memdesc<8x8xf16, #PPU_AIU_SHARED, #smem, mutable>
+  cf.br ^load(%alloc : !ttg.memdesc<8x8xf16, #PPU_AIU_SHARED, #smem, mutable>)
+^load(%forwarded: !ttg.memdesc<8x8xf16, #PPU_AIU_SHARED, #smem, mutable>):
+  %value = ttg.local_load %forwarded : !ttg.memdesc<8x8xf16, #PPU_AIU_SHARED, #smem, mutable> -> tensor<8x8xf16, #M8_DOT_B>
+  "use"(%value) : (tensor<8x8xf16, #M8_DOT_B>) -> ()
+  tt.return
+}
+
+// Both cf.cond_br arms forward the allocation at different operand positions.
+// It receives one padding increment even though both arms reach a load.
+// expected-remark @below {{m8mma_cf_cond_br_both_arms}}
+tt.func @m8mma_cf_cond_br_both_arms(%cond: i1) {
+  // expected-remark @below {{offset = 0, size = 384}}
+  %alloc = ttg.local_alloc : () -> !ttg.memdesc<8x8xf16, #PPU_AIU_SHARED, #smem, mutable>
+  // expected-remark @below {{offset = 384, size = 128}}
+  %other = ttg.local_alloc : () -> !ttg.memdesc<8x8xf16, #PPU_AIU_SHARED, #smem, mutable>
+  cf.cond_br %cond, ^left(%other, %alloc : !ttg.memdesc<8x8xf16, #PPU_AIU_SHARED, #smem, mutable>, !ttg.memdesc<8x8xf16, #PPU_AIU_SHARED, #smem, mutable>), ^right(%alloc, %other : !ttg.memdesc<8x8xf16, #PPU_AIU_SHARED, #smem, mutable>, !ttg.memdesc<8x8xf16, #PPU_AIU_SHARED, #smem, mutable>)
+^left(%left_unused: !ttg.memdesc<8x8xf16, #PPU_AIU_SHARED, #smem, mutable>, %left_forwarded: !ttg.memdesc<8x8xf16, #PPU_AIU_SHARED, #smem, mutable>):
+  %left_value = ttg.local_load %left_forwarded : !ttg.memdesc<8x8xf16, #PPU_AIU_SHARED, #smem, mutable> -> tensor<8x8xf16, #M8_DOT_B>
+  "use"(%left_value) : (tensor<8x8xf16, #M8_DOT_B>) -> ()
+  tt.return
+^right(%right_forwarded: !ttg.memdesc<8x8xf16, #PPU_AIU_SHARED, #smem, mutable>, %right_unused: !ttg.memdesc<8x8xf16, #PPU_AIU_SHARED, #smem, mutable>):
+  %right_value = ttg.local_load %right_forwarded : !ttg.memdesc<8x8xf16, #PPU_AIU_SHARED, #smem, mutable> -> tensor<8x8xf16, #M8_DOT_B>
+  "use"(%right_value) : (tensor<8x8xf16, #M8_DOT_B>) -> ()
+  tt.return
+}
+
+// The first allocation is forwarded on both arms but never reaches the load;
+// the second does reach the load at unequal successor operand positions.
+// expected-remark @below {{m8mma_cf_cond_br_not_reachable}}
+tt.func @m8mma_cf_cond_br_not_reachable(%cond: i1) {
+  // expected-remark @below {{offset = 0, size = 128}}
+  %alloc = ttg.local_alloc : () -> !ttg.memdesc<8x8xf16, #PPU_AIU_SHARED, #smem, mutable>
+  // expected-remark @below {{offset = 128, size = 384}}
+  %other = ttg.local_alloc : () -> !ttg.memdesc<8x8xf16, #PPU_AIU_SHARED, #smem, mutable>
+  cf.cond_br %cond, ^left(%alloc, %other : !ttg.memdesc<8x8xf16, #PPU_AIU_SHARED, #smem, mutable>, !ttg.memdesc<8x8xf16, #PPU_AIU_SHARED, #smem, mutable>), ^right(%other, %alloc : !ttg.memdesc<8x8xf16, #PPU_AIU_SHARED, #smem, mutable>, !ttg.memdesc<8x8xf16, #PPU_AIU_SHARED, #smem, mutable>)
+^left(%left_unused: !ttg.memdesc<8x8xf16, #PPU_AIU_SHARED, #smem, mutable>, %left_loaded: !ttg.memdesc<8x8xf16, #PPU_AIU_SHARED, #smem, mutable>):
+  %left_value = ttg.local_load %left_loaded : !ttg.memdesc<8x8xf16, #PPU_AIU_SHARED, #smem, mutable> -> tensor<8x8xf16, #M8_DOT_B>
+  "use"(%left_value) : (tensor<8x8xf16, #M8_DOT_B>) -> ()
+  tt.return
+^right(%right_loaded: !ttg.memdesc<8x8xf16, #PPU_AIU_SHARED, #smem, mutable>, %right_unused: !ttg.memdesc<8x8xf16, #PPU_AIU_SHARED, #smem, mutable>):
+  %right_value = ttg.local_load %right_loaded : !ttg.memdesc<8x8xf16, #PPU_AIU_SHARED, #smem, mutable> -> tensor<8x8xf16, #M8_DOT_B>
+  "use"(%right_value) : (tensor<8x8xf16, #M8_DOT_B>) -> ()
   tt.return
 }
 }

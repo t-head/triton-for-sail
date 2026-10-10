@@ -305,7 +305,7 @@ protected:
     case 2:
       return (tixAsmBase + ".x2" + suffix).str();
     case 4:
-      if (trans)
+      if (trans && !op->hasAttr("is_0015"))
         return (tixAsmBaseTrans + ".x1" + suffix).str();
       else
         return (tixAsmBase + ".x4" + suffix).str();

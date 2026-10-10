@@ -3228,8 +3228,10 @@ def get_test_small_dots_cases():
     get_test_dot_softmax() + \
     get_test_small_dots_cases())
 @pytest.mark.parametrize("num_ctas", num_ctas_list)
-def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dtype, out_dtype, kpack, mma_nonk_size,
+@pytest.mark.parametrize("m8_mma", [0, 1])
+def test_dot(monkeypatch, M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dtype, out_dtype, kpack, mma_nonk_size, m8_mma,
              num_ctas, device):
+    monkeypatch.setenv("FORCE_USE_M8MMA", str(m8_mma))
     if is_interpreter():
         if in_dtype == 'bfloat16':
             pytest.skip("bfloat16 is not supported in the interpreter")
@@ -3258,6 +3260,8 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
                 pytest.skip("float8e4nv not supported on sm <= 80")
             if in_dtype == 'float64' and input_precision != 'ieee':
                 pytest.skip("Only IEEE precision is supported for float64 dot")
+            if m8_mma == 1 and not (capability[0] == 8 and capability[1] == 0):
+                pytest.skip("m8 mma only support on ppu1.0")
 
         if is_hip():
             if in_dtype in ("float8e5", "float8e4nv") and not (is_hip_cdna4() or is_hip_gfx12()):
@@ -3748,6 +3752,9 @@ def test_scaled_dot(M, N, K, col_a, col_b, rhs_scale, mxfp_type, normal_type, nu
     # to zero. Detailed info is at:
     # https://pytorch.org/docs/stable/notes/numerical_accuracy.html#reduced-precision-fp16-and-bf16-gemms-and-convolutions-on-amd-instinct-mi200-devices
     large_tolerance = is_hip_cdna2()
+    if (is_ppu() and torch.cuda.get_device_capability() < (9, 0) and mxfp_type == "e4m3"
+            and normal_type == "e4m3"):
+        large_tolerance = True
     # For e4m3, gfx11 can slightly exceed the default tolerances in isolated cases
     if is_hip_gfx11() and mxfp_type == "e4m3" and normal_type == "fp16":
         large_tolerance = True

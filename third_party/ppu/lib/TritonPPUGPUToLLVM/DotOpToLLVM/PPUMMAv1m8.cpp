@@ -1,26 +1,3 @@
-/*
- * Copyright (c) 2026 T-Head Semiconductor Co., Ltd. All rights reserved.
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files
- * (the "Software"), to deal in the Software without restriction,
- * including without limitation the rights to use, copy, modify, merge,
- * publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- */
-
 #include "TritonPPUGPUToLLVM/TIXAsmFormat.h"
 #include "Utility.h"
 #include "mlir/Support/LLVM.h"
@@ -56,17 +33,17 @@ Value loadC(Value tensor, Value llTensor,
          "DotOp's $c operand should pass the same number of values as $d in "
          "mma layout.");
 
-  auto numMmaRets = tensorTy.getElementType().getIntOrFloatBitWidth() / 4;
-  assert(numMmaRets == 8 || numMmaRets == 4);
-  if (numMmaRets == 8) {
+  auto numMmaRets = tensorTy.getElementType().getIntOrFloatBitWidth() / 8;
+  assert(numMmaRets == 2 || numMmaRets == 4);
+  if (numMmaRets == 4) {
     return llTensor;
-  } else if (numMmaRets == 4) {
+  } else if (numMmaRets == 2) {
     auto cPack = SmallVector<Value>();
     auto cElemTy = tensorTy.getElementType();
-    int numCPackedElem = 8 / numMmaRets;
+    int numCPackedElem = 4 / numMmaRets;
     Type cPackTy = vec_ty(cElemTy, numCPackedElem);
     for (int i = 0; i < fcSize; i += numCPackedElem) {
-      Value pack = rewriter.create<LLVM::UndefOp>(loc, cPackTy);
+      Value pack = LLVM::UndefOp::create(rewriter, loc, cPackTy);
       for (int j = 0; j < numCPackedElem; ++j) {
         pack = b.insert_element(cPackTy, pack,
                                 b.extract_val(cElemTy, llTensor, i + j),
@@ -115,97 +92,38 @@ ValueTableV2 getValuesFromDotOperandLayoutStruct(
     // For layouts with a large K dimension, the original register layout needs
     // to be divided into multiple MMAs, where each MMA has contiguous 32 bits
     // along the K dimension per thread.
-    // Using kWidth = 8 and bitwidth = 2 as an example,
-    // we split the MMA into 4 sub-MMAs, each with a stride 4 x 32-bit along the
-    // K dimension.
     llvm::SmallVector<unsigned> si;
     auto kIters = kWidth / (32 / bitwidth);
 
     if (dot.getOpIdx() == 0) {
-      // Original register layout:
-      //
-      //   [0, 1, 2, 3, 4, 5, 6, 7], [8, 9, 10, 11, 12, 13, 14, 15]
-      //   [16, 17, 18, 19, 20, 21, 22, 23, 23], [24, 25, 26, 27, 28, 29, 30,
-      //   31]
-      //
-      // Each element in the layout is a single bf16.
-      //
-      // To derive four independent MMA operations, a stride of 4 is applied to
-      // the original register layout:
-      //
-      //  1st MMA: [[0, 1], [2, 3], [16, 17], [18, 19]]
-      //  2nd MMA: [[4, 5], [6, 7], [20, 21], [22, 23]]
-      //  3rd MMA: [[8, 9], [10, 11], [24, 25], [26, 27]]
-      //  4th MMA: [[12, 13], [14, 15], [28, 29], [30, 31]]
+      // M8MMA: operand A has M tile size of 8 instead of 16
+      // Each tile only has 2 elements per (b,m,k)
       if (kIters <= repK) {
         for (size_t kRep = 0; kRep < kWidth / numElemsPerVec; ++kRep)
-          for (size_t tile = 0; tile < 4; ++tile)
+          for (size_t tile = 0; tile < 2; ++tile)
             for (size_t e = 0; e < numElemsPerVec; ++e) {
-              si.push_back(kRep * numElemsPerVec * 2 + tile / 2 * 2 * kWidth +
+              si.push_back(kRep * numElemsPerVec * 2 +
                            tile % 2 * numElemsPerVec + e);
             }
       } else {
-        // Suppose kWidth=4 and type=fp32, so numElemsPerVec=1.
-        // Each tile of the dot operand layout has a size of 16x32.
-        // However, if the triton tensor size is 16x16, elements along the k
-        // dimension are duplicated. Within each tile, each register
-        // contains 2x8 elements arranged as follows:
-        //
-        //       tile0/0           tile0/1
-        //   |<--kWidth=4-->|   |<--kWidth-->|
-        //   |<-mmaWidth=2->|
-        //   [0,  1,  2,  3]    [0,  1,  2,  3]
-        //   [4,  5,  6,  7]    [4,  5,  6,  7]
-        //
-        // tile0/1 replicates the elements in tile0/0 along the k dimension.
-        // For a tensor size of 32x32, the next tile on the m dimension is as
-        // follows:
-        //
-        //       tile1/0              tile1/1
-        //   |<--kWidth-->|       |<--kWidth-->|
-        //   [8,  9, 10, 11],     [8,  9, 10, 11]
-        //   [12, 13, 14, 15],    [12, 13, 14, 15]
-        //
-        // Within a single tile, we can perform two MMAs, and the
-        // resulting register layout for each MMA is as follows:
-        //
-        //   1st MMA: [0, 4, 1, 5]
-        //   2nd MMA: [2, 6, 3, 7]
-        //   3rd MMA: [8, 12, 9, 13]
-        //   4th MMA: [10, 14, 11, 15]
-        //
-        // Additionally, we should reorder the elements by moving the duplicated
-        // elements to the end.  In the example above, we convert the order from
-        // tile0/0, tile0/1, tile1/0, tile1/1 to tile0/0, tile1/0, tile0/1,
-        // tile1/1, so that only the first two tiles will be used in the
-        // computation.
-        size_t elemsPerTile = 2 * 2 * kWidth;
-        size_t elemsPerMma = 2 * 2 * numElemsPerVec;
+        size_t elemsPerTile = 2 * kWidth;
+        size_t elemsPerMma = 2 * numElemsPerVec;
         size_t mmaWidth = kWidth / numElemsPerVec / 2;
         size_t repMma = elemsPerTile / (mmaWidth * elemsPerMma);
+        // m8mma -> m upper bound is 1
         for (size_t rep = 0; rep < repMma; ++rep)
           for (size_t tile = 0; tile < elems.size() / elemsPerTile; ++tile)
             for (size_t mmaKWidth = 0; mmaKWidth < mmaWidth; ++mmaKWidth)
-              for (size_t mTile = 0; mTile < 2; ++mTile)
+              for (size_t mTile = 0; mTile < 1; ++mTile)
                 for (size_t kTile = 0; kTile < 2; ++kTile)
-                  for (size_t e = 0; e < numElemsPerVec; ++e) {
-                    si.push_back(rep * kWidth + tile * elemsPerTile +
-                                 mmaKWidth * 2 * numElemsPerVec +
-                                 mTile * kWidth * 2 + kTile * numElemsPerVec +
-                                 e);
-                  }
+                    for (size_t e = 0; e < numElemsPerVec; ++e) {
+                        si.push_back(rep * kWidth + tile * elemsPerTile +
+                                    mmaKWidth * 2 * numElemsPerVec +
+                                    mTile * kWidth * 2 +
+                                    kTile * numElemsPerVec + e);
+                    }
       }
     } else {
-      // Original register layout:
-      //
-      //   [0, 1, 2, 3, 4, 5, 6, 7]^T, [8, 9, 10, 11, 12, 13, 14, 15]^T
-      //
-      // A stride of 4 is applied to derive four independent MMA operations:
-      //
-      //  1st MMA: [[0, 1], [8, 9]]
-      //  2nd MMA: [[2, 3], [10, 11]]
-      //  3rd MMA: [[4, 5], [12, 13]]
-      //  4th MMA: [[6, 7], [14, 15]]
       if (kIters <= repK) {
         for (size_t kRep = 0; kRep < kWidth / numElemsPerVec; ++kRep)
           for (size_t tile = 0; tile < 4; ++tile)
@@ -214,16 +132,8 @@ ValueTableV2 getValuesFromDotOperandLayoutStruct(
                            tile % 2 * numElemsPerVec + e);
             }
       } else {
-        // Suppose kWidth=4 and type=fp32.
-        // Original register layout:
-        //
-        //       tile0/0        tile0/1
-        //   [0, 1, 2, 3]^T, [0, 1, 2, 3]^T
-        //
-        // Similar to the opIdx=0 situation, we should reorder the elements by
-        // moving the duplicated elements to the end.
-        size_t elemsPerTile = 2 * kWidth * 2;
-        size_t elemsPerMma = 2 * numElemsPerVec * 2;
+        size_t elemsPerTile = 2 * 2 * kWidth;
+        size_t elemsPerMma = 2 * 2 * numElemsPerVec;
         size_t mmaWidth = kWidth / numElemsPerVec / 2;
         size_t repMma = elemsPerTile / (mmaWidth * elemsPerMma);
         for (size_t rep = 0; rep < repMma; ++rep)
@@ -234,8 +144,8 @@ ValueTableV2 getValuesFromDotOperandLayoutStruct(
                   for (size_t e = 0; e < numElemsPerVec; ++e) {
                     si.push_back(rep * kWidth + tile * elemsPerTile +
                                  mmaKWidth * 2 * numElemsPerVec +
-                                 nTile * kWidth * 2 + kTile * numElemsPerVec +
-                                 e);
+                                 nTile * kWidth * 2 +
+                                 kTile * numElemsPerVec + e);
                   }
       }
     }
@@ -254,18 +164,16 @@ ValueTableV2 getValuesFromDotOperandLayoutStruct(
     for (auto b = 0; b < batch; ++b)
       for (auto m = 0; m < repOuter; ++m)
         for (auto k = 0; k < repK; ++k) {
-          packVec({b, 2 * m, 2 * k});
-          packVec({b, 2 * m + 1, 2 * k});
-          packVec({b, 2 * m, 2 * k + 1});
-          packVec({b, 2 * m + 1, 2 * k + 1});
+          packVec({b, m, 2 * k});
+          packVec({b, m, 2 * k + 1});
         }
   } else {
     for (auto b = 0; b < batch; ++b)
       for (auto n = 0; n < repOuter; ++n)
         for (auto k = 0; k < repK; ++k) {
           packVec({b, 2 * n, 2 * k});
-          packVec({b, 2 * n + 1, 2 * k});
           packVec({b, 2 * n, 2 * k + 1});
+          packVec({b, 2 * n + 1, 2 * k});
           packVec({b, 2 * n + 1, 2 * k + 1});
         }
   }
@@ -294,28 +202,28 @@ Type getMmaRetType(TensorCoreType mmaType, MLIRContext *ctx) {
   Type fp32Ty = type::f32Ty(ctx);
   Type fp16Ty = type::f16Ty(ctx);
   Type i32Ty = type::i32Ty(ctx);
-  Type fp32x8Ty =
-      LLVM::LLVMStructType::getLiteral(ctx, SmallVector<Type>(8, fp32Ty));
-  Type i32x8Ty =
-      LLVM::LLVMStructType::getLiteral(ctx, SmallVector<Type>(8, i32Ty));
-  Type fp16x2Pack4Ty = LLVM::LLVMStructType::getLiteral(
-      ctx, SmallVector<Type>(4, vec_ty(fp16Ty, 2)));
+  Type fp32x4Ty =
+      LLVM::LLVMStructType::getLiteral(ctx, SmallVector<Type>(4, fp32Ty));
+  Type i32x4Ty =
+      LLVM::LLVMStructType::getLiteral(ctx, SmallVector<Type>(4, i32Ty));
+  Type fp16x2Pack2Ty = LLVM::LLVMStructType::getLiteral(
+      ctx, SmallVector<Type>(2, vec_ty(fp16Ty, 2)));
   switch (mmaType) {
   case TensorCoreType::FP32_FP16_FP16_FP32:
-    return fp32x8Ty;
+    return fp32x4Ty;
   case TensorCoreType::FP32_BF16_BF16_FP32:
-    return fp32x8Ty;
+    return fp32x4Ty;
   case TensorCoreType::FP32_TF32_TF32_FP32:
-    return fp32x8Ty;
+    return fp32x4Ty;
   case TensorCoreType::FP16_FP16_FP16_FP16:
-    return fp16x2Pack4Ty;
+    return fp16x2Pack2Ty;
   case TensorCoreType::FP32_FP8E5M2_FP8E5M2_FP32:
   case TensorCoreType::FP32_FP8E5M2_FP8E4M3FN_FP32:
   case TensorCoreType::FP32_FP8E4M3FN_FP8E5M2_FP32:
   case TensorCoreType::FP32_FP8E4M3FN_FP8E4M3FN_FP32:
-    return fp32x8Ty;
+    return fp32x4Ty;
   case TensorCoreType::INT32_INT8_INT8_INT32:
-    return i32x8Ty;
+    return i32x4Ty;
   default:
     llvm::report_fatal_error("Unsupported mma type found");
   }
@@ -362,22 +270,21 @@ TensorCoreType getMmaType(triton::DotOp op) {
 
 inline static const std::map<TensorCoreType, std::string> mmaInstrTix = {
     {TensorCoreType::FP32_FP16_FP16_FP32,
-     "ppu.mma.sync.aligned.m16n16k16.row.col.f32.f16.f16.f32"},
+     "ppu.mma.sync.aligned.m8n16k16.row.col.f32.f16.f16.f32"},
     {TensorCoreType::FP32_BF16_BF16_FP32,
-     "ppu.mma.sync.aligned.m16n16k16.row.col.f32.bf16.bf16.f32"},
+     "ppu.mma.sync.aligned.m8n16k16.row.col.f32.bf16.bf16.f32"},
     {TensorCoreType::FP32_TF32_TF32_FP32,
-     "ppu.mma.sync.aligned.m16n16k8.row.col.f32.tf32.tf32.f32"},
+     "ppu.mma.sync.aligned.m8n16k8.row.col.f32.tf32.tf32.f32"},
 
     {TensorCoreType::INT32_INT1_INT1_INT32,
-     "ppu.mma.sync.aligned.m16n16k256.row.col.s32.b1.b1.s32.xor.popc"},
+     "ppu.mma.sync.aligned.m8n16k256.row.col.s32.b1.b1.s32.xor.popc"},
     {TensorCoreType::INT32_INT4_INT4_INT32,
-     "ppu.mma.sync.aligned.m16n8k64.row.col.satfinite.s32.s4.s4.s32"},
+     "ppu.mma.sync.aligned.m8n8k64.row.col.satfinite.s32.s4.s4.s32"},
     {TensorCoreType::INT32_INT8_INT8_INT32,
-     "ppu.mma.sync.aligned.m16n16k32.row.col.satfinite.s32.s8.s8.s32"},
+     "ppu.mma.sync.aligned.m8n16k32.row.col.satfinite.s32.s8.s8.s32"},
 
     {TensorCoreType::FP16_FP16_FP16_FP16,
-     "ppu.mma.sync.aligned.m16n16k16.row.col.f16.f16.f16.f16"},
-
+     "ppu.mma.sync.aligned.m8n16k16.row.col.f16.f16.f16.f16"},
     {TensorCoreType::FP32_FP8E5M2_FP8E5M2_FP32,
      "ppu.mma.sync.aligned.m16n8k32.row.col.f32.e5m2.e5m2.f32"},
     {TensorCoreType::FP32_FP8E5M2_FP8E4M3FN_FP32,
@@ -388,32 +295,28 @@ inline static const std::map<TensorCoreType, std::string> mmaInstrTix = {
      "ppu.mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32"},
 };
 
-static void callMmaV1(mlir::triton::ppu::TIXBuilder &builder, int b, int m,
-                         int n, int k, mlir::triton::ppu::TIXInstr &mma,
-                         unsigned numMmaRets, unsigned colsPerThread,
-                         int numCPackedElem, unsigned batchOffset,
-                         ValueTableV2 &ha, ValueTableV2 &hb,
-                         const SmallVector<Value> &fc, bool isAccF16,
-                         bool isIntMMA) {
+static void callMmaPPUv1m8(mlir::triton::ppu::TIXBuilder &builder, int b, int m,
+                           int n, int k, mlir::triton::ppu::TIXInstr &mma,
+                           unsigned numMmaRets, unsigned colsPerThread,
+                           int numCPackedElem, unsigned batchOffset,
+                           ValueTableV2 &ha, ValueTableV2 &hb,
+                           const SmallVector<Value> &fc, bool isAccF16,
+                           bool isIntMMA) {
   auto retArgs =
       builder.newListOperand(numMmaRets, isIntMMA || isAccF16 ? "=r" : "=f");
   auto cArgs = builder.newListOperand();
   for (int i = 0; i < numMmaRets; ++i) {
     cArgs->listAppend(builder.newOperand(
-        fc[(m * colsPerThread + 4 * n) / numCPackedElem + i + batchOffset * b],
+        fc[(m * colsPerThread + 2 * n) / numCPackedElem + i + batchOffset * b],
         std::to_string(i)));
     // reuse the output registers
   }
-  auto aArgs = builder.newListOperand({
-      {ha[{b, m, k}], "r"},
-      {ha[{b, m + 1, k}], "r"},
-      {ha[{b, m, k + 1}], "r"},
-      {ha[{b, m + 1, k + 1}], "r"},
-  });
+  auto aArgs =
+      builder.newListOperand({{ha[{b, m, k}], "r"}, {ha[{b, m, k + 1}], "r"}});
 
   auto bArgs = builder.newListOperand({{hb[{b, n, k}], "r"},
-                                       {hb[{b, n + 1, k}], "r"},
                                        {hb[{b, n, k + 1}], "r"},
+                                       {hb[{b, n + 1, k}], "r"},
                                        {hb[{b, n + 1, k + 1}], "r"}});
   mma(retArgs, aArgs, bArgs, cArgs);
 }
@@ -463,10 +366,9 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
   auto hb = getValuesFromDotOperandLayoutStruct(
       typeConverter, loc, rewriter, loadedB, repBatch, std::max(repN, 1), repK,
       bTensorTy);
-
   auto fc = unpackLLElements(loc, loadedC, rewriter);
-  auto numMmaRets = dTensorTy.getElementType().getIntOrFloatBitWidth() / 4;
-  int numCPackedElem = 8 / numMmaRets;
+  auto numMmaRets = dTensorTy.getElementType().getIntOrFloatBitWidth() / 8;
+  int numCPackedElem = 4 / numMmaRets;
 
   auto mmaType = getMmaType(op);
 
@@ -481,11 +383,10 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
     unsigned colsPerThread = repN * 4;
     mlir::triton::ppu::TIXBuilder builder;
     auto &mma = *builder.create(mmaInstructions.at(mmaType));
-    // using =r for float32 works but leads to less readable TIX.
     bool isIntMMA = dTensorTy.getElementType().isInteger(32);
     bool isAccF16 = dTensorTy.getElementType().isF16();
 
-    callMmaV1(builder, b, m, n, k, mma, numMmaRets, colsPerThread,
+    callMmaPPUv1m8(builder, b, m, n, k, mma, numMmaRets, colsPerThread,
                  numCPackedElem, batchOffset, ha, hb, fc, isAccF16, isIntMMA);
 
     Value mmaOut =
@@ -493,7 +394,7 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
 
     Type elemTy = cast<LLVM::LLVMStructType>(mmaOut.getType()).getBody()[0];
     for (int i = 0; i < numMmaRets; ++i) {
-      fc[(m * colsPerThread + 4 * n) / numCPackedElem + i + batchOffset * b] =
+      fc[(m * colsPerThread + 2 * n) / numCPackedElem + i + batchOffset * b] =
           tb.extract_val(elemTy, mmaOut, i);
     }
   };
@@ -502,7 +403,7 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
     for (int k = 0; k < repK; ++k)
       for (int m = 0; m < repM; ++m)
         for (int n = 0; n < repN; ++n)
-          callMma(b, 2 * m, 2 * n, 2 * k);
+          callMma(b, m, 2 * n, 2 * k);
 
   Type resElemTy = dTensorTy.getElementType();
 
@@ -525,26 +426,18 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
   return success();
 }
 
-LogicalResult convertMMA(triton::DotOp op, triton::DotOp::Adaptor adaptor,
-                         const LLVMTypeConverter *typeConverter,
-                         ConversionPatternRewriter &rewriter) {
+}
+
+LogicalResult convertPPUMmaV1m8(triton::DotOp op,
+                                 triton::DotOp::Adaptor adaptor,
+                                 const LLVMTypeConverter *typeConverter,
+                                 ConversionPatternRewriter &rewriter) {
   assert(mlir::isa<DotOperandEncodingAttr>(op.getA().getType().getEncoding()) &&
          mlir::isa<DotOperandEncodingAttr>(op.getB().getType().getEncoding()) &&
          "Both $a and %b should be DotOperand layout.");
-
   Value loadedC =
       loadC(op.getC(), adaptor.getC(), typeConverter, op.getLoc(), rewriter);
   return convertDot(typeConverter, rewriter, op.getLoc(), op.getA(), op.getB(),
                     op.getC(), op.getD(), adaptor.getA(), adaptor.getB(),
                     loadedC, op, adaptor);
-}
-
-} // namespace
-
-// Convert to mma.m16n16k16
-LogicalResult convertPPUMmaV1(triton::DotOp op,
-                                  triton::DotOp::Adaptor adaptor,
-                                  const LLVMTypeConverter *typeConverter,
-                                  ConversionPatternRewriter &rewriter) {
-  return convertMMA(op, adaptor, typeConverter, rewriter);
 }
