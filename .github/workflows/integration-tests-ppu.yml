@@ -35,7 +35,7 @@ jobs:
         id: ppu-test
         uses: t-head/ppu-scheduler-action@main
         with:
-          image: reg.docker.alibaba-inc.com/ai-tmp/pytorch:2.10.0-ubuntu24.04-hggcrt3-py312-ppu202609181903
+          image: download.t-head.cn/docker_release/pytorch:sdk2.2.0-2.10.0-ubuntu24.04-hggcrt3-py312-20261005
           nnodes: 0
           nproc_per_node: 1
           node_selector: "board-type=${{ matrix.runner }}"
@@ -86,15 +86,16 @@ jobs:
             fi
             # Build and install Triton (editable install)
             export TRITON_IR_FORMATTER_PATH=$PPU_SDK/bin/llvm-irformatter
+            export MAX_JOBS=16
             pip install pybind11 setuptools==68.1.2
             pip install -e . -v || { echo "[FATAL] triton editable build failed"; exit 1; }
             # Verify the imported triton is the source-built editable one (resolves under /workspace/source)
             python -c "import triton, sys; f=getattr(triton,'__file__',''); print('[INFO] triton.__file__ =', f); print('[INFO] triton.__version__ =', getattr(triton,'__version__','?')); sys.exit(0 if '/workspace/source' in f else 1)" || { echo "[FATAL] imported triton is NOT the source-built one (expected under /workspace/source)"; exit 1; }
             # Install test dependencies
-            pip install -r python/test-requirements.txt pandas
+            pip install -r python/test-requirements.txt
             # Run checkin tests (verbose output so logs are captured by ppu-scheduler-action)
             # Capture exit code so NAS copy always runs (even on test failure)
-            python .github/scripts/run_checkin_tests.py -o test_result.xml --test-dir /workspace/source --env-output env_info.json -v || TEST_RC=$?
+            python .github/ppu-ci/run_checkin_tests.py -o test_result.xml --test-dir /workspace/source --env-output env_info.json -v || TEST_RC=$?
             TEST_RC=${TEST_RC:-0}
             # Print test summary to stdout (captured in pod logs)
             echo "========== TEST RESULT SUMMARY =========="
@@ -133,11 +134,11 @@ jobs:
         shell: bash
         run: |
           NAS_RESULT_DIR="/wl_nas/devops/triton-ci/${{ github.run_id }}/${{ github.run_attempt }}/${{ matrix.runner }}"
-          python3 .github/scripts/report_test_results.py \
+          python3 .github/ppu-ci/report_test_results.py \
             --xml "$NAS_RESULT_DIR/test_result.xml" \
             --env-info "$NAS_RESULT_DIR/env_info.json" \
             --title "Triton PPU Test Results (${{ matrix.runner }})" \
-            --docker-image "reg.docker.alibaba-inc.com/ai-tmp/pytorch:2.10.0-ubuntu24.04-hggcrt3-py312-ppu202609181903" \
+            --docker-image "download.t-head.cn/docker_release/pytorch:sdk2.2.0-2.10.0-ubuntu24.04-hggcrt3-py312-20261005" \
             --run-number "${{ github.run_number }}" \
             --branch "${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}" \
             --job-status "${{ steps.ppu-test.outputs.job_status }}" \
