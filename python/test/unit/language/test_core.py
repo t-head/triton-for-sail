@@ -3952,6 +3952,42 @@ def test_dot3d(B, num_warps, M, N, K, BLOCK_M, BLOCK_N, in_dtype_str, out_dtype_
     np.testing.assert_allclose(out_ref, to_numpy(out_tri), rtol=0.01, atol=1e-2)
 
 
+@pytest.mark.parametrize("mma", ["m16", "m8"])
+def test_dot3d_ppu_batch_offset(monkeypatch, mma, device):
+    if not is_ppu() or torch.cuda.get_device_capability() != (8, 0):
+        pytest.skip("requires PPU1.0")
+
+    monkeypatch.delenv("FORCE_USE_M16MMA", raising=False)
+    monkeypatch.delenv("FORCE_USE_M8MMA", raising=False)
+    monkeypatch.setenv("FORCE_USE_M16MMA" if mma == "m16" else "FORCE_USE_M8MMA", "1")
+    batch, m, n, k = 2, 32, 8, 32
+
+    @triton.jit
+    def kernel(lhs, rhs, output, BLOCK_B: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
+               BLOCK_K: tl.constexpr):
+        offs_b = tl.arange(0, BLOCK_B)
+        offs_m = tl.arange(0, BLOCK_M)
+        offs_n = tl.arange(0, BLOCK_N)
+        offs_k = tl.arange(0, BLOCK_K)
+        lhs_offsets = offs_b[:, None, None] * BLOCK_M * BLOCK_K + offs_m[None, :, None] * BLOCK_K + offs_k[
+            None, None, :]
+        rhs_offsets = offs_b[:, None, None] * BLOCK_K * BLOCK_N + offs_k[None, :, None] * BLOCK_N + offs_n[
+            None, None, :]
+        result = tl.dot(tl.load(lhs + lhs_offsets), tl.load(rhs + rhs_offsets))
+        output_offsets = offs_b[:, None, None] * BLOCK_M * BLOCK_N + offs_m[None, :, None] * BLOCK_N + offs_n[
+            None, None, :]
+        tl.store(output + output_offsets, result)
+
+    torch.manual_seed(17)
+    lhs = torch.randn((batch, m, k), dtype=torch.float16, device=device)
+    rhs = torch.randn((batch, k, n), dtype=torch.float16, device=device)
+    output = torch.empty((batch, m, n), dtype=torch.float32, device=device)
+    kernel[(1, )](lhs, rhs, output, BLOCK_B=batch, BLOCK_M=m, BLOCK_N=n, BLOCK_K=k, num_warps=4)
+
+    expected = torch.matmul(lhs.float(), rhs.float())
+    torch.testing.assert_close(output, expected, rtol=1e-2, atol=1e-2)
+
+
 @pytest.mark.parametrize('in_dtype', ['float32'])
 def test_dot_mulbroadcasted(in_dtype, device):
     if is_cuda() or is_ppu():
