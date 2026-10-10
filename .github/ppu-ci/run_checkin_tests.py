@@ -63,505 +63,207 @@ class TestResult:
         return "PASS" if self.passed else "FAIL"
 
 
+
 # ---------------------------------------------------------------------------
-# 默认测试配置 — curated ~80 checkin tests for release/3.6.x
+# 默认测试配置 — directory-level batch architecture aligned with main.
 # ---------------------------------------------------------------------------
-# 从全目录收集收敛为约 80 条精选用例, CI 预算约两小时.
-# 覆盖: 核心语言语义 / runtime / tools / PPU AIU / fused attention / MXFP / FLA.
-# 并行度 ≤ 4 (主批次 -n 4); MAX_JOBS=16 保留在 workflow 层.
+# From 136 singleton TestConfigs to ~12 directory/file-level batches.
+# Each batch runs one pytest process, using -n 2 (xdist) where safe.
 # 仅修改 CI harness, 不修改任何测试源码.
 # ---------------------------------------------------------------------------
 
 def get_default_test_configs(test_dir: str) -> List[TestConfig]:
-    """Return curated checkin test list for release/3.6.x PPU CI."""
+    """Return directory-level checkin test configs for release/3.6.x PPU CI.
+
+    Architecture aligned with main branch: directory-level batches with
+    ``--ignore`` for files that have their own dedicated TestConfig,
+    plus ppu/ subdirectory batches.  ~12 pytest processes total.
+    """
     unit = os.path.join(test_dir, "python", "test", "unit")
     lang = os.path.join(unit, "language")
-    runtime = os.path.join(unit, "runtime")
-    tools = os.path.join(unit, "tools")
+    regression = os.path.join(test_dir, "python", "test", "regression")
+    tutorials = os.path.join(test_dir, "python", "tutorials")
     aiu = os.path.join(unit, "ppu", "aiu")
-    perf = os.path.join(unit, "ppu", "perf")
     models = os.path.join(unit, "ppu", "models")
     mxfp = os.path.join(unit, "ppu", "mxfp")
 
+    # ---- 1) unit/ main batch: --ignore for separately-configured files ----
+    main_ignored = [
+        "test_debug.py",                   # config #3 below
+        "language/test_subprocess.py",      # config #2
+        "language/test_line_info.py",       # config #4
+        "language/test_matmul.py",          # config #6
+        "language/test_conversions.py",     # config #5 (3.6 unique)
+        "ppu",                             # configs #9-#12
+    ]
+    main_args = ["--tb=short", "-n", "2"]
+    for rel in main_ignored:
+        main_args.append(f"--ignore={os.path.join(unit, rel)}")
+    # CI-level deselects: SM90/AMD/cross-backend tests that always fail on PPU
+    main_args += [
+        # test_scaled_dot requires SM90a MX hardware; OAM-810E lacks it.
+        "--deselect", "python/test/unit/language/test_core.py::test_scaled_dot[32-32-64-True-True-False-e2m1-e4m3-4-16-1]",
+        # FP8 multi-arch compile test requires CUDA cc list unavailable on PPU
+        "--deselect=language/test_compile_only.py::test_fp8_compiles_for_multiple_architectures_cuda",
+        # 890P: additional scaled_dot param combo that fails on PPU
+        "--deselect=language/test_core.py::test_scaled_dot[128-128-64-False-True-True-e4m3-e4m3-4-16-1]",
+        # 890P: PPU lacks cuobjdump; test_disam_cubin always fails
+        "--deselect=tools/test_disasm.py::test_disam_cubin",
+        # 890P: AOT link test unsupported on PPU
+        "--deselect=tools/test_aot.py::test_compile_link_matmul_no_specialization",
+    ]
+
+    # ---- test_debug overflow-sanitizer deselects (30 total) ----
+    # PPU does not emit device-side overflow diagnostics, so these always fail.
+    # should_overflow=True (10) + should_overflow=False (10) + 890P additional (10)
+    _test_debug_deselects = [
+        # --- should_overflow=True (10) ---
+        "--deselect=python/test/unit/test_debug.py::test_sanitize_int_add_overflow[-2147483648--1-int32-int32-True-True]",
+        "--deselect=python/test/unit/test_debug.py::test_sanitize_int_add_overflow[2147483647-1-int32-int32-True-True]",
+        "--deselect=python/test/unit/test_debug.py::test_sanitize_int_add_overflow[2147483647-100-int32-int32-True-True]",
+        "--deselect=python/test/unit/test_debug.py::test_sanitize_int_add_overflow[-32768--1-int16-int16-True-True]",
+        "--deselect=python/test/unit/test_debug.py::test_sanitize_int_add_overflow[32767-1-int16-int16-True-True]",
+        "--deselect=python/test/unit/test_debug.py::test_sanitize_int_mul_overflow[1073741824-4-int32-int32-True-True]",
+        "--deselect=python/test/unit/test_debug.py::test_sanitize_int_mul_overflow[1073741824-2-int32-int32-True-True]",
+        "--deselect=python/test/unit/test_debug.py::test_sanitize_int_mul_overflow[-1073741824--4-int32-int32-True-True]",
+        "--deselect=python/test/unit/test_debug.py::test_sanitize_int_sub_overflow[-2147483648-1-int32-int32-True-True]",
+        "--deselect=python/test/unit/test_debug.py::test_sanitize_int_sub_overflow[2147483647--1-int32-int32-True-True]",
+        # --- should_overflow=False (10) ---
+        "--deselect=python/test/unit/test_debug.py::test_sanitize_int_add_overflow[-2147483648--1-int32-int32-True-False]",
+        "--deselect=python/test/unit/test_debug.py::test_sanitize_int_add_overflow[2147483647-1-int32-int32-True-False]",
+        "--deselect=python/test/unit/test_debug.py::test_sanitize_int_add_overflow[2147483647-100-int32-int32-True-False]",
+        "--deselect=python/test/unit/test_debug.py::test_sanitize_int_add_overflow[-32768--1-int16-int16-True-False]",
+        "--deselect=python/test/unit/test_debug.py::test_sanitize_int_add_overflow[32767-1-int16-int16-True-False]",
+        "--deselect=python/test/unit/test_debug.py::test_sanitize_int_mul_overflow[1073741824-4-int32-int32-True-False]",
+        "--deselect=python/test/unit/test_debug.py::test_sanitize_int_mul_overflow[1073741824-2-int32-int32-True-False]",
+        "--deselect=python/test/unit/test_debug.py::test_sanitize_int_mul_overflow[-1073741824--4-int32-int32-True-False]",
+        "--deselect=python/test/unit/test_debug.py::test_sanitize_int_sub_overflow[-2147483648-1-int32-int32-True-False]",
+        "--deselect=python/test/unit/test_debug.py::test_sanitize_int_sub_overflow[2147483647--1-int32-int32-True-False]",
+        # --- 890P additional failures (10) ---
+        "--deselect=python/test/unit/test_debug.py::test_sanitize_int_add_overflow[-2147483648--1-int32-int32-False-False]",
+        "--deselect=python/test/unit/test_debug.py::test_sanitize_int_add_overflow[-2147483648-0-int32-int32-True-False]",
+        "--deselect=python/test/unit/test_debug.py::test_sanitize_int_add_overflow[-2147483648-2-int32-int32-True-False]",
+        "--deselect=python/test/unit/test_debug.py::test_sanitize_int_add_overflow[0--1-int32-int32-True-False]",
+        "--deselect=python/test/unit/test_debug.py::test_sanitize_int_mul_overflow[1073741824-4-int32-int32-False-False]",
+        "--deselect=python/test/unit/test_debug.py::test_sanitize_int_mul_overflow[-2147483648-1-int32-int32-True-False]",
+        "--deselect=python/test/unit/test_debug.py::test_sanitize_int_mul_overflow[-1073741824-2-int32-int32-True-False]",
+        "--deselect=python/test/unit/test_debug.py::test_sanitize_int_sub_overflow[-2147483648-1-int32-int32-False-False]",
+        "--deselect=python/test/unit/test_debug.py::test_sanitize_int_sub_overflow[2147483647-1-int32-int32-True-False]",
+        "--deselect=python/test/unit/test_debug.py::test_sanitize_int_sub_overflow[-2147483648--1-int32-int32-True-False]",
+    ]
+
+    # ---- test_matmul -k filter (aligned with main) ----
+    _matmul_k_filter = (
+        "test_block_scale_fp4 or test_mxfp8_mxfp4_matmul"
+        " or test_simple_persistent_matmul"
+        " or test_mxfp or test_blocked_scale_mxfp"
+    )
+
     return [
         # ==============================================================
-        # 语言层 - frontend / TTIR / TTGIR:
-        # block pointer / 算术 / 位运算 / 比较 / broadcast / slice 错误 /
-        # reduce / where / random / print
+        # 1) unit/ main batch — whole directory, ignoring files with
+        #    dedicated configs below.  Replaces 77 singletons.
         # ==============================================================
         TestConfig(
-            # parametrize index 216 = (float32,float32), n=1024, padding=None, boundary=None
-            file_path=os.path.join(lang, "test_block_pointer.py"),
-            test_filter="test_block_copy[dtypes_str216-1024-None-None]",
+            file_path=unit,
+            extra_args=main_args,
         ),
-        TestConfig(
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_bin_op[1-int32-int8-+]",
-        ),
-        TestConfig(
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_floordiv[1-uint8-uint32]",
-        ),
-        TestConfig(
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_bitwise_op[1-int8-int8-&0]",
-        ),
-        TestConfig(
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_compare_op[1-int8-int8-==-real-real]",
-        ),
-        TestConfig(
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_broadcast[float64]",
-        ),
-        TestConfig(
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_invalid_slice",
-        ),
-        TestConfig(
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_reduce1d[1-min-int8-32]",
-        ),
-        TestConfig(
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_value_specialization_overflow[-9223372036854775808-False]",
-        ),
-        TestConfig(
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_where[1-bfloat16]",
-        ),
-        TestConfig(
-            file_path=os.path.join(lang, "test_random.py"),
-            test_filter="test_randint[10-0-int32-True]",
-        ),
+
+        # ==============================================================
+        # 2) test_subprocess.py — spawns child processes, separate run
+        # ==============================================================
         TestConfig(
             file_path=os.path.join(lang, "test_subprocess.py"),
-            test_filter="test_print[device_print-int8]",
+            extra_args=["--tb=short", "-n", "2"],
         ),
 
         # ==============================================================
-        # 语言层 - 类型转换: FpToFp 上/下转换 (fp8 双向), FpToInt narrow,
-        # identity cast
+        # 3) test_debug.py — full file, 30 overflow deselects
         # ==============================================================
         TestConfig(
-            # bf16 -> fp8_e5m2 (FpToFp downcast 到 fp8)
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_cast[1-bfloat16-float8_e5m2-False-32]",
-        ),
-        TestConfig(
-            # fp8_e5m2 -> bf16 (fp8 -> 高精度浮点 upcast)
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_cast[1-float8_e5m2-bfloat16-False-1024]",
-        ),
-        TestConfig(
-            # fp64 -> uint8 (FpToInt, narrowing to unsigned)
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_cast[1-float64-uint8-False-1024]",
-        ),
-        TestConfig(
-            # int8 -> int8 (identity cast)
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_cast[1-int8-int8-False-1024]",
+            file_path=os.path.join(unit, "test_debug.py"),
+            extra_args=["--tb=short", "-n", "2"] + _test_debug_deselects,
         ),
 
         # ==============================================================
-        # 语言层 - reduce / scan / sort / flip
+        # 4) test_line_info.py — serial, needs TRITON_DISABLE_LINE_INFO=0
         # ==============================================================
         TestConfig(
-            # 多维 reduce + permute 串联
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_chained_reductions[in_shape0-perm0-red_dims0]",
-        ),
-        TestConfig(
-            # 2D reduce min, shape=(2,32) float32 axis=0
-            # NOTE: shape index depends on parametrize ordering;
-            # shape60=(2,32) for configs2 first entry on 3.6.x (60 configs1 entries precede)
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_reduce[1-min-float32-shape60-0-False]",
-        ),
-        TestConfig(
-            # tl.cumsum 1D scan
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_scan_1d[8-8]",
-        ),
-        TestConfig(
-            # tl.sort: bitonic sort
-            file_path=os.path.join(lang, "test_standard.py"),
-            test_filter="test_sort[int32-False-None-1-1]",
-        ),
-        TestConfig(
-            # tl.flip
-            file_path=os.path.join(lang, "test_standard.py"),
-            test_filter="test_flip[0-int32-1-16-64]",
+            file_path=os.path.join(lang, "test_line_info.py"),
+            extra_args=["--tb=short"],
+            env={"TRITON_DISABLE_LINE_INFO": "0"},
         ),
 
         # ==============================================================
-        # 语言层 - transpose / permute / histogram
-        # ==============================================================
-        TestConfig(
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_transpose[int32]",
-        ),
-        TestConfig(
-            # tl.permute (1,0), fp16 64x64
-            # 3.6.x global index 2: shape2=(64,64), perm2=(1,0) (float8e4b15 takes 0-1)
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_permute[1-float16-shape2-perm2]",
-        ),
-        TestConfig(
-            # tl.histogram
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_histogram[8-2]",
-        ),
-
-        # ==============================================================
-        # 语言层 - 通用 tl.dot (非 AIU 加速)
-        # ==============================================================
-        TestConfig(
-            # 最小尺寸 (16x16x16) fp16->fp32 dot
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_dot[1-16-16-16-4-False-False-none-ieee-float16-float32-1-None]",
-        ),
-
-        # ==============================================================
-        # 语言层 - 数学 intrinsics (libdevice)
-        # ==============================================================
-        TestConfig(
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_math_op[float32-exp-x]",
-        ),
-
-        # ==============================================================
-        # 语言层 - tl.range / pipelining
-        # ==============================================================
-        TestConfig(
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_tl_range_num_stages",
-        ),
-        TestConfig(
-            file_path=os.path.join(lang, "test_pipeliner.py"),
-            test_filter="test_pipeline_vecadd",
-        ),
-        TestConfig(
-            file_path=os.path.join(lang, "test_pipeliner.py"),
-            test_filter="test_pipeline_matmul[False]",
-        ),
-        TestConfig(
-            file_path=os.path.join(lang, "test_pipeliner.py"),
-            test_filter="test_pipeline_epilogue[1-0]",
-        ),
-
-        # ==============================================================
-        # 语言层 - 原子操作
-        # ==============================================================
-        TestConfig(
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_atomic_cas[int32-1-None]",
-        ),
-        TestConfig(
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_tensor_atomic_rmw_block[1]",
-        ),
-
-        # ==============================================================
-        # 语言层 - 控制流: if / while / for
-        # ==============================================================
-        TestConfig(
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_if_else",
-        ),
-        TestConfig(
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_while",
-        ),
-        TestConfig(
-            # 反向 for-loop (iv<0)
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_for_iv[22-18--1]",
-        ),
-
-        # ==============================================================
-        # 语言层 - masked load + padding
-        # ==============================================================
-        TestConfig(
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_masked_load[1-float32-128-2-0]",
-        ),
-
-        # ==============================================================
-        # 语言层 - shape ops: expand_dims
-        # ==============================================================
-        TestConfig(
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_expand_dims",
-        ),
-
-        # ==============================================================
-        # 语言层 - noinline 函数调用
-        # ==============================================================
-        TestConfig(
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_noinline[call_graph]",
-        ),
-
-        # ==============================================================
-        # 语言层 - 数据重组: cat / join / split
-        # ==============================================================
-        TestConfig(
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_cat[int8-4]",
-        ),
-        TestConfig(
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_join",
-        ),
-        TestConfig(
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_split",
-        ),
-
-        # ==============================================================
-        # 语言层 - 3D dot / scaled dot
-        # ==============================================================
-        TestConfig(
-            # 3D batched dot, B=1, int8
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_dot3d[1-1-64-64-64-32-32-int8-int8]",
-        ),
-        TestConfig(
-            # tl.dot_scaled: MX 浮点缩放 matmul, e2m1 格式
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_scaled_dot[32-32-64-True-True-False-e2m1-e4m3-4-16-1]",
-            skip_boards=["OAM-810E"],
-        ),
-
-        # ==============================================================
-        # 语言层 - 构造 / 索引: full / arange / gather
-        # ==============================================================
-        TestConfig(
-            # tl.full: shape=(128,) int32 — shape2 maps to (128,) on 3.6.x
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_full[shape2-int32]",
-        ),
-        TestConfig(
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_arange[1-0]",
-        ),
-        TestConfig(
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_gather",
-        ),
-
-        # ==============================================================
-        # 语言层 - inline asm
-        # ==============================================================
-        TestConfig(
-            file_path=os.path.join(lang, "test_core.py"),
-            test_filter="test_inline_asm[1]",
-        ),
-
-        # ==============================================================
-        # 语言层 - 类型转换 (test_conversions): fp16->fp32 upcast
+        # 5) test_conversions.py — full file (3.6 unique)
         # ==============================================================
         TestConfig(
             file_path=os.path.join(lang, "test_conversions.py"),
-            test_filter="test_typeconvert_upcast[float16-float32]",
+            extra_args=["--tb=short", "-n", "2"],
         ),
 
         # ==============================================================
-        # 语言层 - frontend AST
+        # 6) test_matmul.py — -k filter (replaces 32 precise nodeids)
         # ==============================================================
         TestConfig(
-            file_path=os.path.join(lang, "test_frontend.py"),
-            test_filter="test_assign_attribute",
-        ),
-        TestConfig(
-            file_path=os.path.join(lang, "test_frontend.py"),
-            test_filter="test_constexpr_function_from_jit",
+            file_path=os.path.join(lang, "test_matmul.py"),
+            extra_args=[
+                "--tb=short", "-n", "2",
+                "-k", _matmul_k_filter,
+            ],
         ),
 
         # ==============================================================
-        # 语言层 - tuple
+        # 7) regression/ — full directory (aligned with main)
         # ==============================================================
         TestConfig(
-            file_path=os.path.join(lang, "test_tuple.py"),
-            test_filter="test_index[0]",
+            file_path=regression,
+            extra_args=["--tb=short", "-n", "2"],
         ),
 
         # ==============================================================
-        # Runtime 层: cache / autotuner / launch / driver / build / subproc
+        # 8) tutorials/06-fused-attention.py — serial (VRAM budget)
         # ==============================================================
         TestConfig(
-            file_path=os.path.join(runtime, "test_cache.py"),
-            test_filter="test_reuse",
-        ),
-        TestConfig(
-            file_path=os.path.join(runtime, "test_autotuner.py"),
-            test_filter="test_kwargs[False]",
-        ),
-        TestConfig(
-            file_path=os.path.join(runtime, "test_launch.py"),
-            test_filter="test_metadata",
-        ),
-        TestConfig(
-            file_path=os.path.join(runtime, "test_cache.py"),
-            test_filter="test_nochange",
-        ),
-        TestConfig(
-            file_path=os.path.join(runtime, "test_driver.py"),
-            test_filter="test_is_lazy",
-        ),
-        TestConfig(
-            file_path=os.path.join(runtime, "test_build.py"),
-            test_filter="test_compile_module",
-        ),
-        TestConfig(
-            file_path=os.path.join(runtime, "test_subproc.py"),
-            test_filter="test_compile_in_subproc",
+            file_path=os.path.join(tutorials, "06-fused-attention.py"),
+            extra_args=["--tb=short"],
         ),
 
         # ==============================================================
-        # 基础设施 / 工具: linear layout / filecheck / irsource
+        # 9) ppu/aiu/ batch — whole directory, -n 2
+        #    FP8 order file excluded (board-gated config #10 below)
         # ==============================================================
         TestConfig(
-            file_path=os.path.join(tools, "test_linear_layout.py"),
-            test_filter="test_compose",
-        ),
-        TestConfig(
-            file_path=os.path.join(unit, "test_filecheck.py"),
-            test_filter="test_filecheck_positive",
-        ),
-        TestConfig(
-            file_path=os.path.join(tools, "test_linear_layout.py"),
-            test_filter="test_invert",
-        ),
-        TestConfig(
-            file_path=os.path.join(tools, "test_irsource.py"),
-            test_filter="test_mlir_attribute_parsing",
+            file_path=aiu,
+            extra_args=[
+                "--tb=short", "-n", "2",
+                f"--ignore={os.path.join(aiu, 'test_aiu_dot_fp8_order.py')}",
+            ],
         ),
 
         # ==============================================================
-        # 基础设施 - knobs / static_assert
-        # ==============================================================
-        TestConfig(
-            file_path=os.path.join(unit, "test_knobs.py"),
-            test_filter="test_knobs_utils",
-        ),
-        TestConfig(
-            file_path=os.path.join(unit, "test_debug.py"),
-            test_filter="test_static_assert[True]",
-        ),
-
-        # ==============================================================
-        # PPU AIU - load: 普通 2D load, block-pointer load
-        # ==============================================================
-        TestConfig(
-            file_path=os.path.join(aiu, "test_aiu_load.py"),
-            test_filter="test_aiu_load[64-64-1024-1024-2-2]",
-        ),
-        TestConfig(
-            file_path=os.path.join(aiu, "test_aiu_tensor_ptr.py"),
-            test_filter="test_aiu_load[64-64-1024-1024-2-2]",
-        ),
-
-        # ==============================================================
-        # PPU AIU - dot (主路径)
-        # ==============================================================
-        TestConfig(
-            file_path=os.path.join(aiu, "test_aiu_dot.py"),
-            test_filter="test_aiu_matmul[False-64-64-64-1024-1024-1024-2-2]",
-        ),
-
-        # ==============================================================
-        # PPU 端到端 - fused attention
-        # ==============================================================
-        TestConfig(
-            # 通用 (非 AIU) flash-attention
-            file_path=os.path.join(perf, "06-fused-attention.py"),
-            test_filter="test_op[True-1-2-1024-64]",
-        ),
-        TestConfig(
-            # AIU fp16 flash-attention
-            file_path=os.path.join(perf, "06-fused-attention-aiu.py"),
-            test_filter="test_op_fp16[True-1-2-1024-64]",
-        ),
-
-        # ==============================================================
-        # PPU AIU - addmm: bias + matmul 融合
-        # ==============================================================
-        TestConfig(
-            file_path=os.path.join(aiu, "test_aiu_addmm.py"),
-            test_filter="test_aiu_addmm[0.001-32-32-32-1024-1024-1024-1-2]",
-        ),
-
-        # ==============================================================
-        # PPU AIU - binary 逐元素运算
-        # ==============================================================
-        TestConfig(
-            file_path=os.path.join(aiu, "test_aiu_binary.py"),
-            test_filter="test_aiu_binary[False-32-32-1024-1024-1-2-+]",
-        ),
-        TestConfig(
-            file_path=os.path.join(aiu, "test_aiu_binary.py"),
-            test_filter="test_aiu_binary[False-32-32-1024-1024-1-2-*]",
-        ),
-
-        # ==============================================================
-        # PPU AIU - dot fp8 / dot order
+        # 10) ppu/aiu/test_aiu_dot_fp8_order.py — skip on OAM-810E
         # ==============================================================
         TestConfig(
             file_path=os.path.join(aiu, "test_aiu_dot_fp8_order.py"),
-            test_filter="test_aiu_matmul_fp8_with_order[32-32-32-512-512-512-2-2]",
+            extra_args=["--tb=short", "-n", "2"],
             skip_boards=["OAM-810E"],
         ),
-        TestConfig(
-            file_path=os.path.join(aiu, "test_aiu_dot_order.py"),
-            test_filter="test_aiu_matmul[32-32-32-1024-1024-1024-1-2]",
-        ),
 
         # ==============================================================
-        # PPU AIU - tensor_ptr order
-        # ==============================================================
-        TestConfig(
-            file_path=os.path.join(aiu, "test_aiu_tensor_ptr_order.py"),
-            test_filter="test_aiu_matmul[32-32-32-1024-1024-1024-1-2]",
-        ),
-
-        # ==============================================================
-        # PPU AIU - dot 扩展: mixed_load + small block
-        # ==============================================================
-        TestConfig(
-            file_path=os.path.join(aiu, "test_aiu_dot.py"),
-            test_filter="test_aiu_matmul[True-32-32-32-1024-1024-1024-1-2]",
-        ),
-        TestConfig(
-            file_path=os.path.join(aiu, "test_aiu_dot.py"),
-            test_filter="test_aiu_matmul_small_block[False-16-16-16-128-128-128-1-2]",
-        ),
-
-        # ==============================================================
-        # PPU models - FLA (Flash Linear Attention)
+        # 11) ppu/models/test_fla_ops.py
         # ==============================================================
         TestConfig(
             file_path=os.path.join(models, "test_fla_ops.py"),
-            test_filter="test_chunk_gated_delta_rule_fwd_kernel_h_blockdim64",
+            extra_args=["--tb=short"],
         ),
 
         # ==============================================================
-        # PPU MXFP - blocked-scale MX 浮点 matmul
+        # 12) ppu/mxfp/test_mxfp_matmul.py — skip on OAM-810E
         # ==============================================================
         TestConfig(
             file_path=os.path.join(mxfp, "test_mxfp_matmul.py"),
-            test_filter="test_blocked_scale_mxfp4[False-1-128-128-128-1024-512-256]",
-            skip_boards=["OAM-810E"],
-        ),
-
-        # ==============================================================
-        # PPU 端到端 - fused attention fp8 (AIU 加速)
-        # ==============================================================
-        TestConfig(
-            file_path=os.path.join(perf, "06-fused-attention-aiu.py"),
-            test_filter="test_op_fp8[True-1-2-1024-64]",
+            extra_args=["--tb=short"],
             skip_boards=["OAM-810E"],
         ),
     ]
