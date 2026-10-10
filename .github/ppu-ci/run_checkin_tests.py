@@ -34,6 +34,7 @@ class TestConfig:
     extra_args: List[str] = field(default_factory=list)  # 额外 pytest 参数
     skip_boards: List[str] = field(default_factory=list)  # 在指定板卡上跳过 (e.g. ["OAM-810E"])
     env: Dict[str, str] = field(default_factory=dict)     # 注入给 pytest 子进程的环境变量
+    board_deselects: Dict[str, List[str]] = field(default_factory=dict)  # board→deselect nodeids (applied at runtime)
 
     @property
     def display_name(self) -> str:
@@ -104,13 +105,13 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
         # test_scaled_dot requires SM90a MX hardware; OAM-810E lacks it.
         "--deselect", "python/test/unit/language/test_core.py::test_scaled_dot[32-32-64-True-True-False-e2m1-e4m3-4-16-1]",
         # FP8 multi-arch compile test requires CUDA cc list unavailable on PPU
-        "--deselect=language/test_compile_only.py::test_fp8_compiles_for_multiple_architectures_cuda",
+        "--deselect=python/test/unit/language/test_compile_only.py::test_fp8_compiles_for_multiple_architectures_cuda",
         # 890P: additional scaled_dot param combo that fails on PPU
-        "--deselect=language/test_core.py::test_scaled_dot[128-128-64-False-True-True-e4m3-e4m3-4-16-1]",
+        "--deselect=python/test/unit/language/test_core.py::test_scaled_dot[128-128-64-False-True-True-e4m3-e4m3-4-16-1]",
         # 890P: PPU lacks cuobjdump; test_disam_cubin always fails
-        "--deselect=tools/test_disasm.py::test_disam_cubin",
+        "--deselect=python/test/unit/tools/test_disasm.py::test_disam_cubin",
         # 890P: AOT link test unsupported on PPU
-        "--deselect=tools/test_aot.py::test_compile_link_matmul_no_specialization",
+        "--deselect=python/test/unit/tools/test_aot.py::test_compile_link_matmul_no_specialization",
     ]
 
     # ---- test_debug overflow-sanitizer deselects (30 total) ----
@@ -239,6 +240,14 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
                 "--tb=short", "-n", "2",
                 f"--ignore={os.path.join(aiu, 'test_aiu_dot_fp8_order.py')}",
             ],
+            board_deselects={
+                "OAM-810E": [
+                    "python/test/unit/ppu/aiu/test_aiu_binary.py::test_aiu_binary[False-128-256-1024-1024-1-2-/]",
+                    "python/test/unit/ppu/aiu/test_aiu_binary.py::test_aiu_binary[False-128-256-1024-1024-1-4-/]",
+                    "python/test/unit/ppu/aiu/test_aiu_binary.py::test_aiu_binary[True-128-256-1024-1024-1-2-/]",
+                    "python/test/unit/ppu/aiu/test_aiu_binary.py::test_aiu_binary[True-128-256-1024-1024-1-4-/]",
+                ],
+            },
         ),
 
         # ==============================================================
@@ -277,6 +286,7 @@ def run_single_test(
     config: TestConfig,
     index: int,
     verbose: bool = False,
+    board: str = "",
 ) -> TestResult:
     """
     运行单个 pytest 测试，生成临时 JUnit XML 结果文件。
@@ -305,6 +315,10 @@ def run_single_test(
     # 追加额外参数（如 -x, --timeout 等）
     if config.extra_args:
         cmd.extend(config.extra_args)
+    # Apply board-specific deselects (runtime injection)
+    if board and config.board_deselects:
+        for nodeid in config.board_deselects.get(board, []):
+            cmd.extend(["--deselect", nodeid])
 
     # 打印运行信息
     print(f"\n{'='*70}")
@@ -748,7 +762,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"\n⏭️ [{idx+1}/{len(test_configs)}] {cfg.display_name} — skipped on {current_board}")
             skipped_by_board += 1
             continue
-        result = run_single_test(cfg, idx, verbose=args.verbose)
+        result = run_single_test(cfg, idx, verbose=args.verbose, board=current_board)
         results.append(result)
     if skipped_by_board:
         print(f"\n⏭️ {skipped_by_board} test(s) skipped for board {current_board}")
