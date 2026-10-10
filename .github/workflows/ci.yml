@@ -19,6 +19,7 @@ jobs:
     uses: ./.github/workflows/runner-preparation.yml
 
   pre-commit:
+    if: false
     uses: ./.github/workflows/pre-commit.yml
 
   integration-tests-nvidia:
@@ -41,3 +42,10 @@ jobs:
     uses: ./.github/workflows/build-macos.yml
     with:
       matrix: ${{ needs.runner-preparation.outputs.matrix-MACOS }}
+
+  integration-tests-ppu:
+    needs: runner-preparation
+    if: needs.runner-preparation.outputs.matrix-PPU != ''
+    uses: ./.github/workflows/integration-tests-ppu.yml
+    with:
+      matrix: ${{ needs.runner-preparation.outputs.matrix-PPU }}

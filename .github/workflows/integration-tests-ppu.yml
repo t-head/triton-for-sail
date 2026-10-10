@@ -1,0 +1,144 @@
+name: Integration Tests PPU
+
+on:
+  workflow_call:
+    inputs:
+      matrix:
+        required: true
+        type: string
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SDK_URL: https://art-pub.eng.t-head.cn/artifactory/apackage/daily/ppu.2v2_release/latest/PPU_SDK/ppu_1.0.0_Ubuntu2404_v13_release.run
+  TORCH_URL: https://art-pub.eng.t-head.cn/artifactory/apackage/daily/ppu.2v2_release/latest/PPU_SDK_PYPI/pytorch/ppu_sdk_hggcrt3-pytorch2.10.0-ubuntu2404-py312.tar.gz
+
+jobs:
+  integration-tests-ppu:
+    runs-on: k8s-runner-group-cpu-thead
+    container:
+      image: ghcr.io/actions/actions-runner:latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: ${{ fromJson(inputs.matrix || '["ZW-M890P", "OAM-810E"]') }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: "true"
+
+      - name: Build and Test on PPU
+        id: ppu-test
+        uses: t-head/ppu-scheduler-action@main
+        with:
+          image: download.t-head.cn/docker_release/pytorch:sdk2.2.0-2.13.0-ubuntu24.04-hggcrt3-py312-20261005
+          nnodes: 0
+          nproc_per_node: 1
+          node_selector: "board-type=${{ matrix.runner }}"
+          namespace: ppu-sched
+          # Mount NAS so the pod can hand test results back to the runner:
+          #   host /wl_nas -> pod /mnt/wl_nas  (runner sees NAS at /wl_nas, pod at /mnt/wl_nas)
+          host_volumes: /nas_aisw:/nas_aisw,/wl_nas:/mnt/wl_nas
+          extra_env: BOARD_TYPE=${{ matrix.runner }}
+          timeout_minutes: 300
+          command: |
+            cd /workspace/source
+            # Fix: image bakes in PIP_INDEX_URL pointing to unreachable internal server
+            unset PIP_INDEX_URL
+            # Fix: image bakes in git insteadOf redirecting github.com to unreachable internal gerrit
+            git config --global --unset-all url.https://ai-gerrit.eng.t-head.cn/Public/Github/.insteadOf 2>/dev/null || true
+            # PPU SDK and torch are pre-installed in the docker image
+            source /usr/local/PPU_SDK/envsetup.sh
+            # Uninstall any image-bundled triton before building from source
+            echo "[INFO] triton-related packages before uninstall:"; pip list 2>/dev/null | grep -i triton || true
+            for pkg in $(pip list --format=freeze 2>/dev/null | grep -iE '^[^=]*triton[^=]*=' | cut -d= -f1); do
+              pip uninstall -y "$pkg" || true
+            done
+            pip uninstall -y triton pytorch-triton triton-nightly 2>/dev/null || true
+            # Post-uninstall assertion: guarantee no image-bundled triton survives into the source build
+            if python -c "import triton" 2>/dev/null; then
+              echo "[FATAL] triton is STILL importable after uninstall:"; python -c "import triton; print(triton.__file__)" || true
+              SP=$(python -c "import sys; print(next((p for p in sys.path if p.endswith('site-packages')), ''))" 2>/dev/null || true)
+              if [ -n "$SP" ]; then
+                rm -rf "$SP"/triton "$SP"/triton-*.dist-info "$SP"/triton-*.egg-info "$SP"/__editable__*triton* "$SP"/*triton*.pth 2>/dev/null || true
+              fi
+              if python -c "import triton" 2>/dev/null; then
+                echo "[FATAL] image-bundled triton could NOT be removed; aborting to guarantee source-only build"; exit 1
+              fi
+              echo "[INFO] leftover triton removed from site-packages"
+            else
+              echo "[INFO] confirmed: no triton importable before source build"
+            fi
+            # ── Triton dep cache: copy pre-seeded LLVM/deps from NAS to ~/.triton ──
+            TRITON_DEP_CACHE=/mnt/wl_nas/cache/triton
+            _llvm=$( (python3 -c "import json;print(json.load(open('cmake/llvm-info.json'))['llvm_hash'])" 2>/dev/null || cat cmake/llvm-hash.txt 2>/dev/null) | cut -c1-8)
+            _dep=$(cat cmake/*.json cmake/*.txt 2>/dev/null | sha256sum | cut -c1-8)
+            _src=$TRITON_DEP_CACHE/llvm-${_llvm}-${_dep}
+            _dst=${TRITON_HOME:-$HOME}/.triton
+            if [ -n "$_llvm" ] && [ -f "$_src/SEEDED_BY" ] && [ -d "$_src/.triton" ]; then
+              echo "[triton-cache] copy $_src/.triton -> $_dst"
+              mkdir -p "$_dst"
+              if cp -a "$_src/.triton/." "$_dst/"; then
+                find "$_dst/llvm" -maxdepth 1 -type l -delete 2>/dev/null || true
+              else
+                echo "[triton-cache] copy failed, fallback to download"
+                rm -rf "$_dst"
+              fi
+            else
+              echo "[triton-cache] no cache for llvm-${_llvm}-${_dep}, skip"
+            fi
+            # Build and install Triton (editable install)
+            export TRITON_IR_FORMATTER_PATH=$PPU_SDK/bin/llvm-irformatter
+            # Cap build parallelism for the PPU CI pod to avoid OOM during LLVM/C++ compile
+            export MAX_JOBS=16
+            pip install -r python/requirements.txt
+            pip install -e . --no-build-isolation -v || { echo "[FATAL] triton editable build failed"; exit 1; }
+            # Verify the imported triton is the source-built editable one (resolves under /workspace/source)
+            python -c "import triton, sys; f=getattr(triton,'__file__',''); print('[INFO] triton.__file__ =', f); print('[INFO] triton.__version__ =', getattr(triton,'__version__','?')); sys.exit(0 if '/workspace/source' in f else 1)" || { echo "[FATAL] imported triton is NOT the source-built one (expected under /workspace/source)"; exit 1; }
+            # Install test dependencies
+            pip install -r python/test-requirements.txt pandas
+            # Run checkin tests; capture exit code so NAS copy always runs on failure
+            python .github/ppu-ci/run_checkin_tests.py -o test_result.xml --test-dir /workspace/source --env-output env_info.json || TEST_RC=$?
+            TEST_RC=${TEST_RC:-0}
+            echo "========== TEST RESULT SUMMARY =========="
+            python3 << 'PYEOF' || true
+            import xml.etree.ElementTree as ET
+            tree = ET.parse('test_result.xml')
+            root = tree.getroot()
+            for ts in root.findall('.//testsuite'):
+                total = int(ts.get('tests', 0))
+                fail = int(ts.get('failures', 0))
+                err = int(ts.get('errors', 0))
+                skip = int(ts.get('skipped', 0))
+                time_s = ts.get('time', '?')
+                print(f'Total: {total}, Passed: {total-fail-err-skip}, Failed: {fail}, Errors: {err}, Skipped: {skip}, Time: {time_s}s')
+            PYEOF
+            echo "========================================="
+            # Copy test results and env info to NAS (per-board subdir avoids collision)
+            NAS_RESULT_DIR="/mnt/wl_nas/devops/triton-ci/${{ github.run_id }}/${{ github.run_attempt }}/${{ matrix.runner }}"
+            mkdir -p "$NAS_RESULT_DIR"
+            cp test_result.xml "$NAS_RESULT_DIR/" || echo "[WARN] failed to copy test_result.xml to NAS"
+            cp env_info.json "$NAS_RESULT_DIR/" || echo "[WARN] failed to copy env_info.json to NAS"
+            exit $TEST_RC
+          cleanup_policy: always
+
+      - name: Test summary
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          NAS_RESULT_DIR="/wl_nas/devops/triton-ci/${{ github.run_id }}/${{ github.run_attempt }}/${{ matrix.runner }}"
+          python3 .github/ppu-ci/report_test_results.py \
+            --xml "$NAS_RESULT_DIR/test_result.xml" \
+            --env-info "$NAS_RESULT_DIR/env_info.json" \
+            --title "Triton PPU Test Results (${{ matrix.runner }})" \
+            --docker-image "download.t-head.cn/docker_release/pytorch:sdk2.2.0-2.13.0-ubuntu24.04-hggcrt3-py312-20261005" \
+            --run-number "${{ github.run_number }}" \
+            --branch "${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}" \
+            --job-status "${{ steps.ppu-test.outputs.job_status }}" \
+            --duration "${{ steps.ppu-test.outputs.duration_seconds }}" \
+            --pods "${{ steps.ppu-test.outputs.task_pods }}" \
+            >> $GITHUB_STEP_SUMMARY || echo "::warning::Report generation failed with exit code $?"
