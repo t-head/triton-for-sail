@@ -9,6 +9,8 @@ on:
         value: ${{ jobs.prepare.outputs.matrix-AMD }}
       matrix-MACOS:
         value: ${{ jobs.prepare.outputs.matrix-MACOS }}
+      matrix-PPU:
+        value: ${{ jobs.prepare.outputs.matrix-PPU }}
 
 jobs:
   prepare:
@@ -17,6 +19,7 @@ jobs:
       matrix-NVIDIA: ${{ steps.set-matrix.outputs.matrix-NVIDIA }}
       matrix-AMD: ${{ steps.set-matrix.outputs.matrix-AMD }}
       matrix-MACOS: ${{ steps.set-matrix.outputs.matrix-MACOS }}
+      matrix-PPU: ${{ steps.set-matrix.outputs.matrix-PPU }}
     steps:
       - name: Decide pre-submit integration test enablement
         # Always enable integration tests for pre-submit pull requests.
@@ -30,7 +33,7 @@ jobs:
           echo "enable_integration=true" >> $GITHUB_ENV
       - name: Checkout post-submit commits
         if: github.event_name == 'push'
-        uses: actions/checkout@v6
+        uses: actions/checkout@v5
         with:
           # Only fetch two commits to check the latest changed files.
           fetch-depth: 2
@@ -90,10 +93,7 @@ jobs:
       # As a compromise, run every N hours, or if a build dependency changes
       # (e.g.  we update the LLVM hash).
       - name: Decide whether to run integration tests post-submit
-        if: |
-          github.event_name == 'push' &&
-          (steps.detect-change.outputs.any_changed == 'true' ||
-           env.n_hours_since_last_run == 'true')
+        if: github.event_name == 'push'
         run: |
           echo "enable_integration=true" >> $GITHUB_ENV
       - name: Prepare runner matrix
@@ -101,11 +101,14 @@ jobs:
         if: env.enable_integration == 'true'
         run: |
           if [ x"${{ github.repository }}" == x"triton-lang/triton" ]; then
-            echo '::set-output name=matrix-NVIDIA::[{"name":"nvidia-a100","runner_type":"nvidia-a100","runs_on":["nvidia-a100"]},{"name":"nvidia-h100","runner_type":"nvidia-h100","runs_on":["nvidia-h100"]},{"name":"nvidia-gb200","runner_type":"nvidia-gb200","runs_on":{"group":"gb200-runner-set"}}]'
+            echo '::set-output name=matrix-NVIDIA::[["nvidia-a100"], ["nvidia-h100"], ["nvidia-gb200"]]'
             echo '::set-output name=matrix-AMD::[["self-hosted", "gfx90a"], ["amd-gfx942"], ["amd-gfx950"]]'
             echo '::set-output name=matrix-MACOS::[["macos-latest"]]'
           else
-            echo '::set-output name=matrix-NVIDIA::[{"name":"ubuntu-latest","runner_type":"ubuntu-latest","runs_on":"ubuntu-latest"}]'
-            echo '::set-output name=matrix-AMD::["ubuntu-latest"]'
-            echo '::set-output name=matrix-MACOS::[["macos-latest"]]'
+            # TODO: Enable NVIDIA/AMD/macOS CI when runners are available
+            # echo '::set-output name=matrix-NVIDIA::["ubuntu-latest"]'
+            # echo '::set-output name=matrix-AMD::["ubuntu-latest"]'
+            # echo '::set-output name=matrix-MACOS::["macos-latest"]'
+            # PPU CI enabled: run in parallel on 890P and 810E boards
+            echo '::set-output name=matrix-PPU::["ZW-M890P", "OAM-810E"]'
           fi
