@@ -96,7 +96,7 @@ def _register_pressure_scheduler_kernel():
     return backend, source
 
 
-@pytest.mark.skipif(is_hip(), reason="NVPTX code generation is unavailable on AMD")
+@pytest.mark.skipif(is_hip() or is_ppu(), reason="NVPTX code generation is unavailable on AMD or PPU")
 @pytest.mark.parametrize("link_hip_first", [False, True])
 def test_nvidia_register_pressure_scheduler_hook(link_hip_first, fresh_triton_cache):
     backend, source = _register_pressure_scheduler_kernel()
@@ -111,7 +111,7 @@ def test_nvidia_register_pressure_scheduler_hook(link_hip_first, fresh_triton_ca
     assert backend.make_ptx(source, {}, default_options, 90) != backend.make_ptx(source, {}, pressure_options, 90)
 
 
-@pytest.mark.skipif(is_hip(), reason="NVPTX code generation is unavailable on AMD")
+@pytest.mark.skipif(is_hip() or is_ppu(), reason="NVPTX code generation is unavailable on AMD or PPU")
 def test_nvidia_register_pressure_scheduler_concurrent():
     backend, source = _register_pressure_scheduler_kernel()
 

@@ -93,9 +93,7 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
     main_args = ["--tb=short", "-n", "2"]
     for rel in main_ignored:
         main_args.append(f"--ignore={os.path.join(unit, rel)}")
-    # CI 层函数级 deselect: 硬编码 SM90/参数缺失导致必然失败的用例
     main_args += [
-        "--deselect", "python/test/unit/language/test_compile_only.py::test_fp8_compiles_for_multiple_architectures_cuda",
         "--deselect", "python/test/unit/ppu/models/test_fla_dplr.py::test_chunk",
     ]
 
