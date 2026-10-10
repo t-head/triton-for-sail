@@ -14,7 +14,6 @@ from pathlib import Path
 import re
 import functools
 import os
-import shutil
 import time
 import copy
 import uuid
@@ -376,15 +375,8 @@ def compile(src, target=None, options=None, _env_vars=None):
     return CompiledKernel(src, metadata_group, hash)
 
 
-@functools.lru_cache(maxsize=1)
-def _is_ppu_device() -> bool:
-    return shutil.which("ppu-smi") is not None
-
-
 def make_backend(target: GPUTarget) -> BaseBackend:
     actives = [x.compiler for x in backends.values() if x.compiler.supports_target(target)]
-    if len(actives) > 1 and _is_ppu_device():
-        actives = [backends["ppu"].compiler]
     if len(actives) != 1:
         raise RuntimeError(
             f"{len(actives)} compatible backends for target ({target.backend}) ({actives}). There should only be one.")
