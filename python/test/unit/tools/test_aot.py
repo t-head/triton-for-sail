@@ -629,6 +629,10 @@ module attributes {{"ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = {warp_si
             amdgcn = k.asm["amdgcn"]
             assert '.amdgcn_target "amdgcn-amd-amdhsa--gfx942"' in amdgcn
             assert '.wavefront_size: 64' in amdgcn
+        elif is_ppu():
+            hgbin = k.asm["hgbin"]
+            assert isinstance(hgbin, bytes)
+            assert len(hgbin) > 0
 
 
 @pytest.mark.parametrize("target", [GPUTarget("hip", "gfx942", 64), GPUTarget("hip", "gfx1250", 32)])
