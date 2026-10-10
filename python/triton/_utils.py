@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from functools import reduce
+import shutil
+from functools import lru_cache, reduce
 from typing import Any, Callable, TYPE_CHECKING, Union, List, Dict
 
 if TYPE_CHECKING:
@@ -132,3 +133,8 @@ def get_primitive_bitwidth(dtype: str) -> int:
 
 def is_namedtuple(val):
     return isinstance(val, type) and issubclass(val, tuple) and hasattr(val, "_fields")
+
+
+@lru_cache(maxsize=1)
+def is_ppu_device() -> bool:
+    return shutil.which("ppu-smi") is not None
