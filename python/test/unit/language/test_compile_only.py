@@ -327,7 +327,6 @@ def test_fp8_compiles_for_multiple_architectures_hip():
     triton.compile(src, target=GPUTarget("hip", "gfx942", 64))
 
 
-@pytest.mark.skipif(is_ppu(), reason="ptxas is not installed on PPU")
 def test_fp8_compiles_for_multiple_architectures_cuda():
     """
     Validate FP8 compilation succeeds for architectures with different
@@ -343,5 +342,6 @@ def test_fp8_compiles_for_multiple_architectures_cuda():
         tl.store(dst + idx, tl.load(src + idx).to(tl.float8e5))
 
     src = ASTSource(fn=fp8_convert, signature={"src": "*fp32", "dst": "*fp8e5"}, constexprs={})
-    triton.compile(src, target=GPUTarget("cuda", 90, 32))
+    if torch.cuda.get_device_capability()[0] >= 9:
+        triton.compile(src, target=GPUTarget("cuda", 90, 32))
     triton.compile(src, target=GPUTarget("cuda", 80, 32))
