@@ -1,9 +1,15 @@
 autopep8
+cloudpickle
+einops
+expecttest
 isort
+llnl-hatchet
+msgpack
 numpy
+pandas<3.0
 pytest
 pytest-forked
+pytest-instafail
+pytest-timeout
 pytest-xdist
 scipy>=1.7.1
-llnl-hatchet
-expecttest
