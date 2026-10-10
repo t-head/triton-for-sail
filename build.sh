@@ -1,29 +1,14 @@
 #!/bin/bash
+set -e
 
-set +e
-DIR="$( cd "$(dirname "${BASH_SOURCE[0]}" )" && pwd)"
-#build options
-BUILD_DEVICE_PPU=1
-BUILD_PLATFORM="ubuntu"
+export GIT_CONFIG_GLOBAL=/dev/null
 
-while [[ -n $1 ]];
-do
-    case "$1" in
-        ppu)    BUILD_DEVICE_PPU=1;;
-        alios) BUILD_PLATFORM="alios";;
-        ubuntu) BUILD_PLATFORM="ubuntu";;
-    esac
-    shift
-done
+if [[ "$(python -c 'import nanobind; print(nanobind.__version__)' 2>/dev/null)" != "2.10.2" ]]; then
+    python -m pip install nanobind==2.10.2
+fi
 
-export BUILD_PLATFORM=${BUILD_PLATFORM}
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$DIR"
 
-cd $DIR
-BUILD_CMD="python setup.py bdist_wheel"
-
-echo $BUILD_CMD
-eval $BUILD_CMD || exit 1
-
-cd dist
-pip uninstall -y triton
-pip install `ls | grep -E "triton.*whl"`
+python -m pip uninstall -y triton
+python -m pip install -e . --no-build-isolation -v
