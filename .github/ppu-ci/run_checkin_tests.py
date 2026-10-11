@@ -232,14 +232,10 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
 
         # ==============================================================
         # 9) ppu/aiu/ batch — whole directory, -n 2
-        #    FP8 order file excluded (board-gated config #10 below)
         # ==============================================================
         TestConfig(
             file_path=aiu,
-            extra_args=[
-                "--tb=short", "-n", "2",
-                f"--ignore={os.path.join(aiu, 'test_aiu_dot_fp8_order.py')}",
-            ],
+            extra_args=["--tb=short", "-n", "2"],
             board_deselects={
                 "OAM-810E": [
                     "python/test/unit/ppu/aiu/test_aiu_binary.py::test_aiu_binary[False-128-256-1024-1024-1-2-/]",
@@ -251,16 +247,7 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
         ),
 
         # ==============================================================
-        # 10) ppu/aiu/test_aiu_dot_fp8_order.py — skip on OAM-810E
-        # ==============================================================
-        TestConfig(
-            file_path=os.path.join(aiu, "test_aiu_dot_fp8_order.py"),
-            extra_args=["--tb=short", "-n", "2"],
-            skip_boards=["OAM-810E"],
-        ),
-
-        # ==============================================================
-        # 11) ppu/models/test_fla_ops.py
+        # 10) ppu/models/test_fla_ops.py
         # ==============================================================
         TestConfig(
             file_path=os.path.join(models, "test_fla_ops.py"),
@@ -268,7 +255,7 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
         ),
 
         # ==============================================================
-        # 12) ppu/mxfp/test_mxfp_matmul.py — skip on OAM-810E
+        # 11) ppu/mxfp/test_mxfp_matmul.py — skip on OAM-810E
         # ==============================================================
         TestConfig(
             file_path=os.path.join(mxfp, "test_mxfp_matmul.py"),
