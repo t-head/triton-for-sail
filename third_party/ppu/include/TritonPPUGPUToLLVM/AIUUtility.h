@@ -58,12 +58,21 @@ DenseMap<unsigned, Value> getAIUSwizzledSharedPtrs(
 inline llvm::SmallVector<unsigned>
 AIULoadStrategy(unsigned numWarps, unsigned xElems, unsigned channelElems,
                 unsigned elemBytes, unsigned version = 1) {
+  constexpr unsigned minXElems = 16;
+  constexpr unsigned maxCubeW = 2048;
+  assert(numWarps != 0 && "numWarps must be non-zero");
+  assert(xElems >= minXElems && "xElems must be >= minXElems");
+  assert(channelElems != 0 && "channelElems must be non-zero");
+  assert(elemBytes != 0 && "elemBytes must be non-zero");
+
+  if(version == 1 || version == 2)
+    assert((elemBytes == 1 || elemBytes == 2 || elemBytes == 4) &&
+          "elemBytes must be 1, 2, or 4 for version 1 or 2");
+
   if (version == 1) {
     unsigned sliceByte = 32;
     unsigned maxSliceBytes = 128;
     unsigned channelBytes = channelElems * elemBytes;
-    unsigned minXElems = 16;
-    unsigned maxCubeW = 2048;
     auto sliceTotal = channelBytes / sliceByte;
     unsigned numSlice, cubeC, cubeW, warpC, warpW;
 
