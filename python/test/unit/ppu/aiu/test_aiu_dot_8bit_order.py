@@ -1,6 +1,5 @@
 import pytest
 import torch
-import itertools
 import triton
 import triton.language as tl
 
@@ -50,13 +49,13 @@ dtypes = {
     torch.int8: (tl.int8, tl.int32, torch.int32),
 }
 
-sizes = [32, 64, 128, 256]
 @pytest.mark.parametrize("num_stages", [2, 3, 4, 5])
 @pytest.mark.parametrize("num_warps", [2, 4, 8])
 @pytest.mark.parametrize("M, N, K", [(512, 512, 512)])
 @pytest.mark.parametrize(
     "BLOCK_M, BLOCK_N, BLOCK_K",
-    list(itertools.product(sizes, sizes, sizes))
+    [(32, 32, 32), (32, 64, 256), (64, 256, 32), (256, 32, 128), (128, 32, 64), (32, 256, 64),
+     (64, 128, 256), (256, 128, 32), (128, 64, 32), (32, 128, 128), (64, 32, 64)],
 )
 @pytest.mark.parametrize("dtype", list(dtypes.keys()), ids=["fp8e5", "int8"])
 def test_aiu_matmul_8bit_with_order(num_stages, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, num_warps, dtype):

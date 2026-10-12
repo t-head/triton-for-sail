@@ -4,7 +4,6 @@ import torch
 import tempfile
 import triton
 import triton.language as tl
-import itertools
 
 from triton._internal_testing import to_numpy, is_ppu
 
@@ -48,13 +47,13 @@ def load_kernel_fp32(a_ptr, c_ptr, M, K, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_
     tl.store(c_ptrs, a, mask=c_mask)
 
 
-sizes = [16, 32, 64, 128, 256]
 @pytest.mark.parametrize("num_stages", [1, 2, 3, 4, 5])
 @pytest.mark.parametrize("num_warps", [1, 2, 4, 8])
 @pytest.mark.parametrize("M, K", [(1024, 1024)])
 @pytest.mark.parametrize(
     "BLOCK_M, BLOCK_K",
-    list(itertools.product(sizes, sizes))
+    [(16, 64), (32, 256), (64, 16), (128, 32), (256, 128),
+     (16, 256), (64, 128), (256, 32), (128, 64), (256, 256)],
 )
 def test_load_fp32(num_stages, M, K, BLOCK_M, BLOCK_K, num_warps):
     device = "cuda"

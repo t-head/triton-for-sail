@@ -56,8 +56,8 @@ Use `tl.aiu_load` when you need to load a `BLOCK_M x BLOCK_K` tensor from an `M 
 - The data along the `BLOCK_K` dimension must be a multiple of 32 bytes.
 - The block tensor must be contiguous along both the M and K dimensions.
 - Supported data types:
-  - PPU0010: `b16`
-  - PPU0015: `b16`, `b8`
+  - PPU0010: `b8`, `b16`, `b32`
+  - PPU0015: `b8`, `b16`, `b32`
 
 
 The following is an example matmul kernel using `tl.aiu_load`:

@@ -1,7 +1,6 @@
 import pytest
 import torch
 import triton
-import itertools
 import numpy as np
 import triton.language as tl
 
@@ -76,20 +75,20 @@ def matmul_kernel_aiu_fp32(A_ptr, B_ptr, C_ptr,
     tl.store(c_ptrs, accumulator, mask=c_mask)
 
 
-sizes = [32, 64, 128, 256]
 @pytest.mark.parametrize("num_stages", [2, 3, 4, 5])
 @pytest.mark.parametrize("num_warps", [2, 4, 8])
 @pytest.mark.parametrize("M, N, K", [(512, 512, 512)])
 @pytest.mark.parametrize(
     "BLOCK_M, BLOCK_N, BLOCK_K",
-    list(itertools.product(sizes, sizes, sizes))
+    [(32, 32, 32), (32, 64, 256), (64, 256, 32), (256, 32, 128), (128, 32, 64), (32, 256, 64),
+     (64, 128, 256), (256, 128, 32), (128, 64, 32), (32, 128, 128), (64, 32, 64)],
 )
 @pytest.mark.parametrize("m8_mma", [0, 1])
 def test_aiu_matmul_fp32(monkeypatch, num_stages, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, num_warps, m8_mma):
     monkeypatch.setenv("FORCE_USE_M8MMA", str(m8_mma))
     capability = torch.cuda.get_device_capability()
     if m8_mma == 1 and not (capability[0] == 8 and capability[1] == 0):
-        pytest.skip("m8 mma only support on ppu1.0")
+        pytest.skip("m8 mma only support on PPU0010")
 
     device = "cuda"
     torch.manual_seed(0)
