@@ -10,7 +10,22 @@ This repository is the **PPU fork** of Triton, providing support for the PPU ind
 - **Runtime**: Requires the T-Head SAIL SDK (PPU SDK) environment.
 - **Programming interface**: Write kernels using exactly the same Python programming interface as upstream Triton; the PPU backend transparently handles compilation and execution targeting PPU hardware.
 
-## 2. Core Features and Optimizations
+## 2. Branches
+
+| Branch | Upstream base |
+|---|---|
+| [`release/3.8.x`](../tree/release/3.8.x) | [Triton 3.8.0](https://github.com/triton-lang/triton/releases/tag/v3.8.0) |
+| [`release/3.7.x`](../tree/release/3.7.x) | [Triton 3.7.1](https://github.com/triton-lang/triton/releases/tag/v3.7.1) |
+| [`release/3.6.x`](../tree/release/3.6.x) | [Triton 3.6.0](https://github.com/triton-lang/triton/releases/tag/v3.6.0) |
+| [`main`](../tree/main) | [Triton `main`](https://github.com/triton-lang/triton) |
+
+- Each `release/X.Y.x` branch is based on the corresponding upstream Triton release and contains the complete PPU backend; a newer release branch includes all PPU features of the older ones.
+- `main` tracks the latest upstream Triton `main`; PPU development for the next release lands there first, and it may be less stable than the release branches.
+- For a stable build, use the newest release branch; for upstream changes that are not in a release branch yet, use `main`.
+
+Release notes are published on the [Releases](../releases) page.
+
+## 3. Core Features and Optimizations
 
 The PPU backend follows Triton's standard multi-stage compilation flow: ttir → ttgir → llir → hgbin, inserting PPU-specific passes at each stage. The core implementation lives in [`third_party/ppu/backend/compiler.py`](third_party/ppu/backend/compiler.py).
 
@@ -24,11 +39,11 @@ Key optimizations on PPU:
 
 
 
-## 3. AIU Usage Guide
+## 4. AIU Usage Guide
 
 PPU Triton extends the Triton language with a new `aiu_load` API that moves data from global memory to shared memory via the AIU (AI accelerator in compute Unit) to accelerate data transfer. It currently provides the `tl.aiu_load`, `make_block_ptr`, and `make_tensor_descriptor` interfaces, which users can easily integrate into existing Triton kernels.
 
-### 3.1 tl.aiu_load
+### 4.1 tl.aiu_load
 
 ```python
 def aiu_load(pointer, offsets=(0, 0), block_shape=(0, 0), shape=(0, 0), dtype=void, order=(1, 0), _semantic=None):
@@ -97,7 +112,7 @@ def matmul_kernel_aiu(a_ptr, b_ptr, c_ptr,
     tl.store(c_ptrs, c, mask=c_mask)
 ```
 
-### 3.2 make_block_ptr
+### 4.2 make_block_ptr
 
 Using `make_block_ptr` makes `aiu_load` simpler; it requires `make_block_ptr` / `aiu_load` / `advance` to be used together.
 
@@ -171,7 +186,7 @@ def matmul_kernel_aiu(a_ptr, b_ptr, c_ptr,
 ```
 
 
-### 3.3 make_tensor_descriptor
+### 4.3 make_tensor_descriptor
 
 PPU Triton adds AIU support for `tl.make_tensor_descriptor`; when the conditions are met, a load op can be automatically promoted to an AIU load.
 
@@ -196,16 +211,16 @@ def make_tensor_descriptor(
 
 When using `tl.make_tensor_descriptor` in Triton kernels, the loads can be automatically promoted to AIU loads when the conditions are met.
 
-### 3.4 More Examples
+### 4.4 More Examples
 
 For more AIU use cases, refer to the tests and performance examples in the repository:
 
 - [`python/test/unit/ppu/aiu/`](python/test/unit/ppu/aiu) — AIU functional tests, covering `aiu_load`, `block pointer`, `tensor descriptor`, `dot`, and `addmm`, along with various data types (FP16, FP8) and order combinations.
 - [`python/test/unit/ppu/perf/`](python/test/unit/ppu/perf) — AIU-based performance examples, such as matrix multiplication ([`03-matrix-multiplication-aiu.py`](python/test/unit/ppu/perf/03-matrix-multiplication-aiu.py), [`03-matrix-multiplication-mxfp4-aiu.py`](python/test/unit/ppu/perf/03-matrix-multiplication-mxfp4-aiu.py)) and fused attention ([`06-fused-attention-aiu.py`](python/test/unit/ppu/perf/06-fused-attention-aiu.py)).
 
-## 4. Build and Installation
+## 5. Build and Installation
 
-### 4.1 Prerequisites
+### 5.1 Prerequisites
 
 - **PPU SDK**: Install the PPU SDK and specify its path via the `PPU_SDK` environment variable (defaults to `/usr/local/PPU_SDK`). The SDK provides headers, libraries, and toolchain executables such as `ppu-llc` and `llvm-irformatter`.
 - **Runtime driver**: Install the PPU runtime driver `libhggc.so` and make sure it can be found via `ldconfig` or `LD_LIBRARY_PATH`.
@@ -216,7 +231,7 @@ export PPU_SDK=/usr/local/PPU_SDK           # adjust to your actual install path
 export LD_LIBRARY_PATH=$PPU_SDK/lib:$LD_LIBRARY_PATH
 ```
 
-### 4.2 Install from source
+### 5.2 Install from source
 
 ```shell
 # In the repository root
@@ -235,14 +250,14 @@ pip install -e .
 
 > Build options (custom LLVM, `ccache`, limiting memory usage with `MAX_JOBS`, etc.) are identical to upstream Triton; see "Building with a custom LLVM" and "Tips for building" in the [upstream Triton README](README.triton.md). For a custom LLVM build, find the required revision in the `llvm_hash` field of `cmake/llvm-info.json`.
 
-### 4.3 Verify the installation
+### 5.3 Verify the installation
 
 After building from source, check the import and version with `python -c "import triton; print(triton.__version__)"`. If the version number prints correctly, Triton has been installed successfully and the C++/MLIR extensions load correctly.
 
 Then you can run the examples in the AIU section for end-to-end verification.
 
 
-### 4.4 Environment variables
+### 5.4 Environment variables
 
 For general environment variables, see the [upstream Triton README](README.triton.md). In particular, floating-point fusion is disabled by default:
 
