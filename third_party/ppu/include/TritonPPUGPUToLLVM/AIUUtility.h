@@ -64,7 +64,7 @@ AIULoadStrategy(unsigned numWarps, unsigned xElems, unsigned channelElems,
   if (numWarps == 0 || xElems < minXElems || channelElems == 0 ||
       elemBytes == 0)
     return failure();
-  if ((version == 1 && elemBytes != 1 && elemBytes != 2) ||
+  if ((version == 1 && elemBytes != 1 && elemBytes != 2 && elemBytes != 4) ||
       (version == 2 && elemBytes != 1 && elemBytes != 2 && elemBytes != 4))
     return failure();
 

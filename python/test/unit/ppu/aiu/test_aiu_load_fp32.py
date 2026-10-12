@@ -60,9 +60,6 @@ def test_load_fp32(num_stages, M, K, BLOCK_M, BLOCK_K, num_warps):
     device = "cuda"
     torch.manual_seed(0)
 
-    if is_ppu() and torch.cuda.get_device_capability()[0] == 8 and torch.cuda.get_device_capability()[1] != 9:
-        pytest.skip("fp32 only support ppu1.5")
-
     A = torch.randn((M, K), device=device, dtype=torch.float32)
 
     C_tri = torch.empty((M, K), device=A.device, dtype=torch.float32)

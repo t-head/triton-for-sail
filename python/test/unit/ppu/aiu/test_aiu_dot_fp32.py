@@ -84,14 +84,17 @@ sizes = [32, 64, 128, 256]
     "BLOCK_M, BLOCK_N, BLOCK_K",
     list(itertools.product(sizes, sizes, sizes))
 )
-def test_aiu_matmul_fp32(num_stages, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, num_warps):
+@pytest.mark.parametrize("m8_mma", [0, 1])
+def test_aiu_matmul_fp32(monkeypatch, num_stages, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, num_warps, m8_mma):
+    monkeypatch.setenv("FORCE_USE_M8MMA", str(m8_mma))
+    capability = torch.cuda.get_device_capability()
+    if m8_mma == 1 and not (capability[0] == 8 and capability[1] == 0):
+        pytest.skip("M8 MMA is supported only on PPU0010")
+
     device = "cuda"
     torch.manual_seed(0)
 
-    if is_ppu() and torch.cuda.get_device_capability()[0] == 8 and torch.cuda.get_device_capability()[1] != 9:
-        pytest.skip("fp32 only support ppu1.5")
-
-    if (BLOCK_M * BLOCK_K * 4 + BLOCK_K * BLOCK_N * 4) * max(1, (num_stages - 1)) > 262144:
+    if (BLOCK_M * BLOCK_K * 4 + BLOCK_K * BLOCK_N * 4) * max(1, (num_stages - 1)) >= 262144:
         pytest.skip("Skip: config will out of resource using pipeline.")
 
     A = torch.randn((M, K), device=device, dtype=torch.float32)
