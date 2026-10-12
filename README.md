@@ -14,10 +14,10 @@ This repository is the **PPU fork** of Triton, providing support for the PPU ind
 
 | Branch | Upstream base |
 |---|---|
-| [`release/3.8.x`](../tree/release/3.8.x) | [Triton 3.8.0](https://github.com/triton-lang/triton/releases/tag/v3.8.0) |
-| [`release/3.7.x`](../tree/release/3.7.x) | [Triton 3.7.1](https://github.com/triton-lang/triton/releases/tag/v3.7.1) |
-| [`release/3.6.x`](../tree/release/3.6.x) | [Triton 3.6.0](https://github.com/triton-lang/triton/releases/tag/v3.6.0) |
-| [`main`](../tree/main) | [Triton `main`](https://github.com/triton-lang/triton) |
+| [`release/3.8.x`](../../tree/release/3.8.x) | [Triton 3.8.0](https://github.com/triton-lang/triton/releases/tag/v3.8.0) |
+| [`release/3.7.x`](../../tree/release/3.7.x) | [Triton 3.7.1](https://github.com/triton-lang/triton/releases/tag/v3.7.1) |
+| [`release/3.6.x`](../../tree/release/3.6.x) | [Triton 3.6.0](https://github.com/triton-lang/triton/releases/tag/v3.6.0) |
+| [`main`](../../tree/main) | [Triton `main`](https://github.com/triton-lang/triton) |
 
 - Each `release/X.Y.x` branch is based on the corresponding upstream Triton release and contains the complete PPU backend; a newer release branch includes all PPU features of the older ones.
 - `main` tracks the latest upstream Triton `main`; PPU development for the next release lands there first, and it may be less stable than the release branches.
