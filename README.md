@@ -23,7 +23,7 @@ This repository is the **PPU fork** of Triton, providing support for the PPU ind
 - `main` tracks the latest upstream Triton `main`; PPU development for the next release lands there first, and it may be less stable than the release branches.
 - For a stable build, use the newest release branch; for upstream changes that are not in a release branch yet, use `main`.
 
-Release notes are published on the [Releases](../releases) page.
+Release notes are published on the [Releases](https://github.com/t-head/triton-for-sail/releases) page.
 
 ## 3. Core Features and Optimizations
 
