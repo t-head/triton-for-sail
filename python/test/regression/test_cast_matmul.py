@@ -96,7 +96,7 @@ def test_cast_matmul(monkeypatch, M, K, N, BLOCK_K, BLOCK_M, BLOCK_N, w_dtype, x
     monkeypatch.setenv("FORCE_USE_M8MMA", str(m8_mma))
     capability = torch.cuda.get_device_capability()
     if m8_mma == 1 and not (capability[0] == 8 and capability[1] == 0):
-        pytest.skip("m8 mma only support on PPU0010")
+        pytest.skip("M8 MMA is supported only on PPU0010")
     if is_ppu() and K < 16:
         pytest.skip("dot K smaller than 16 is unsupported on PPU")
 
