@@ -89,7 +89,7 @@ def test_aiu_matmul_fp32(monkeypatch, num_stages, M, N, K, BLOCK_M, BLOCK_N, BLO
     monkeypatch.setenv("FORCE_USE_M8MMA", str(m8_mma))
     capability = torch.cuda.get_device_capability()
     if m8_mma == 1 and not (capability[0] == 8 and capability[1] == 0):
-        pytest.skip("m8 mma only support on ppu1.0")
+        pytest.skip("M8 MMA is supported only on PPU0010")
 
     device = "cuda"
     torch.manual_seed(0)
