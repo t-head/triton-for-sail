@@ -60,6 +60,7 @@ dtypes = {
 @pytest.mark.parametrize("dtype", list(dtypes.keys()), ids=["fp8e5", "int8"])
 def test_aiu_load_8bit(monkeypatch, num_stages, M, K, BLOCK_M, BLOCK_K, num_warps, m8_mma, dtype):
     monkeypatch.setenv("FORCE_USE_M8MMA", str(m8_mma))
+    load_kernel_aiu_8bit.device_caches.clear()
     capability = torch.cuda.get_device_capability()
     if m8_mma == 1 and not (capability[0] == 8 and capability[1] == 0):
         pytest.skip("m8 mma only support on ppu1.0")
