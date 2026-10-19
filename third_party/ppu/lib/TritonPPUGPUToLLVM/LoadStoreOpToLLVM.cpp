@@ -610,8 +610,8 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
 
     int elementSizeInBytes =
         op.getResult().getType().getElementType().getIntOrFloatBitWidth() / 8;
-    assert((elementSizeInBytes == 2 || elementSizeInBytes == 1) &&
-           "AIU load only supports b16 and b8 element type on PPU0010");
+    assert((elementSizeInBytes == 4 || elementSizeInBytes == 2 || elementSizeInBytes == 1) &&
+           "AIU load only supports b32, b16 and b8 element type on PPU0010");
 
     int totalNumElements = product(op.getResult().getType().getShape());
     int64_t size = totalNumElements * elementSizeInBytes;
@@ -666,7 +666,8 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
 
     unsigned numCopies = tileC / channelElemsPerCTA;
     //@$0
-    std::string dtype = (elementSizeInBytes == 2) ? ".b16" : ".b8";
+    std::string dtype = (elementSizeInBytes == 4) ? ".b32" :
+                        (elementSizeInBytes == 2) ? ".b16" : ".b8";
     std::string aiuInst =
         "ppu.cp.async.aiu.bulk.tensor.shared.global.padz.swzl.zfill." +
         std::to_string(rank) + "d" + dtype +
