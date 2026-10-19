@@ -94,6 +94,7 @@ def matmul_kernel(A, B, C, M, N, K,  #
 def test_cast_matmul(monkeypatch, M, K, N, BLOCK_K, BLOCK_M, BLOCK_N, w_dtype, x_dtype, out_dtype,
                      m8_mma, device):
     monkeypatch.setenv("FORCE_USE_M8MMA", str(m8_mma))
+    matmul_kernel.device_caches.clear()
     capability = torch.cuda.get_device_capability()
     if m8_mma == 1 and not (capability[0] == 8 and capability[1] == 0):
         pytest.skip("M8 MMA is supported only on PPU0010")

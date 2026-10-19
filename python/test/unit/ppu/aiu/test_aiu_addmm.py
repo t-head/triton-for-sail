@@ -71,6 +71,7 @@ def addmm_kernel_aiu(
 @pytest.mark.parametrize("m8_mma", [0, 1])
 def test_aiu_addmm(monkeypatch, num_stages, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, num_warps, scalar, m8_mma):
     monkeypatch.setenv("FORCE_USE_M8MMA", str(m8_mma))
+    addmm_kernel_aiu.device_caches.clear()
     capability = torch.cuda.get_device_capability()
     if m8_mma == 1 and not (capability[0] == 8 and capability[1] == 0):
         pytest.skip("M8 MMA is supported only on PPU0010")

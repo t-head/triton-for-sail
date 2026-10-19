@@ -33,6 +33,7 @@ def load_kernel_aiu(a_ptr, c_ptr, M, K, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_K
 @pytest.mark.parametrize("m8_mma", [0, 1])
 def test_aiu_load(monkeypatch, num_stages, M, K, BLOCK_M, BLOCK_K, num_warps, m8_mma):
     monkeypatch.setenv("FORCE_USE_M8MMA", str(m8_mma))
+    load_kernel_aiu.device_caches.clear()
     capability = torch.cuda.get_device_capability()
     if m8_mma == 1 and not (capability[0] == 8 and capability[1] == 0):
         pytest.skip("M8 MMA is supported only on PPU0010")
@@ -69,6 +70,7 @@ def test_aiu_load(monkeypatch, num_stages, M, K, BLOCK_M, BLOCK_K, num_warps, m8
 @pytest.mark.parametrize("m8_mma", [0, 1])
 def test_aiu_load_small_block(monkeypatch, num_stages, M, K, BLOCK_M, BLOCK_K, num_warps, m8_mma):
     monkeypatch.setenv("FORCE_USE_M8MMA", str(m8_mma))
+    load_kernel_aiu.device_caches.clear()
     capability = torch.cuda.get_device_capability()
     if m8_mma == 1 and not (capability[0] == 8 and capability[1] == 0):
         pytest.skip("M8 MMA is supported only on PPU0010")
