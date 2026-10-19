@@ -157,6 +157,8 @@ def test_aiu_matmul(
     monkeypatch, num_stages, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, num_warps, mixed_load, m8_mma
 ):
     monkeypatch.setenv("FORCE_USE_M8MMA", str(m8_mma))
+    matmul_kernel_aiu.device_caches.clear()
+    matmul_kernel_aiu_mixed_load.device_caches.clear()
     capability = torch.cuda.get_device_capability()
     if m8_mma == 1 and not (capability[0] == 8 and capability[1] == 0):
         pytest.skip("m8 mma only support on ppu1.0")
@@ -253,6 +255,8 @@ def test_aiu_matmul_small_block(
     monkeypatch, num_stages, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, num_warps, mixed_load, m8_mma
 ):
     monkeypatch.setenv("FORCE_USE_M8MMA", str(m8_mma))
+    matmul_kernel_aiu.device_caches.clear()
+    matmul_kernel_aiu_mixed_load.device_caches.clear()
     capability = torch.cuda.get_device_capability()
     if m8_mma == 1 and not (capability[0] == 8 and capability[1] == 0):
         pytest.skip("m8 mma only support on ppu1.0")
@@ -315,6 +319,8 @@ def test_aiu_matmul_16x16_block(
     monkeypatch, num_stages, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, num_warps, mixed_load, m8_mma
 ):
     monkeypatch.setenv("FORCE_USE_M8MMA", str(m8_mma))
+    matmul_kernel_aiu.device_caches.clear()
+    matmul_kernel_aiu_mixed_load.device_caches.clear()
     capability = torch.cuda.get_device_capability()
     if m8_mma == 1 and not (capability[0] == 8 and capability[1] == 0):
         pytest.skip("m8 mma only support on ppu1.0")
