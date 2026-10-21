@@ -35,6 +35,8 @@ namespace mlir::triton {
 
 namespace {
 
+constexpr llvm::StringLiteral kAIUEligibilityAttr = "tt.ppu.aiu_eligible";
+
 bool hasATensorDescriptorType(mlir::TypeRange types) {
   return llvm::any_of(types, [](mlir::Type t) {
     return llvm::isa<mlir::triton::TensorDescType>(t);
@@ -324,11 +326,8 @@ struct RewriteLoadPattern : OpConversionPattern<triton::DescriptorLoadOp> {
     auto loc = op.getLoc();
     const auto blockShape = op.getDesc().getType().getShape();
     auto descTy = op.getDesc().getType();
-    bool isAIU = false;
-    if (auto defOp = op.getDesc().getDefiningOp()) {
-      if (auto descOp = dyn_cast<triton::MakeTensorDescOp>(defOp))
-        isAIU = descOp.getIsAIU();
-    }
+    bool isAIU = op->hasAttr(kAIUEligibilityAttr);
+    op->removeAttr(kAIUEligibilityAttr);
     auto desc = unpackDescriptor(descTy, adaptor.getDesc());
     auto offsets = castToI64(rewriter, op.getIndices());
     auto other = generateOther(rewriter, loc, descTy, desc.paddingOption);
@@ -344,8 +343,8 @@ struct RewriteLoadPattern : OpConversionPattern<triton::DescriptorLoadOp> {
 
       SmallVector<Value> i32Offsets;
       for (auto offset : offsets) {
-        auto i32Offset = arith::TruncIOp::create(
-            rewriter, op.getLoc(), rewriter.getI32Type(), offset);
+        auto i32Offset = arith::TruncIOp::create(rewriter, op.getLoc(),
+                                                 rewriter.getI32Type(), offset);
         i32Offsets.push_back(i32Offset);
       }
 
@@ -594,6 +593,13 @@ class TritonRewriteTensorDescriptorToPointerPass
           TritonRewriteTensorDescriptorToPointerPass> {
   void runOnOperation() override {
     auto op = getOperation();
+
+    // Save each load's AIU flag before splitting the descriptor.
+    op.walk([&](triton::DescriptorLoadOp load) {
+      auto descOp = load.getDesc().getDefiningOp<triton::MakeTensorDescOp>();
+      if (descOp && descOp.getIsAIU())
+        load->setAttr(kAIUEligibilityAttr, UnitAttr::get(op.getContext()));
+    });
 
     mlir::ConversionTarget target(getContext());
     target.addDynamicallyLegalDialect<mlir::arith::ArithDialect,
