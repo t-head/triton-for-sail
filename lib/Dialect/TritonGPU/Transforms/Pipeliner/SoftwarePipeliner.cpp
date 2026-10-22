@@ -5,6 +5,7 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "third_party/ppu/include/Dialect/TritonPPUGPU/IR/Dialect.h"
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Analysis/Utility.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
@@ -17,6 +18,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Tools/Sys/Dump.h"
+#include "llvm/Support/MathExtras.h"
 //===----------------------------------------------------------------------===//
 // This file will create a schedule that will be handed over to the pipeline
 // expander.
@@ -61,6 +63,95 @@ static bool hasMMAv5WaitsInLastStage(scf::ForOp forOp,
   return hasMMAv5 && hasWaitInLastStage;
 }
 
+// Return the per-iteration change of an AIU offset.
+static std::optional<int64_t> getAIUOffsetDelta(Value value, scf::ForOp loop,
+                                              unsigned depth = 0) {
+  if (depth > 16)
+    return std::nullopt;
+  // Fixed values such as a row offset do not change between iterations.
+  if (loop.isDefinedOutsideOfLoop(value))
+    return 0;
+  // For a loop counter i, delta is the loop step.
+  if (value == loop.getInductionVar())
+    return getConstantIntValue(getAsOpFoldResult(loop.getStep()));
+
+  // Loop-carried offsets, e.g. offset -= 64 or offset += -64.
+  if (auto arg = dyn_cast<BlockArgument>(value)) {
+    if (arg.getOwner() != loop.getBody())
+      return std::nullopt;
+    // scf.yield omits the induction variable at argument 0.
+    Value next =
+        loop.getBody()->getTerminator()->getOperand(arg.getArgNumber() - 1);
+    if (next == value)
+      return 0;
+    if (auto add = next.getDefiningOp<arith::AddIOp>()) {
+      if (add.getLhs() == value)
+        return getConstantIntValue(getAsOpFoldResult(add.getRhs()));
+      if (add.getRhs() == value)
+        return getConstantIntValue(getAsOpFoldResult(add.getLhs()));
+    }
+    if (auto sub = next.getDefiningOp<arith::SubIOp>()) {
+      if (sub.getLhs() == value) {
+        auto step = getConstantIntValue(getAsOpFoldResult(sub.getRhs()));
+        int64_t delta;
+        if (step && !llvm::SubOverflow(int64_t{0}, *step, delta))
+          return delta;
+      }
+    }
+    return std::nullopt;
+  }
+
+  Operation *op = value.getDefiningOp();
+  // Add/sub expressions, e.g. T - 1 - i, combine the operand deltas.
+  if (isa<arith::AddIOp, arith::SubIOp>(op)) {
+    auto lhs = getAIUOffsetDelta(op->getOperand(0), loop, depth + 1);
+    auto rhs = getAIUOffsetDelta(op->getOperand(1), loop, depth + 1);
+    int64_t delta;
+    if (lhs && rhs &&
+        !(isa<arith::AddIOp>(op) ? llvm::AddOverflow(*lhs, *rhs, delta)
+                               : llvm::SubOverflow(*lhs, *rhs, delta)))
+      return delta;
+  }
+  // Constant scaling, e.g. i * 64 or (T - 1 - i) * 64.
+  if (auto mul = dyn_cast<arith::MulIOp>(op)) {
+    Value varying = mul.getLhs();
+    auto factor = getConstantIntValue(getAsOpFoldResult(mul.getRhs()));
+    if (!factor) {
+      factor = getConstantIntValue(getAsOpFoldResult(mul.getLhs()));
+      varying = mul.getRhs();
+    }
+    if (factor) {
+      auto step = getAIUOffsetDelta(varying, loop, depth + 1);
+      int64_t delta;
+      if (step && !llvm::MulOverflow(*step, *factor, delta))
+        return delta;
+    }
+  }
+  return std::nullopt;
+}
+
+static bool needsAIUEpiloguePeeling(
+    scf::ForOp loop, ArrayRef<std::pair<Operation *, unsigned>> schedule) {
+  unsigned maxStage = 0;
+  for (auto [op, stage] : schedule)
+    maxStage = std::max(maxStage, stage);
+  for (auto [op, stage] : schedule) {
+    auto copy = dyn_cast<triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp>(op);
+    // A copy in the last stage does not prefetch future iterations.
+    if (!copy || stage == maxStage)
+      continue;
+    // Transpose can move the contiguous dimension; use the layout order.
+    auto encoding =
+        cast<PPUAIUSharedEncodingAttr>(copy.getResult().getType().getEncoding());
+    auto delta =
+        getAIUOffsetDelta(copy.getCoord()[encoding.getOrder().front()], loop);
+    // Keep the default pipeline when the coordinate change is unknown.
+    if (delta && *delta < 0)
+      return true;
+  }
+  return false;
+}
+
 static void expandLoops(ModuleOp moduleOp) {
   DenseSet<MaskOp> peeledMaskOps;
   auto processPeeledEpilogueOp = [&](RewriterBase &rewriter, Operation *op,
@@ -102,7 +193,7 @@ static void expandLoops(ModuleOp moduleOp) {
         schedule.createFinalSchedule(forOp);
     triton::PipeliningOption options;
     options.supportDynamicLoops = true;
-    options.peelEpilogue = false;
+    options.peelEpilogue = needsAIUEpiloguePeeling(forOp, finalSchedule);
     options.predicateFn = wrapInMaskOp;
     options.getScheduleFn =
         [&](scf::ForOp forOp,
@@ -117,7 +208,7 @@ static void expandLoops(ModuleOp moduleOp) {
     // Heuristic: only peel epilogue for MMAv5 loops with waits in the last
     // stage
     bool customEpiloguePeeling =
-        hasMMAv5WaitsInLastStage(forOp, schedule) &&
+        !options.peelEpilogue && hasMMAv5WaitsInLastStage(forOp, schedule) &&
         !forOp->getParentOfType<triton::gpu::WarpSpecializeOp>() &&
         !keepPredicateStage; // do not peel if we are testing the stage
                              // predication

@@ -88,7 +88,7 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
         "ppu/aiu/test_aiu_binary.py",
         "ppu/aiu/test_aiu_chained_dot.py",
         "ppu/aiu/test_aiu_load_padding.py",
-        "ppu/aiu/test_aiu_block_ptr_load.py",
+        "ppu/aiu/test_aiu_descending.py",
     ]
     main_args = ["--tb=short", "-n", "2"]
     for rel in main_ignored:
