@@ -335,9 +335,7 @@ struct RewriteLoadPattern : OpConversionPattern<triton::DescriptorLoadOp> {
     Value result;
     Operation *fusedTransOp = nullptr;
 
-    bool hasDescendingIndex =
-        isAIU && hasSubtractionInChain(op.getIndices().back());
-    if (isAIU && !hasDescendingIndex) {
+    if (isAIU) {
       assert(blockShape.size() == desc.shape.size());
       assert(blockShape.size() == offsets.size());
       SmallVector<int> order = {1, 0};
