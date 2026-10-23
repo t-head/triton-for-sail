@@ -1,10 +1,10 @@
 """
 Test AIU descriptor load patterns.
-Covers two issues fixed in RewriteTensorDescriptorToPointer.cpp:
+Covers descending and transposed descriptor load regressions:
 1. Descending-order descriptor loads (e.g. reverse K-loop in mamba3 dqkv):
    The pipeliner's last pre-fetch produces a negative zOffset/start_c,
    which violates the PPU AIU hardware constraint (zOffset/start_c must be >= 0).
-   Fix: detect subtraction in the index chain and fall back to pointer load.
+   Fix: peel the pipelined epilogue while retaining AIU loads.
 2. Multi-use descriptor loads (direct + tl.trans, e.g. mamba3 ssm_states):
    A descriptor load result used both directly as dot operand B and via
    tl.trans as another dot operand B.
@@ -61,8 +61,7 @@ def _matmul_descend(
 @pytest.mark.parametrize("num_warps", [1, 2])
 @pytest.mark.parametrize("M, K, N", [(512, 512, 512), (1024, 256, 512)])
 def test_descriptor_descend(num_stages, num_warps, M, K, N):
-    """Descriptor load with descending K-loop: compile-time detection prevents
-    AIU conversion, avoiding negative zOffset from pipeliner pre-fetch."""
+    """Descending K-loop retains AIU loads without negative tail prefetches."""
     BM, BK, BN = 64, 64, 64
     torch.manual_seed(42)
     A = torch.randn((M, K), dtype=torch.bfloat16, device="cuda")
@@ -83,8 +82,8 @@ def test_descriptor_descend(num_stages, num_warps, M, K, N):
         num_warps=num_warps,
     )
     ttir = kernel.asm["ttir"]
-    assert ttir.count("tt.aiu_load") == 1
-    assert "tt.load " in ttir
+    assert ttir.count("tt.aiu_load") == 2
+    assert "tt.load " not in ttir
     assert "cp.async.aiu" in kernel.asm["llir"]
     ref = A.float() @ B.float()
     torch.testing.assert_close(C.float(), ref, atol=1.0, rtol=1e-2)
