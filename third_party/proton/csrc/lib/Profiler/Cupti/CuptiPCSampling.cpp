@@ -368,7 +368,8 @@ void CuptiPCSampling::processPCSamplingData(ConfigureData *configureData,
       if (!cubinData->lineInfo.contains(key)) {
         auto [lineNumber, fileName, dirName] =
             getSassToSourceCorrelation(pcData->functionName, pcData->pcOffset,
-                                       cubinData->cubin, cubinData->cubinSize);
+                                       cubinData->cubin.data(),
+                                       cubinData->cubin.size());
         cubinData->lineInfo.try_emplace(key, lineNumber,
                                         std::string(pcData->functionName),
                                         dirName, fileName);
@@ -437,8 +438,7 @@ void CuptiPCSampling::loadModule(const char *cubin, size_t cubinSize) {
   auto cubinCrc = getCubinCrc(cubin, cubinSize);
   auto *cubinData = getCubinData(cubinCrc);
   cubinData->cubinCrc = cubinCrc;
-  cubinData->cubinSize = cubinSize;
-  cubinData->cubin = cubin;
+  cubinData->cubin.assign(cubin, cubinSize);
 }
 
 void CuptiPCSampling::unloadModule(const char *cubin, size_t cubinSize) {

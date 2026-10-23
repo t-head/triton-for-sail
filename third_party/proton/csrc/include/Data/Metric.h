@@ -278,6 +278,22 @@ public:
     StalledInternalInstruction,
     StalledArbiterWinExStall,
     StalledOtherWait,
+    // PPU stall reasons
+    StalledInstFetch,
+    StalledComputeDependency,
+    StalledMemoryDependency,
+    StalledMemoryThrottle,
+    StalledNotSelectedPpu,
+    StalledPipeBusy,
+    // StalledSleeping,  // already present in the NVIDIA section above
+    StalledSync,
+    StalledSaluCtrl,
+    StalledSimtCtrl,
+    StalledSregRead,
+    StalledFenceSys,
+    StalledAmc,
+    StalledOthers,
+    StalledWaitPc,
     Count,
   };
 
@@ -335,6 +351,22 @@ public:
       "stalled_internal_instruction",
       "stalled_arbiter_win_ex_stall",
       "stalled_other_wait",
+      // PPU
+      "stalled_inst_fetch",
+      "stalled_compute_dependency",
+      "stalled_memory_dependency",
+      "stalled_memory_throttle",
+      "stalled_not_selected",
+      "stalled_pipe_busy",
+      // "stalled_sleeping",  // already present in the NVIDIA section above
+      "stalled_sync",
+      "stalled_salu_ctrl",
+      "stalled_simt_ctrl",
+      "stalled_sreg_read",
+      "stalled_fence_sys",
+      "stalled_amc",
+      "stalled_others",
+      "stalled_wait_pc",
   };
   const static inline std::string name = "PCSamplingMetric";
 };
