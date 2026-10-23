@@ -6766,6 +6766,7 @@ def test_tma_cache_policy_copy(kind, rank, pred, policy):
         assert expected + ".b64" in compiled.asm["ptx"]
 
 
+@pytest.mark.skipif(is_ppu(), reason="Canonical NVIDIA backend is filtered on PPU hosts")
 @pytest.mark.parametrize("target", [GPUTarget("cuda", 90, 32), GPUTarget("cuda", 100, 32)])
 @pytest.mark.parametrize("rank,kind,multicast", [(1, "load", False), (2, "load", False), (5, "load", False),
                                                  (2, "load", True), (4, "im2col", False), (4, "im2col", True),
