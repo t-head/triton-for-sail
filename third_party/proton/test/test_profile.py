@@ -1072,7 +1072,7 @@ def test_hook_multiple_threads(tmp_path: pathlib.Path, device: str):
 
 
 def test_pcsampling(tmp_path: pathlib.Path, device: str):
-    if not (is_cuda() or is_hip()):
+    if not (is_cuda() or is_ppu() or is_hip()):
         pytest.skip("Only CUDA and HIP backends support pc sampling")
 
     if os.environ.get("PROTON_SKIP_PC_SAMPLING_TEST", "0") == "1":
@@ -1116,7 +1116,7 @@ def test_pcsampling(tmp_path: pathlib.Path, device: str):
     assert expected_store_lines
 
     temp_file = tmp_path / "test_pcsampling.hatchet"
-    backend = "cupti" if is_cuda() else "rocprofiler"
+    backend = "cupti" if (is_cuda() or is_ppu()) else "rocprofiler"
     try:
         proton.start(
             str(temp_file.with_suffix("")),

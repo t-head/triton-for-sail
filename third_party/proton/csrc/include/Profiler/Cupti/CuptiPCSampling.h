@@ -14,8 +14,8 @@ namespace proton {
 
 struct CubinData {
   size_t cubinCrc;
-  const char *cubin;
-  size_t cubinSize;
+  // copy of the module binary
+  std::string cubin;
 
   struct LineInfoKey {
     uint32_t functionIndex;

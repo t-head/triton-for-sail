@@ -46,7 +46,7 @@ void enable() {
   if (isPPU()) {
     const char *ppuSdk = std::getenv("PPU_SDK");
     std::string sdkPath = ppuSdk ? ppuSdk : "/usr/local/PPU_SDK";
-    std::string injectionPath = sdkPath + "/asight/lib/libhggc_injection.so";
+    std::string injectionPath = sdkPath + "/lib/libhgpti.so";
     setenv("NVTX_INJECTION64_PATH", injectionPath.c_str(), 1);
   } else {
     const std::string cuptiLibPath =
