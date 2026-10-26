@@ -417,6 +417,7 @@ void CuptiPCSampling::stop(CUcontext context,
   doubleCheckedLock([&]() -> bool { return pcSamplingStarted; },
                     pcSamplingMutex,
                     [&]() {
+                      cuda::ctxSynchronize<true>();
                       auto *configureData = getConfigureData(contextId);
                       stopPCSampling(context);
                       pcSamplingStarted = false;
