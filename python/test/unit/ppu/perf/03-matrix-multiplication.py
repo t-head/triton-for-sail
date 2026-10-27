@@ -2,7 +2,7 @@
 Matrix Multiplication
 =====================
 In this tutorial, you will write a very short high-performance FP16 matrix multiplication kernel that achieves
-performance on par with cuBLAS or rocBLAS.
+performance on par with cuBLAS.
 
 You will specifically learn about:
 
@@ -159,13 +159,6 @@ DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 TORCH_HAS_FP8 = hasattr(torch, "float8_e5m2")
 
-def is_cuda():
-    return triton.runtime.driver.active.get_current_target().backend == "cuda"
-
-def is_hip_mi200():
-    target = triton.runtime.driver.active.get_current_target()
-    return target.backend == 'hip' and target.arch == 'gfx90a'
-
 
 def get_exhaustive_autotune_configs():
     # Enumerate the full cross product of tuning parameters so autotune can
@@ -188,8 +181,7 @@ def get_exhaustive_autotune_configs():
 
 
 def get_ppu0010_autotune_configs_fp16():
-    # Best configs measured on PPU0010 (compute capability 8.0) by exhaustive
-    # autotuning over the benchmark shapes; one entry per distinct winner.
+    # Best configs measured on PPU0010 (compute capability 8.0).
     return [
         triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 1},
                         num_warps=4, num_stages=4),
@@ -227,8 +219,7 @@ def get_ppu0010_autotune_configs_fp16():
 
 
 def get_ppu0010_autotune_configs_fp8():
-    # Best configs measured on PPU0010 (compute capability 8.0) by exhaustive
-    # autotuning over the benchmark shapes; one entry per distinct winner.
+    # Best configs measured on PPU0010 (compute capability 8.0).
     return [
         triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8},
                         num_warps=8, num_stages=4),
@@ -298,6 +289,10 @@ def get_ppu0015_autotune_configs_fp16():
                         num_warps=8, num_stages=3),
         triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 16},
                         num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8},
+                        num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8},
+                        num_warps=8, num_stages=4),
     ]
 
 
@@ -332,26 +327,10 @@ def get_ppu0015_autotune_configs_fp8():
                         num_warps=8, num_stages=3),
         triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 2},
                         num_warps=8, num_stages=5),
-    ]
-
-
-def get_hip_autotune_config():
-    return [
-        triton.Config(
-            {'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 16, 'GROUP_SIZE_M': 1, 'waves_per_eu': 2},
-            num_warps=4, num_stages=2),
-        triton.Config(
-            {'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 16, 'GROUP_SIZE_M': 4, 'waves_per_eu': 2},
-            num_warps=8, num_stages=2),
-        triton.Config(
-            {'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 1, 'waves_per_eu': 2},
-            num_warps=8, num_stages=2),
-        triton.Config(
-            {'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8, 'waves_per_eu': 3},
-            num_warps=4, num_stages=2),
-        triton.Config(
-            {'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 1, 'waves_per_eu': 8},
-            num_warps=4, num_stages=2),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 16},
+                        num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 16},
+                        num_warps=8, num_stages=4),
     ]
 
 
@@ -373,24 +352,6 @@ def get_ppu_autotune_configs_fp8():
     if capability == (8, 9):
         return get_ppu0015_autotune_configs_fp8()
     return get_exhaustive_autotune_configs()
-
-
-def get_autotune_config_fp16():
-    if is_ppu():
-        return get_ppu_autotune_configs_fp16()
-    if is_cuda():
-        return get_exhaustive_autotune_configs()
-    else:
-        return get_hip_autotune_config()
-
-
-def get_autotune_config_fp8():
-    if is_ppu():
-        return get_ppu_autotune_configs_fp8()
-    if is_cuda():
-        return get_exhaustive_autotune_configs()
-    else:
-        return get_hip_autotune_config()
 
 
 # `triton.jit`'ed functions can be auto-tuned by using the `triton.autotune` decorator, which consumes:
@@ -479,12 +440,12 @@ def matmul_kernel(
 # fp16 and fp8 need very different block shapes on PPU, so they are auto-tuned
 # separately: each dtype only benchmarks its own config list.
 matmul_kernel_fp16 = triton.autotune(
-    configs=get_autotune_config_fp16(),
+    configs=get_ppu_autotune_configs_fp16(),
     key=['M', 'N', 'K'],
 )(matmul_kernel)
 
 matmul_kernel_fp8 = triton.autotune(
-    configs=get_autotune_config_fp8(),
+    configs=get_ppu_autotune_configs_fp8(),
     key=['M', 'N', 'K'],
 )(matmul_kernel)
 
@@ -535,16 +496,12 @@ triton_output = matmul(a, b)
 torch_output = torch.matmul(a, b)
 print(f"triton_output_with_fp16_inputs={triton_output}")
 print(f"torch_output_with_fp16_inputs={torch_output}")
-# Bigger tolerance for AMD MI200 devices.
-# MI200 devices use reduced precision fp16 and bf16 and flush input and
-# output denormal values to zero. Detailed info is at: https://pytorch.org/docs/stable/notes/numerical_accuracy.html#reduced-precision-fp16-and-bf16-gemms-and-convolutions-on-amd-instinct-mi200-devices
-rtol = 1e-2 if is_hip_mi200() else 0
-if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=rtol):
+if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=0):
     print("✅ Triton and Torch match")
 else:
     print("❌ Triton and Torch differ")
 
-if TORCH_HAS_FP8 and (is_cuda() or is_ppu()):
+if TORCH_HAS_FP8 and is_ppu():
     torch.manual_seed(0)
     a = torch.randn((512, 512), device=DEVICE, dtype=torch.float16)
     b = torch.randn((512, 512), device=DEVICE, dtype=torch.float16)
@@ -568,14 +525,14 @@ if TORCH_HAS_FP8 and (is_cuda() or is_ppu()):
 # Square Matrix Performance
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~
 #
-# We can now compare the performance of our kernel against that of cuBLAS or rocBLAS. Here we focus on square matrices,
+# We can now compare the performance of our kernel against that of cuBLAS. Here we focus on square matrices,
 # but feel free to arrange this script as you wish to benchmark any other matrix shape.
 
-ref_lib = 'cuBLAS' if is_cuda() or is_ppu() else 'rocBLAS'
+ref_lib = 'cuBLAS'
 
 configs = []
 for fp8_inputs in [False, True]:
-    if fp8_inputs and (not TORCH_HAS_FP8 or not (is_cuda() or is_ppu())):
+    if fp8_inputs and (not TORCH_HAS_FP8 or not is_ppu()):
         continue
     configs.append(
         triton.testing.Benchmark(
