@@ -72,7 +72,7 @@ jobs:
 
   build:
     needs: prepare
-    if: needs.prepare.outputs.packages != '[]'
+    if: github.repository == 'triton-lang/triton' && needs.prepare.outputs.packages != '[]'
     name: Build ${{ matrix.package }} on ${{ matrix.config.runner }}
     runs-on: ${{ matrix.config.runs_on }}
     container: ${{ matrix.config.container }}
