@@ -19,7 +19,7 @@ jobs:
     uses: ./.github/workflows/runner-preparation.yml
 
   pre-commit:
-    if: false
+    if: github.repository == 'triton-lang/triton'
     uses: ./.github/workflows/pre-commit.yml
 
   integration-tests-nvidia:

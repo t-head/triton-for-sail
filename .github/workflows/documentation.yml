@@ -9,6 +9,7 @@ permissions:
 
 jobs:
   Build-Documentation:
+    if: github.repository == 'triton-lang/triton'
     runs-on: [nvidia-a100]
     timeout-minutes: 60
     env:

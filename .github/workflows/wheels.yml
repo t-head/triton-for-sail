@@ -10,6 +10,7 @@ permissions: read-all
 jobs:
 
   Build-Wheels:
+    if: github.repository == 'triton-lang/triton'
     timeout-minutes: 180
     runs-on: ${{ matrix.config.runs_on }}
 
