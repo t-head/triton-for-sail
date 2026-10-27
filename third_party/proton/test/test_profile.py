@@ -42,10 +42,6 @@ _skip_cudagraph_test = pytest.mark.skipif(
     os.environ.get("PROTON_SKIP_CUDAGRAPH_TEST", "0") == "1",
     reason="CUDAGraph test skipped due to environment constraints",
 )
-_skip_ppu_cudagraph_test = pytest.mark.skipif(
-    is_ppu(),
-    reason="PPU backend does not support CUDA graph profiling",
-)
 
 
 @pytest.mark.skipif(not is_hip(), reason="ROCprofiler is only available on HIP")
@@ -211,7 +207,6 @@ def test_triton(tmp_path: pathlib.Path, device: str):
 
 
 @_skip_cudagraph_test
-@_skip_ppu_cudagraph_test
 def test_cudagraph(tmp_path: pathlib.Path, device: str):
     stream = torch.cuda.Stream()
     torch.cuda.set_stream(stream)
@@ -292,7 +287,6 @@ def test_cudagraph(tmp_path: pathlib.Path, device: str):
 
 
 @_skip_cudagraph_test
-@_skip_ppu_cudagraph_test
 def test_cudagraph_metric_queue_handles_inactive_replay(tmp_path: pathlib.Path, device: str):
     stream = torch.cuda.Stream()
     torch.cuda.set_stream(stream)
@@ -362,7 +356,6 @@ def test_cudagraph_metric_queue_handles_inactive_replay(tmp_path: pathlib.Path, 
 
 
 @_skip_cudagraph_test
-@_skip_ppu_cudagraph_test
 def test_cudagraph_not_captured_by_profiler(tmp_path: pathlib.Path, capfd, device: str):
     stream = torch.cuda.Stream()
     torch.cuda.set_stream(stream)
@@ -419,7 +412,6 @@ def test_cudagraph_not_captured_by_profiler(tmp_path: pathlib.Path, capfd, devic
 
 
 @_skip_cudagraph_test
-@_skip_ppu_cudagraph_test
 def test_cudagraph_deactivate(tmp_path, device: str):
     stream = torch.cuda.Stream()
     torch.cuda.set_stream(stream)
@@ -488,7 +480,6 @@ def test_cudagraph_deactivate(tmp_path, device: str):
 
 
 @_skip_cudagraph_test
-@_skip_ppu_cudagraph_test
 @pytest.mark.parametrize("data_format", ["hatchet", "hatchet_msgpack"])
 def test_cudagraph_filters_unlinked_virtual_scopes(tmp_path: pathlib.Path, data_format: str, device: str):
     stream = torch.cuda.Stream()
@@ -552,7 +543,7 @@ def test_cudagraph_filters_unlinked_virtual_scopes(tmp_path: pathlib.Path, data_
 
 
 @_skip_cudagraph_test
-@_skip_ppu_cudagraph_test
+@pytest.mark.skipif(is_ppu(), reason="This test requires HGGC_DEVICE_GRAPH=0 on PPU")
 def test_cudagraph_multi_stream(tmp_path: pathlib.Path, device: str):
     """
     kernels in a cudagraph can be launched using multiple internal streams, without
@@ -1199,7 +1190,6 @@ def test_multiple_sessions(tmp_path: pathlib.Path, device: str):
 
 
 @_skip_cudagraph_test
-@_skip_ppu_cudagraph_test
 def test_multiple_sessions_cudagraph_metric_kernels(tmp_path: pathlib.Path, device: str):
     stream = torch.cuda.Stream()
     torch.cuda.set_stream(stream)
@@ -1436,7 +1426,6 @@ def test_trace_flexible_metrics_no_kernel_anchor(tmp_path: pathlib.Path):
 
 
 @_skip_cudagraph_test
-@_skip_ppu_cudagraph_test
 def test_trace_cudagraph_graph_scope_ranges(tmp_path: pathlib.Path, device: str):
     stream = torch.cuda.Stream()
     torch.cuda.set_stream(stream)
@@ -1725,7 +1714,6 @@ def test_tensor_metrics_hook(tmp_path: pathlib.Path, device: str):
 
 
 @_skip_cudagraph_test
-@_skip_ppu_cudagraph_test
 def test_tensor_metrics_cudagraph_hook(tmp_path: pathlib.Path, device: str):
     """
     Test triton kernels launched from metadata hooks and hook="triton"
@@ -1785,7 +1773,6 @@ def test_tensor_metrics_cudagraph_hook(tmp_path: pathlib.Path, device: str):
 
 
 @_skip_cudagraph_test
-@_skip_ppu_cudagraph_test
 def test_tensor_metrics_cudagraph(tmp_path: pathlib.Path, device: str):
     stream = torch.cuda.Stream()
     torch.cuda.set_stream(stream)
@@ -1876,7 +1863,6 @@ def test_tensor_metrics_cudagraph(tmp_path: pathlib.Path, device: str):
 
 
 @_skip_cudagraph_test
-@_skip_ppu_cudagraph_test
 def test_tensor_metrics_cudagraph_deactivate(tmp_path: pathlib.Path, device: str):
     stream = torch.cuda.Stream()
     torch.cuda.set_stream(stream)
@@ -1930,7 +1916,6 @@ def test_tensor_metrics_cudagraph_deactivate(tmp_path: pathlib.Path, device: str
 
 
 @_skip_cudagraph_test
-@_skip_ppu_cudagraph_test
 def test_tensor_metrics_multi_device_cudagraph(tmp_path: pathlib.Path):
     if torch.cuda.device_count() < 2:
         pytest.skip("Requires at least two CUDA devices")
@@ -1983,6 +1968,8 @@ def test_tensor_metrics_multi_device_cudagraph(tmp_path: pathlib.Path):
             with proton.scope(f"test_device_{device.index}"):
                 graph.replay()
 
+    for stream in streams:
+        stream.synchronize()
     proton.finalize()
 
     with temp_file.open() as f:
@@ -2058,7 +2045,6 @@ def test_periodic_flushing(tmp_path, fresh_knobs, data_format, buffer_size, devi
 
 
 @_skip_cudagraph_test
-@_skip_ppu_cudagraph_test
 @pytest.mark.parametrize("buffer_size", [256 * 1024, 64 * 1024 * 1024])
 @pytest.mark.parametrize("data_format", ["hatchet_msgpack", "hatchet"])
 def test_periodic_flushing_cudagraph(tmp_path, fresh_knobs, data_format, buffer_size, device: str):
