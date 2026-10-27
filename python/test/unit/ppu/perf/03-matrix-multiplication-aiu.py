@@ -165,7 +165,48 @@ def is_hip_mi200():
     return target.backend == 'hip' and target.arch == 'gfx90a'
 
 
-def get_cuda_autotune_config():
+def get_ppu0010_autotune_configs():
+    # Best configs measured on PPU0010.
+    return [
+        triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8},
+                        num_warps=4, num_stages=3),
+        triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 128, 'GROUP_SIZE_M': 16},
+                        num_warps=4, num_stages=3),
+        triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 128, 'GROUP_SIZE_M': 2},
+                        num_warps=4, num_stages=3),
+        triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 16},
+                        num_warps=2, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8},
+                        num_warps=4, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 1},
+                        num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 4},
+                        num_warps=4, num_stages=3),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8},
+                        num_warps=2, num_stages=3),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 2},
+                        num_warps=8, num_stages=2),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 16},
+                        num_warps=2, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 1},
+                        num_warps=4, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 4},
+                        num_warps=4, num_stages=5),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 4},
+                        num_warps=4, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8},
+                        num_warps=4, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 16},
+                        num_warps=4, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8},
+                        num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8},
+                        num_warps=4, num_stages=4),
+    ]
+
+
+def get_ppu0015_autotune_configs():
+    # Best configs measured on PPU0015.
     return [
         triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 128, 'GROUP_SIZE_M': 8},
                         num_warps=4, num_stages=4),
@@ -204,6 +245,17 @@ def get_cuda_autotune_config():
     ]
 
 
+def get_ppu_autotune_configs():
+    # PPU0010 and PPU0015 have different best configs; pick the list for the
+    # current hardware and fall back to the exhaustive search elsewhere.
+    capability = torch.cuda.get_device_capability()
+    if capability == (8, 0):
+        return get_ppu0010_autotune_configs()
+    if capability == (8, 9):
+        return get_ppu0015_autotune_configs()
+    return get_exhaustive_autotune_configs()
+
+
 def get_hip_autotune_config():
     return [
         triton.Config(
@@ -225,8 +277,10 @@ def get_hip_autotune_config():
 
 
 def get_autotune_config():
-    if is_cuda() or is_ppu():
-        return get_cuda_autotune_config()
+    if is_ppu():
+        return get_ppu_autotune_configs()
+    if is_cuda():
+        return get_exhaustive_autotune_configs()
     else:
         return get_hip_autotune_config()
 
