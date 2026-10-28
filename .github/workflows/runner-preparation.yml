@@ -109,5 +109,5 @@ jobs:
             echo 'matrix-MACOS=[["macos-latest"]]' >> "$GITHUB_OUTPUT"
           else
             # Fork repo: only run PPU integration tests; skip NVIDIA/AMD/MACOS.
-            echo 'matrix-PPU=["ZW-M890P", "OAM-810E"]' >> "$GITHUB_OUTPUT"
+            echo 'matrix-PPU=["ZW-M890P", "ZW-810E"]' >> "$GITHUB_OUTPUT"
           fi
