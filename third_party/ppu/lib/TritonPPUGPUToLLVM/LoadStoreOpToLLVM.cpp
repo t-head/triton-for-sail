@@ -65,46 +65,6 @@ static constexpr bool disableLDAcquireLowering = false;
 
 namespace {
 
-Value maybeAnd(RewriterBase &rewriter, Location loc, Value a, Value b) {
-  auto tb = TritonLLVMOpBuilder(loc, rewriter);
-  if (a && b) {
-    return tb.and_(a, b);
-  }
-  return a ? a : b;
-}
-
-// Return a predicate that is true only if the current thread holds unique data,
-// according to freeVarsMask. The predicate may be null to indicate no
-// predication is required.
-Value emitRedundantThreadPredicate(
-    const llvm::MapVector<StringAttr, int32_t> &freeVarMasks,
-    ConversionPatternRewriter &rewriter, Location loc,
-    const ppu::TargetInfo &targetInfo) {
-  auto b = TritonLLVMOpBuilder(loc, rewriter);
-  auto ctx = rewriter.getContext();
-  auto kLane = str_attr("lane");
-  auto kWarp = str_attr("warp");
-  auto kBlock = str_attr("block");
-
-  Value zero = b.i32_val(0);
-  auto [laneId, warpId] = getLaneAndWarpId(rewriter, loc);
-  Value blockId = freeVarMasks.lookup(kBlock) == 0
-                      ? zero
-                      : targetInfo.getClusterCTAId(rewriter, loc);
-
-  Value pred;
-  auto dimNames = {kLane, kWarp, kBlock};
-  auto dimIds = {laneId, warpId, blockId};
-  for (auto [dimName, dimId] : llvm::zip(dimNames, dimIds)) {
-    int32_t mask = freeVarMasks.lookup(dimName);
-    if (mask != 0) {
-      auto dimPred = b.icmp_eq(b.and_(dimId, b.i32_val(mask)), zero);
-      pred = maybeAnd(rewriter, loc, pred, dimPred);
-    }
-  }
-  return pred;
-}
-
 std::string getRegisterSizeCode(int size, bool is_float) {
   switch (size) {
   case 1:
@@ -495,8 +455,8 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
     const size_t valueElemNBits = dtsize * 8;
 
     auto freeVarMasks = getFreeVariableMasks(ptr.getType());
-    Value threadPred =
-        emitRedundantThreadPredicate(freeVarMasks, rewriter, loc, targetInfo);
+    Value threadPred = ttg::emitRedundantThreadPredicate(freeVarMasks, rewriter,
+                                                         loc, targetInfo);
 
     Value l2PolicyReg =
         createCachePolicy(*cachePolicy, rewriter, loc, computeCapability);
@@ -548,7 +508,7 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
       Value pred = threadPred;
       if (llMask) {
         auto mask = maskElems[vecStart];
-        pred = maybeAnd(rewriter, loc, pred, mask);
+        pred = ttg::maybeAnd(rewriter, loc, pred, mask);
       }
 
       auto *asmAddr =
@@ -912,16 +872,6 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
   }
 };
 
-void createBarrier(ConversionPatternRewriter &rewriter, Location loc,
-                   int numCTAs) {
-  auto b = TritonLLVMOpBuilder(loc, rewriter);
-  if (numCTAs == 1) {
-    b.barrier(triton::gpu::AddrSpace::Local);
-  } else {
-    assert(false && "Barrier is currently unsuppored for numCTAs > 1");
-  }
-}
-
 struct AtomicCASOpConversion
     : public ConvertOpToLLVMPattern<triton::AtomicCASOp>,
       public LoadStoreConversionBase {
@@ -937,15 +887,9 @@ struct AtomicCASOpConversion
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     insertAtomicOrderingBarriers(op, op.getSem(),
-                                 !op->hasAttr("allocation.offset"), rewriter,
+                                 !atomicResultHasOrderingBarrier(op), rewriter,
                                  targetInfo);
     auto b = TritonLLVMOpBuilder(loc, rewriter);
-    MLIRContext *ctx = rewriter.getContext();
-
-    auto moduleOp = op->getParentOfType<ModuleOp>();
-    assert(moduleOp && "Parent ModuleOp not found for AtomicCASOp");
-    int numCTAs = triton::gpu::TritonGPUDialect::getNumCTAs(moduleOp);
-
     Value llPtr = adaptor.getPtr();
     Value llCmp = adaptor.getCmp();
     Value llVal = adaptor.getVal();
@@ -962,8 +906,8 @@ struct AtomicCASOpConversion
     auto valueElemNBits = valueElemTy.getIntOrFloatBitWidth();
     auto elemsPerThread = getUniqueElemsPerThread(op.getVal().getType());
     auto freeVarMasks = getFreeVariableMasks(op.getPtr().getType());
-    Value threadPred =
-        emitRedundantThreadPredicate(freeVarMasks, rewriter, loc, targetInfo);
+    Value threadPred = ttg::emitRedundantThreadPredicate(freeVarMasks, rewriter,
+                                                         loc, targetInfo);
 
     SmallVector<Value> resultVals(elemsPerThread);
 
@@ -987,33 +931,7 @@ struct AtomicCASOpConversion
       atom.global().o(semStr).o(scope).o("cas").o(sTy);
       atom(dstOpr, ptrOpr, cmpOpr, valOpr).maybePredicate(threadPred);
 
-      if (tensorTy) {
-        auto retType = valueElemTy;
-        auto ret = tixBuilderAtomicCAS.launch(rewriter, loc, retType);
-        resultVals[i] = ret;
-      } else {
-        auto old = tixBuilderAtomicCAS.launch(rewriter, loc, valueElemTy);
-        if (op.getResult().use_empty()) {
-          rewriter.eraseOp(op);
-          return success();
-        }
-        Value atomPtr = LLVM::getSharedMemoryBase(loc, rewriter, targetInfo,
-                                                  op.getOperation());
-        atomPtr = b.bitcast(atomPtr, ptr_ty(ctx, 3));
-        // Only threads with mask = True store the result
-        TIXBuilder tixBuilderStore;
-        auto *dstOprStore = tixBuilderStore.newAddrOperand(atomPtr, "r");
-        auto *valOprStore = tixBuilderStore.newOperand(old, tyId);
-        auto &st = *tixBuilderStore.create("ppu.st");
-        st.shared().o(sTy);
-        st(dstOprStore, valOprStore).maybePredicate(threadPred);
-        auto ASMReturnTy = void_ty(ctx);
-        tixBuilderStore.launch(rewriter, loc, ASMReturnTy);
-        createBarrier(rewriter, loc, numCTAs);
-        Value ret = b.load(valueElemTy, atomPtr);
-        rewriter.replaceOp(op, {ret});
-        return success();
-      }
+      resultVals[i] = tixBuilderAtomicCAS.launch(rewriter, loc, valueElemTy);
     }
 
     finalizeAtomicResults(op, rewriter, resultVals, valueElemTy, b, threadPred,
@@ -1092,14 +1010,13 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     insertAtomicOrderingBarriers(op, op.getSem(),
-                                 !op->hasAttr("allocation.offset"), rewriter,
+                                 !atomicResultHasOrderingBarrier(op), rewriter,
                                  targetInfo);
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     MLIRContext *ctx = rewriter.getContext();
 
     auto moduleOp = op->getParentOfType<ModuleOp>();
     assert(moduleOp && "Parent ModuleOp not found for AtomicRMWOp");
-    int numCTAs = triton::gpu::TritonGPUDialect::getNumCTAs(moduleOp);
 
     auto atomicRmwAttr = op.getAtomicRmwOp();
 
@@ -1157,9 +1074,10 @@ public:
                        << " numElems = " << numElems;
 
     auto freeVarMasks = getFreeVariableMasks(ptr.getType());
-    Value threadPred =
-        emitRedundantThreadPredicate(freeVarMasks, rewriter, loc, targetInfo);
+    Value threadPred = ttg::emitRedundantThreadPredicate(freeVarMasks, rewriter,
+                                                         loc, targetInfo);
 
+    Value resultPred = threadPred;
     auto packedTy = vec_ty(valueElemTy, packed);
     SmallVector<Value> resultVals(elemsPerThread);
 
@@ -1175,8 +1093,9 @@ public:
 
     for (size_t i = 0; i < elemsPerThread; i += vec * packed) {
       Value rmwPtr = ptrElements[i];
-      Value pred = llMask ? maybeAnd(rewriter, loc, threadPred, maskElements[i])
-                          : threadPred;
+      Value pred =
+          llMask ? ttg::maybeAnd(rewriter, loc, threadPred, maskElements[i])
+                 : threadPred;
 
       if (doTIXLDPromotion) {
         Type convertedValueTy =
@@ -1188,23 +1107,15 @@ public:
                 : triton::ppugpu::MemSemantic::RELAXED,
             ScopeMap[op.getScope()]);
 
-        if (op.getResult().use_empty()) {
-          rewriter.eraseOp(op);
-          return success();
-        }
-        Value atomPtr = LLVM::getSharedMemoryBase(loc, rewriter, targetInfo,
-                                                  op.getOperation());
-        atomPtr = b.bitcast(atomPtr, ptr_ty(ctx, 3));
-        // Only threads with rmwMask = True store the result
-        targetInfo.storeShared(rewriter, loc, atomPtr, loadAcquireOp, pred);
-        createBarrier(rewriter, loc, numCTAs);
-        Value ret = b.load(valueElemTy, atomPtr);
-        rewriter.replaceOp(op, {ret});
+        resultVals[i] = loadAcquireOp;
+        finalizeAtomicResults(op, rewriter, resultVals, valueElemTy, b, pred,
+                              targetInfo, getTypeConverter());
         return success();
       }
 
       // Let LLVM handle compare+swap loop; branch-based pred should be fine
       if (valueElemTy.isBF16() && getPPUComputeCapability(moduleOp) < 90) {
+        assert(vec == 1 && packed == 1);
         // Lower atomic bin-op and sem to LLVM
         auto llvmAtomicBinOp = matchAtomicOp(atomicRmwAttr);
         auto llvmAtomicMemOrdering = getMemoryOrdering(op.getSem());
@@ -1223,13 +1134,6 @@ public:
 
         // Enter into predicate block
         rewriter.setInsertionPointToEnd(curBlock);
-        bool doesAtomicNeedMEM = !op.getResult().use_empty();
-
-        // Setup for SMEM Sync case
-        Value atomPtr = tensorTy || !doesAtomicNeedMEM
-                            ? nullptr
-                            : LLVM::getSharedMemoryBase(
-                                  loc, rewriter, targetInfo, op.getOperation());
         LLVM::CondBrOp::create(rewriter, loc, pred, atomicBlock, endBlock,
                                undefVal);
 
@@ -1240,61 +1144,11 @@ public:
                                       valElements[i], *llvmAtomicMemOrdering,
                                       StringRef("device"))
                 .getResult();
-        // Handle the 2 bf16 case
-        if (packed == 2 && valueElemNBits == 16) {
-          Value atom2 = LLVM::AtomicRMWOp::create(
-                            rewriter, loc, *llvmAtomicBinOp, ptrElements[i + 1],
-                            valElements[i + 1], *llvmAtomicMemOrdering,
-                            StringRef("device"))
-                            .getResult();
-          auto vecTy = vec_ty(valueElemTy, vec);
-          auto tmp =
-              b.insert_element(vecTy, b.undef(vecTy), atom, b.i32_val(0));
-          atom = b.insert_element(vecTy, tmp, atom2, b.i32_val(1)).getResult();
-        }
-
-        if (tensorTy) {
-          // Return from predicated block
-          LLVM::BrOp::create(rewriter, loc, atom, endBlock);
-
-          // Recover values from predicated block
-          rewriter.setInsertionPointToStart(endBlock);
-          Value ret = endBlock->getArgument(0);
-          if (vec > 1) {
-            for (unsigned ii = 0; ii < vec; ++ii) {
-              resultVals[i + ii] = b.extract_val(valueElemTy, ret, ii);
-            }
-          } else if (packed > 1) {
-            for (unsigned ii = 0; ii < packed; ++ii) {
-              resultVals[i + ii] =
-                  b.extract_element(valueElemTy, ret, b.i32_val(ii));
-            }
-          } else {
-            resultVals[i] = ret;
-          }
-        } else {
-          if (!doesAtomicNeedMEM) {
-            LLVM::BrOp::create(rewriter, loc, atom, endBlock);
-            rewriter.eraseOp(op);
-            // if type isn't a tensor and there is no need to write to SMEM then
-            // we are done here
-            return success();
-          }
-
-          // Commit values from predicated block to SMEM and return from
-          // predicate block
-          // Note: there is no need to use the BlockArgument here because
-          //       the value is recovered from SMEM in the !tensorTy case
-          b.store(atom, atomPtr);
-          LLVM::BrOp::create(rewriter, loc, atom, endBlock);
-
-          // Recover values from predicated block (from SMEM)
-          rewriter.setInsertionPointToStart(endBlock);
-          b.barrier(triton::gpu::AddrSpace::Local);
-          Value ret = b.load(valueElemTy, atomPtr);
-          rewriter.replaceOp(op, {ret});
-          return success();
-        }
+        LLVM::BrOp::create(rewriter, loc, atom, endBlock);
+        rewriter.setInsertionPointToStart(endBlock);
+        resultVals[i] = endBlock->getArgument(0);
+        if (!tensorTy)
+          resultPred = pred;
         continue;
       }
 
@@ -1409,25 +1263,12 @@ public:
           resultVals[i] = ret;
         }
       } else {
-        auto ASMReturnTy = void_ty(ctx);
         atom(dstOpr, ptrOpr, valOpr).maybePredicate(pred);
-        auto old = tixBuilderAtomicRMW.launch(rewriter, loc, valueElemTy);
-        if (op.getResult().use_empty()) {
-          rewriter.eraseOp(op);
-          return success();
-        }
-        Value atomPtr = LLVM::getSharedMemoryBase(loc, rewriter, targetInfo,
-                                                  op.getOperation());
-        atomPtr = b.bitcast(atomPtr, ptr_ty(ctx, 3));
-        // Only threads with rmwMask = True store the result
-        targetInfo.storeShared(rewriter, loc, atomPtr, old, pred);
-        createBarrier(rewriter, loc, numCTAs);
-        Value ret = b.load(valueElemTy, atomPtr);
-        rewriter.replaceOp(op, {ret});
-        return success();
+        resultVals[i] = tixBuilderAtomicRMW.launch(rewriter, loc, valueElemTy);
+        resultPred = pred;
       }
     }
-    finalizeAtomicResults(op, rewriter, resultVals, valueElemTy, b, threadPred,
+    finalizeAtomicResults(op, rewriter, resultVals, valueElemTy, b, resultPred,
                           targetInfo, getTypeConverter());
     return success();
   }
@@ -1524,8 +1365,8 @@ struct AsyncCopyGlobalToLocalOpConversion
     // is available in each CTAs respective shared memory. Otherwise, we would
     // need an additional broadcast step to copy the data between CTAs.
     freeVarMasks[str_attr("block")] = 0;
-    Value threadPred =
-        emitRedundantThreadPredicate(freeVarMasks, rewriter, loc, targetInfo);
+    Value threadPred = ttg::emitRedundantThreadPredicate(freeVarMasks, rewriter,
+                                                         loc, targetInfo);
 
     auto emitCpAsync = [&b, threadPred, ptrTy, hasMask = bool(llMask)](
                            RewriterBase &rewriter, Location loc,
