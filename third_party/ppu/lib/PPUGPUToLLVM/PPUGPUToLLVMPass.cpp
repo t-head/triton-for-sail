@@ -252,6 +252,34 @@ public:
   }
 };
 
+class TritonGPUWarpIdOpPattern
+    : public OpRewritePattern<triton::gpu::WarpIdOp> {
+public:
+  using OpRewritePattern<triton::gpu::WarpIdOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(triton::gpu::WarpIdOp op,
+                                PatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
+
+    if (triton::gpu::lookupNumWarps(op) == 1) {
+      rewriter.replaceOp(op, b.i32_val(0));
+      return success();
+    }
+
+    Value tid = NVVM::ThreadIdXOp::create(rewriter, loc, i32_ty);
+    if (std::optional<int> startId =
+            getWarpGroupStartThreadId(rewriter.getInsertionBlock()))
+      tid = LLVM::SubOp::create(rewriter, loc, tid, b.i32_val(*startId));
+
+    Value warpId = b.udiv(tid, b.i32_val(32));
+    if (!op.getOmitUniformHint())
+      warpId = LLVM::PPU::shuffleIdx(loc, rewriter, warpId, 0);
+    rewriter.replaceOp(op, warpId);
+    return success();
+  }
+};
+
 class ClusterCTAIdOpPattern : public OpRewritePattern<ttn::ClusterCTAIdOp> {
   using OpRewritePattern<ttn::ClusterCTAIdOp>::OpRewritePattern;
 
@@ -408,7 +436,8 @@ public:
     RewritePatternSet patterns(context);
 
     patterns.add<ClusterCTAIdOpPattern, PPULoadMatrixOpPattern,
-                 LoadAcquireOpPattern, WarpIdOpPattern>(context);
+                 LoadAcquireOpPattern, WarpIdOpPattern,
+                 TritonGPUWarpIdOpPattern>(context);
 
     if (applyPatternsGreedily(mod, std::move(patterns)).failed())
       signalPassFailure();
