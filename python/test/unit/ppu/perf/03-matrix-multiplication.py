@@ -2,7 +2,7 @@
 Matrix Multiplication
 =====================
 In this tutorial, you will write a very short high-performance FP16 matrix multiplication kernel that achieves
-performance on par with cuBLAS or rocBLAS.
+performance on par with cuBLAS.
 
 You will specifically learn about:
 
@@ -157,77 +157,201 @@ from triton._internal_testing import is_ppu
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
-def is_cuda():
-    return triton.runtime.driver.active.get_current_target().backend == "cuda"
-
-def is_hip_mi200():
-    target = triton.runtime.driver.active.get_current_target()
-    return target.backend == 'hip' and target.arch == 'gfx90a'
+TORCH_HAS_FP8 = hasattr(torch, "float8_e5m2")
 
 
-def get_cuda_autotune_config():
+def get_exhaustive_autotune_configs():
+    # Enumerate the full cross product of tuning parameters so autotune can
+    # discover configs that a hand-picked list would miss.
+    configs = []
+    for block_size_m in (32, 64, 128, 256):
+        for block_size_n in (64, 128, 256):
+            for block_size_k in (32, 64, 128):
+                for group_size_m in (1, 2, 4, 8, 16):
+                    for num_warps in (2, 4, 8):
+                        for num_stages in (2, 3, 4, 5):
+                            configs.append(
+                                triton.Config({
+                                    'BLOCK_SIZE_M': block_size_m,
+                                    'BLOCK_SIZE_N': block_size_n,
+                                    'BLOCK_SIZE_K': block_size_k,
+                                    'GROUP_SIZE_M': group_size_m,
+                                }, num_warps=num_warps, num_stages=num_stages))
+    return configs
+
+
+def get_ppu0010_autotune_configs_fp16():
+    # Best configs measured on PPU0010 (compute capability 8.0).
     return [
-        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_stages=3,
-                      num_warps=8),
-        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4,
-                      num_warps=4),
-        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4,
-                      num_warps=4),
-        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4,
-                      num_warps=4),
-        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4,
-                      num_warps=4),
-        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 32, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4,
-                      num_warps=4),
-        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 32, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=5,
-                      num_warps=2),
-        triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=5,
-                      num_warps=2),
-        # Good config for fp8 inputs.
-        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 128, 'GROUP_SIZE_M': 8}, num_stages=3,
-                      num_warps=8),
-        triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 128, 'GROUP_SIZE_M': 8}, num_stages=3,
-                      num_warps=8),
-        triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 128, 'GROUP_SIZE_M': 8}, num_stages=4,
-                      num_warps=4),
-        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 128, 'GROUP_SIZE_M': 8}, num_stages=4,
-                      num_warps=4),
-        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 128, 'GROUP_SIZE_M': 8}, num_stages=4,
-                      num_warps=4),
-        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_stages=4,
-                      num_warps=4),
-        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_stages=4,
-                      num_warps=4),
-        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 32, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_stages=4,
-                      num_warps=4)
+        triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 1},
+                        num_warps=4, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 16},
+                        num_warps=4, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 1},
+                        num_warps=4, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8},
+                        num_warps=4, num_stages=5),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 1},
+                        num_warps=4, num_stages=5),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 4},
+                        num_warps=4, num_stages=5),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8},
+                        num_warps=4, num_stages=5),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 16},
+                        num_warps=8, num_stages=5),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 16},
+                        num_warps=4, num_stages=3),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 1},
+                        num_warps=4, num_stages=5),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 4},
+                        num_warps=4, num_stages=5),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 1},
+                        num_warps=8, num_stages=5),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 2},
+                        num_warps=8, num_stages=5),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 4},
+                        num_warps=8, num_stages=5),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8},
+                        num_warps=8, num_stages=5),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 16},
+                        num_warps=8, num_stages=5),
     ]
 
 
-def get_hip_autotune_config():
+def get_ppu0010_autotune_configs_fp8():
+    # Best configs measured on PPU0010 (compute capability 8.0).
     return [
-        triton.Config(
-            {'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 16, 'GROUP_SIZE_M': 1, 'waves_per_eu': 2},
-            num_warps=4, num_stages=2),
-        triton.Config(
-            {'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 16, 'GROUP_SIZE_M': 4, 'waves_per_eu': 2},
-            num_warps=8, num_stages=2),
-        triton.Config(
-            {'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 1, 'waves_per_eu': 2},
-            num_warps=8, num_stages=2),
-        triton.Config(
-            {'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8, 'waves_per_eu': 3},
-            num_warps=4, num_stages=2),
-        triton.Config(
-            {'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 1, 'waves_per_eu': 8},
-            num_warps=4, num_stages=2),
+        triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8},
+                        num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 1},
+                        num_warps=4, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 4},
+                        num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8},
+                        num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 2},
+                        num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 4},
+                        num_warps=4, num_stages=3),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 128, 'GROUP_SIZE_M': 1},
+                        num_warps=4, num_stages=3),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 128, 'GROUP_SIZE_M': 4},
+                        num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 128, 'GROUP_SIZE_M': 1},
+                        num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 128, 'GROUP_SIZE_M': 4},
+                        num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 128, 'GROUP_SIZE_M': 8},
+                        num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 2},
+                        num_warps=8, num_stages=5),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8},
+                        num_warps=8, num_stages=5),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 16},
+                        num_warps=8, num_stages=5),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 1},
+                        num_warps=8, num_stages=5),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 2},
+                        num_warps=8, num_stages=5),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 1},
+                        num_warps=4, num_stages=5),
     ]
 
 
-def get_autotune_config():
-    if is_cuda() or is_ppu():
-        return get_cuda_autotune_config()
-    else:
-        return get_hip_autotune_config()
+def get_ppu0015_autotune_configs_fp16():
+    # Best configs measured on PPU0015 (compute capability 8.9) for fp16 inputs.
+    return [
+        triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 2},
+                        num_warps=8, num_stages=5),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8},
+                        num_warps=4, num_stages=3),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 16},
+                        num_warps=4, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 16},
+                        num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 2},
+                        num_warps=8, num_stages=5),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8},
+                        num_warps=4, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8},
+                        num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 16},
+                        num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 16},
+                        num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 16},
+                        num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 2},
+                        num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 2},
+                        num_warps=8, num_stages=5),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8},
+                        num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 16},
+                        num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8},
+                        num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8},
+                        num_warps=8, num_stages=4),
+    ]
+
+
+def get_ppu0015_autotune_configs_fp8():
+    # Best configs measured on PPU0015 (compute capability 8.9) for fp8 inputs.
+    return [
+        triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 128, 'GROUP_SIZE_M': 8},
+                        num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 128, 'GROUP_SIZE_M': 16},
+                        num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 128, 'GROUP_SIZE_M': 8},
+                        num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 2},
+                        num_warps=4, num_stages=3),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 2},
+                        num_warps=8, num_stages=5),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 2},
+                        num_warps=8, num_stages=5),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 2},
+                        num_warps=8, num_stages=5),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 16},
+                        num_warps=8, num_stages=5),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8},
+                        num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 16},
+                        num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8},
+                        num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 16},
+                        num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8},
+                        num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 2},
+                        num_warps=8, num_stages=5),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 16},
+                        num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 16},
+                        num_warps=8, num_stages=4),
+    ]
+
+
+def get_ppu_autotune_configs_fp16():
+    # PPU0010 and PPU0015 have different best configs; pick the list for the
+    # current hardware and fall back to the exhaustive search elsewhere.
+    capability = torch.cuda.get_device_capability()
+    if capability == (8, 0):
+        return get_ppu0010_autotune_configs_fp16()
+    if capability == (8, 9):
+        return get_ppu0015_autotune_configs_fp16()
+    return get_exhaustive_autotune_configs()
+
+
+def get_ppu_autotune_configs_fp8():
+    capability = torch.cuda.get_device_capability()
+    if capability == (8, 0):
+        return get_ppu0010_autotune_configs_fp8()
+    if capability == (8, 9):
+        return get_ppu0015_autotune_configs_fp8()
+    return get_exhaustive_autotune_configs()
 
 
 # `triton.jit`'ed functions can be auto-tuned by using the `triton.autotune` decorator, which consumes:
@@ -235,10 +359,6 @@ def get_autotune_config():
 #       meta-parameters (e.g., `BLOCK_SIZE_M`) and compilation options (e.g., `num_warps`) to try
 #   - An auto-tuning *key* whose change in values will trigger evaluation of all the
 #       provided configs
-@triton.autotune(
-    configs=get_autotune_config(),
-    key=['M', 'N', 'K'],
-)
 @triton.jit
 def matmul_kernel(
         # Pointers to matrices
@@ -317,6 +437,19 @@ def matmul_kernel(
     tl.store(c_ptrs, c, mask=c_mask)
 
 
+# fp16 and fp8 need very different block shapes on PPU, so they are auto-tuned
+# separately: each dtype only benchmarks its own config list.
+matmul_kernel_fp16 = triton.autotune(
+    configs=get_ppu_autotune_configs_fp16(),
+    key=['M', 'N', 'K'],
+)(matmul_kernel)
+
+matmul_kernel_fp8 = triton.autotune(
+    configs=get_ppu_autotune_configs_fp8(),
+    key=['M', 'N', 'K'],
+)(matmul_kernel)
+
+
 # We can fuse `leaky_relu` by providing it as an `ACTIVATION` meta-parameter in `matmul_kernel`.
 @triton.jit
 def leaky_relu(x):
@@ -338,7 +471,8 @@ def matmul(a, b, activation=""):
     c = torch.empty((M, N), device=a.device, dtype=torch.float16)
     # 1D launch kernel where each block gets its own program.
     grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']), )
-    matmul_kernel[grid](
+    kernel = matmul_kernel_fp8 if (TORCH_HAS_FP8 and a.dtype == torch.float8_e5m2) else matmul_kernel_fp16
+    kernel[grid](
         a, b, c,  #
         M, N, K,  #
         a.stride(0), a.stride(1),  #
@@ -362,17 +496,12 @@ triton_output = matmul(a, b)
 torch_output = torch.matmul(a, b)
 print(f"triton_output_with_fp16_inputs={triton_output}")
 print(f"torch_output_with_fp16_inputs={torch_output}")
-# Bigger tolerance for AMD MI200 devices.
-# MI200 devices use reduced precision fp16 and bf16 and flush input and
-# output denormal values to zero. Detailed info is at: https://pytorch.org/docs/stable/notes/numerical_accuracy.html#reduced-precision-fp16-and-bf16-gemms-and-convolutions-on-amd-instinct-mi200-devices
-rtol = 1e-2 if is_hip_mi200() else 0
-if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=rtol):
+if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=0):
     print("✅ Triton and Torch match")
 else:
     print("❌ Triton and Torch differ")
 
-TORCH_HAS_FP8 = hasattr(torch, "float8_e5m2")
-if TORCH_HAS_FP8 and (is_cuda() or is_ppu()):
+if TORCH_HAS_FP8 and is_ppu():
     torch.manual_seed(0)
     a = torch.randn((512, 512), device=DEVICE, dtype=torch.float16)
     b = torch.randn((512, 512), device=DEVICE, dtype=torch.float16)
@@ -396,14 +525,14 @@ if TORCH_HAS_FP8 and (is_cuda() or is_ppu()):
 # Square Matrix Performance
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~
 #
-# We can now compare the performance of our kernel against that of cuBLAS or rocBLAS. Here we focus on square matrices,
+# We can now compare the performance of our kernel against that of cuBLAS. Here we focus on square matrices,
 # but feel free to arrange this script as you wish to benchmark any other matrix shape.
 
-ref_lib = 'cuBLAS' if is_cuda() or is_ppu() else 'rocBLAS'
+ref_lib = 'cuBLAS'
 
 configs = []
 for fp8_inputs in [False, True]:
-    if fp8_inputs and (not TORCH_HAS_FP8 or not (is_cuda() or is_ppu())):
+    if fp8_inputs and (not TORCH_HAS_FP8 or not is_ppu()):
         continue
     configs.append(
         triton.testing.Benchmark(
