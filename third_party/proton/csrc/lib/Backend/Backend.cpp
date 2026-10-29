@@ -1,12 +1,15 @@
 #include "Backend/Backend.h"
 #include "Driver/GPU/CudaApi.h"
 #include "Driver/GPU/HipApi.h"
+#include "Driver/GPU/HggcApi.h"
 #include "Profiler/Cupti/CuptiProfiler.h"
 #include "Profiler/Instrumentation/InstrumentationProfiler.h"
 #include "Profiler/RocprofSDK/RocprofSDKProfiler.h"
 #include "Profiler/Roctracer/RoctracerProfiler.h"
+#include "Profiler/Hgpti/HgptiProfiler.h"
 #include "Runtime/CudaRuntime.h"
 #include "Runtime/HipRuntime.h"
+#include "Runtime/HggcRuntime.h"
 #include <vector>
 
 namespace proton {
@@ -19,6 +22,7 @@ const std::vector<ProfilerRegistration> getProfilerRegistrations() {
       {"instrumentation",
        {},
        []() { return &InstrumentationProfiler::instance(); }},
+      {"hgpti", {}, []() { return &HgptiProfiler::instance(); }},
   };
   for (const auto &backend : getBackendRegistrations()) {
     const auto &profiler = backend.getProfiler();
@@ -34,6 +38,8 @@ const std::vector<DeviceRegistration> getDeviceRegistrations() {
        [](uint64_t index) { return cuda::getDevice(index); }},
       {"HIP", DeviceType::HIP,
        [](uint64_t index) { return hip::getDevice(index); }},
+      {"PPU", DeviceType::PPU,
+       [](uint64_t index) { return hggc::getDevice(index); }},
   };
   for (const auto &backend : getBackendRegistrations()) {
     const auto &device = backend.getDevice();
@@ -47,6 +53,7 @@ const std::vector<RuntimeRegistration> getRuntimeRegistrations() {
   std::vector<RuntimeRegistration> registeredRuntimes = {
       {"CUDA", []() { return &CudaRuntime::instance(); }},
       {"HIP", []() { return &HipRuntime::instance(); }},
+      {"PPU", []() { return &HggcRuntime::instance(); }},
   };
   for (const auto &backend : getBackendRegistrations()) {
     const auto &runtime = backend.getRuntime();

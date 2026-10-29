@@ -368,8 +368,7 @@ void CuptiPCSampling::processPCSamplingData(ConfigureData *configureData,
       if (!cubinData->lineInfo.contains(key)) {
         auto [lineNumber, fileName, dirName] =
             getSassToSourceCorrelation(pcData->functionName, pcData->pcOffset,
-                                       cubinData->cubin.data(),
-                                       cubinData->cubin.size());
+                                       cubinData->cubin, cubinData->cubinSize);
         cubinData->lineInfo.try_emplace(key, lineNumber,
                                         std::string(pcData->functionName),
                                         dirName, fileName);
@@ -417,7 +416,6 @@ void CuptiPCSampling::stop(CUcontext context,
   doubleCheckedLock([&]() -> bool { return pcSamplingStarted; },
                     pcSamplingMutex,
                     [&]() {
-                      cuda::ctxSynchronize<true>();
                       auto *configureData = getConfigureData(contextId);
                       stopPCSampling(context);
                       pcSamplingStarted = false;
@@ -439,7 +437,8 @@ void CuptiPCSampling::loadModule(const char *cubin, size_t cubinSize) {
   auto cubinCrc = getCubinCrc(cubin, cubinSize);
   auto *cubinData = getCubinData(cubinCrc);
   cubinData->cubinCrc = cubinCrc;
-  cubinData->cubin.assign(cubin, cubinSize);
+  cubinData->cubinSize = cubinSize;
+  cubinData->cubin = cubin;
 }
 
 void CuptiPCSampling::unloadModule(const char *cubin, size_t cubinSize) {

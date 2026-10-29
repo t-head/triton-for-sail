@@ -6,6 +6,7 @@ namespace proton {
 enum class DeviceType {
   HIP,
   CUDA,
+  PPU,
 @BACKEND_DEVICE_TAGS@
   COUNT
 };
