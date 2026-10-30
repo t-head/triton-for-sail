@@ -259,7 +259,7 @@ SmallVector<unsigned, 2> warpsPerTileMmaV1m8(DotOpInterface dotOp,
   //   }
   // }
 
-  SmallVector<unsigned> ret(rank, 1);
+  SmallVector<unsigned, 2> ret(rank, 1);
   SmallVector<int64_t> shapePerWarp(rank, 1);
   shapePerWarp[rank - 1] = 16;
   shapePerWarp[rank - 2] = 8;
