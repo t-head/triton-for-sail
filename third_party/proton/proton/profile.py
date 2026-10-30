@@ -15,12 +15,16 @@ DEFAULT_PROFILE_NAME = "proton"
 
 def _select_backend() -> str:
     backend = triton.runtime.driver.active.get_current_target().backend
+    if backend == "cuda" and is_ppu_device():
+        return "hgpti"
     return libproton.select_profiler_from_triton_backend(backend)
 
 
 def _get_mode_str(backend: str, mode: Optional[Union[str, BaseMode]]) -> str:
     if backend == "instrumentation":
         prefix = triton.runtime.driver.active.get_current_target().backend
+        if prefix == "cuda" and is_ppu_device():
+            prefix = "ppu"
         return f"{prefix}:{mode}" if mode else prefix
     return str(mode) if mode else ""
 
@@ -82,7 +86,7 @@ def start(
                               Available options are ["tree", "trace"].
                               Defaults to "tree".
         backend (str, optional): The backend to use for profiling.
-                                 Available options are [None, "cupti", "rocprofiler", "roctracer", "instrumentation"].
+                                 Available options are [None, "cupti", "rocprofiler", "roctracer", "hgpti", "instrumentation"].
                                  Defaults to None, which automatically selects the backend matching the current active runtime.
                                  On AMD GPUs, "rocprofiler" is preferred and will fall back to "roctracer" if
                                  rocprofiler-sdk is not available.
@@ -92,6 +96,7 @@ def start(
                                                For "cupti", available options are [None, "pcsampling", "periodic_flushing"].
                                                For "rocprofiler", available options are [None, "pcsampling", "periodic_flushing"].
                                                For "roctracer", available options are [None, "periodic_flushing"].
+                                               For "hgpti", available options are [None, "pcsampling", "periodic_flushing"].
                                                For "instrumentation", available options are [None].
                                                Each mode has a set of control knobs following with the mode name.
                                                For example, "periodic_flushing" mode has a knob:

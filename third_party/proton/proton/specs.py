@@ -62,7 +62,7 @@ def max_bps(device_type, arch, bus_width, memory_clock_rate):
     Returns:
         float: The maximum bytes per second.
     """
-    if device_type == "CUDA":
+    if device_type in ("CUDA", "PPU"):
         return 2 * bus_width * memory_clock_rate * 1e3 / 8
     else:
         assert device_type == "HIP"

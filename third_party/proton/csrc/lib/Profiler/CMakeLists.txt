@@ -10,4 +10,6 @@ add_proton_library(ProtonProfiler
   RocprofSDK/RocprofSDKProfiler.cpp
   Instrumentation/InstrumentationProfiler.cpp
   Instrumentation/Metadata.cpp
+  Hgpti/HgptiPCSampling.cpp
+  Hgpti/HgptiProfiler.cpp
 )

@@ -80,6 +80,11 @@ else()
   message(STATUS "Proton ROCProfiler-SDK code object source locations: disabled")
 endif()
 
+set(PROTON_PPU_SDK_ROOT "$ENV{PPU_SDK}")
+if(NOT PROTON_PPU_SDK_ROOT)
+  set(PROTON_PPU_SDK_ROOT "/usr/local/PPU_SDK")
+endif()
+
 # ============ Dependencies =============
 find_package(Python3 REQUIRED Interpreter Development.Module)
 if(NOT TARGET nanobind-static)
@@ -111,6 +116,7 @@ function(add_proton_library name)
     SYSTEM PRIVATE
       ${ROCPROFILER_SDK_INCLUDE_DIR}
       "${ROCM_INCLUDE_DIR}"
+      "${PROTON_PPU_SDK_ROOT}/include"
   )
 
   target_include_directories(${name}

@@ -1,6 +1,7 @@
 import argparse
 from collections import namedtuple
 import json
+import warnings
 import pandas as pd
 
 try:
@@ -86,6 +87,10 @@ def get_min_time_flops(df, device_info):
                 device_frames = df[idx]
                 if f"flops{width}" not in device_frames.columns:
                     continue
+                if device_type == "PPU":
+                    warnings.warn("PPU peak compute throughput is unavailable; util is shown as NaN.", stacklevel=2)
+                    min_time_flops.loc[idx, "min_time"] = np.nan
+                    break
                 max_flops = specs.max_flops(device_type, arch, width, num_sms, clock_rate)
                 min_time_flops.loc[idx, "min_time"] += device_frames[f"flops{width}"].fillna(0) / max_flops
     return min_time_flops

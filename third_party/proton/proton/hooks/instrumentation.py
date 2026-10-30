@@ -270,7 +270,7 @@ class InstrumentationHook(Hook):
             def encode_target(target: Dict[str, Any]) -> int:
                 #TODO(fywkevin): also account for `arch`
                 if target["backend"] == "cuda":
-                    return 1
+                    return 3 if is_ppu_device() else 1
                 elif target["backend"] == "hip":
                     return 2
                 return 0
