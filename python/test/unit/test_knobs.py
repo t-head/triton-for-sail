@@ -2,6 +2,7 @@ import os
 import pytest
 import shutil
 import triton
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 from triton._internal_testing import is_hip, is_ppu
 
@@ -485,7 +486,7 @@ def test_read_env(truthy, falsey, fresh_knobs_including_libraries, monkeypatch):
     fresh_knobs = fresh_knobs_including_libraries
     # bool defaulting to False
     assert not fresh_knobs.runtime.debug
-    assert not fresh_knobs.language.default_fp_fusion
+    assert fresh_knobs.language.default_fp_fusion
     assert not fresh_knobs.language.force_disable_fp_fusion
     # str defaulting to None
     assert fresh_knobs.compilation.use_ir_loc is None
@@ -521,6 +522,16 @@ def test_read_env(truthy, falsey, fresh_knobs_including_libraries, monkeypatch):
     assert fresh_knobs.cache.manager_class == FileCacheManager
 
     assert fresh_knobs.build.backend_dirs == {"/tmp/cuda/crt", "/tmp/cuda/rt"}
+
+
+def test_fp_fusion_warning_silenced_in_tests(fresh_knobs):
+    # The TRITON_DEFAULT_FP_FUSION deprecation warning is cached process-wide
+    # and pre-warmed by test setup, so resolving the default must not warn here
+    # even though the env var is unset by the fresh_knobs fixture.
+    assert os.environ.get("TRITON_DEFAULT_FP_FUSION") is None
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert fresh_knobs.language.fp_fusion_enabled(None)
 
 
 def test_triton_home(fresh_knobs, monkeypatch):

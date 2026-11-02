@@ -1,6 +1,12 @@
 name: Wheels
 on:
   workflow_dispatch:
+    inputs:
+      publish_to_pypi:
+        description: 'Upload the built wheels to PyPI'
+        required: false
+        type: boolean
+        default: false
   pull_request:
     paths:
       - .github/workflows/wheels.yml
@@ -41,6 +47,8 @@ jobs:
           # docker container.  Eventually these consume all the disk space on
           # this machine.
           docker container prune -f
+          # Pulling a fresh manylinux image leaves the previous one untagged.
+          docker image prune -f
 
       - name: Checkout
         uses: actions/checkout@v6
@@ -95,14 +103,20 @@ jobs:
           # uses the same flag for the same reason.
           export CIBW_REPAIR_WHEEL_COMMAND_LINUX="auditwheel repair --exclude libtriton.so -w {dest_dir} {wheel}"
 
+          # Always pull the manylinux image: the self-hosted runner keeps a cached
+          # copy of "latest", and a stale one has no cp315-cp315t interpreter.
           if [[ ${{ matrix.config.arch }} == 'x86_64' ]]; then
             export CIBW_MANYLINUX_X86_64_IMAGE="quay.io/pypa/manylinux_2_28_${{ matrix.config.arch }}:latest"
+            docker pull "${CIBW_MANYLINUX_X86_64_IMAGE}"
           else
             export CIBW_MANYLINUX_AARCH64_IMAGE="quay.io/pypa/manylinux_2_28_${{ matrix.config.arch }}:latest"
+            docker pull "${CIBW_MANYLINUX_AARCH64_IMAGE}"
           fi
 
-          # Version-specific wheel for Python 3.11.
-          export CIBW_BUILD="cp311-manylinux_${{ matrix.config.arch }}"
+          # Version-specific wheels for Python 3.11 and for the free-threaded
+          # 3.14t and 3.15t builds. Free-threaded interpreters cannot load abi3
+          # wheels, so they need their own cp314t / cp315t wheels.
+          export CIBW_BUILD="cp311-manylinux_${{ matrix.config.arch }} cp314t-manylinux_${{ matrix.config.arch }} cp315t-manylinux_${{ matrix.config.arch }}"
           export CIBW_SKIP="cp{35,36,37,38,39,310}-*"
           python3 -m cibuildwheel . --output-dir wheelhouse
 
@@ -116,36 +130,8 @@ jobs:
           name: cibw-wheels-manylinux_2_28_${{ matrix.config.arch }}-wheels-upload
           path: ./wheelhouse/*.whl
 
-      - name: Install Azure CLI
-        if: ${{ steps.check-version.outputs.new_commit == 'true' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+      - name: Upload wheels to PyPI
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_to_pypi }}
         run: |
-          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
-
-      - name: Azure login
-        if: ${{ steps.check-version.outputs.new_commit == 'true' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - id: generate-token
-        name: Generate token
-        if: ${{ steps.check-version.outputs.new_commit == 'true' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
-        run: |
-          AZ_TOKEN=$(az account get-access-token --query accessToken)
-          echo "::add-mask::$AZ_TOKEN"
-          echo "access_token=$AZ_TOKEN" >> "$GITHUB_OUTPUT"
-
-      - name: Publish wheels to Azure DevOps
-        if: ${{ steps.check-version.outputs.new_commit == 'true' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
-        run: |
-          python3 -m pip install twine
-          python3 -m twine upload -r Triton-Nightly -u TritonArtifactsSP -p ${{ steps.generate-token.outputs.access_token }} --config-file utils/nightly.pypirc --non-interactive --verbose wheelhouse/*
-
-      - name: Azure Logout
-        if: ${{ steps.check-version.outputs.new_commit == 'true' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (success() || failure()) }}
-        run: |
-          az logout
-          az cache purge
-          az account clear
+          python3 -m pip install twine --upgrade --user
+          python3 -m twine upload wheelhouse/* -u __token__ -p ${{ secrets.PYPY_API_TOKEN }}

@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from typing import cast, Any, Callable, Generator, Generic, Optional, Protocol, Type, TypeVar, TypedDict, TYPE_CHECKING, Union
 
 from triton._C.libtriton import getenv, getenv_bool  # type: ignore
-from ._utils import is_ppu_device
+from triton._utils import FP_FUSION_DEFAULT_WARNING, is_ppu_device, warn_once
 
 if TYPE_CHECKING:
     from .runtime.cache import CacheManager, RemoteCacheBackend
@@ -510,10 +510,12 @@ class runtime_knobs(base_knobs):
 
 class language_knobs(base_knobs):
     fp32_default: env_opt_str = env_opt_str("TRITON_F32_DEFAULT")
-    default_fp_fusion: env_bool = env_bool("TRITON_DEFAULT_FP_FUSION", False)
+    default_fp_fusion: env_bool = env_bool("TRITON_DEFAULT_FP_FUSION", True)
     force_disable_fp_fusion: env_bool = env_bool("TRITON_FORCE_DISABLE_FP_FUSION")
 
     def fp_fusion_enabled(self, requested: Optional[bool]) -> bool:
+        if requested is None and not self.force_disable_fp_fusion and getenv("TRITON_DEFAULT_FP_FUSION") is None:
+            warn_once(FP_FUSION_DEFAULT_WARNING)
         return not self.force_disable_fp_fusion and (self.default_fp_fusion if requested is None else requested)
 
 
