@@ -1062,6 +1062,7 @@ def test_hook_multiple_threads(tmp_path: pathlib.Path, device: str):
     assert root[1]["metrics"]["count"] == 100
 
 
+@pytest.mark.skipif(is_ppu(), reason="PC sampling requires a newer PPU SDK")
 def test_pcsampling(tmp_path: pathlib.Path, device: str):
     if not (is_cuda() or is_ppu() or is_hip()):
         pytest.skip("Only CUDA and HIP backends support pc sampling")
