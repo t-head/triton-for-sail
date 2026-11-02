@@ -4360,6 +4360,24 @@ module attributes {"ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32}
 
 // -----
 
+#blocked = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
+#blocked2 = #ttg.blocked<{sizePerThread = [2], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
+#linear = #ttg.linear<{register = [[16]], lane = [[0], [1], [2], [4], [8]], warp = [[0], [0]], block = []}>
+
+module attributes {"ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: @cat_target_changes_redundancy_keeps_convert
+  tt.func public @cat_target_changes_redundancy_keeps_convert(%lhs: tensor<16xi32, #blocked>, %rhs: tensor<16xi32, #blocked>) -> tensor<32xi32, #linear> {
+    // CHECK: %[[CAT:[^ ]+]] = tt.cat
+    %cat = tt.cat %lhs, %rhs : tensor<16xi32, #blocked> -> tensor<32xi32, #blocked2>
+    // CHECK: %[[CVT:[^ ]+]] = ttg.convert_layout %[[CAT]]
+    %cvt = ttg.convert_layout %cat : tensor<32xi32, #blocked2> -> tensor<32xi32, #linear>
+    // CHECK: tt.return %[[CVT]]
+    tt.return %cvt : tensor<32xi32, #linear>
+  }
+}
+
+// -----
+
 #blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [1, 1], order = [0, 1]}>
 #blocked1 = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [1, 1], order = [1, 0]}>
 

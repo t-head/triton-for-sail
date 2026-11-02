@@ -628,7 +628,9 @@ bool isLegalCatEncoding(CatOp cat, Attribute targetEncoding) {
   int64_t operandRegs = getUniqueElemsPerThread(cat.getLhs().getType()) * 2;
   int64_t resultRegs =
       getUniqueElemsPerThread(targetEncoding, cat.getType().getShape());
-  return resultRegs == operandRegs;
+  return resultRegs == operandRegs &&
+         !isExpensiveView(cat.getType(),
+                          cat.getType().cloneWithEncoding(targetEncoding));
 }
 
 static LogicalResult
