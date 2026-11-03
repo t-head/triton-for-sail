@@ -1,0 +1,401 @@
+name: Triton build matrix
+
+# Composed per-version compile matrix: refs (branches/tags) x runtime
+# configs (hggcrt3 / hggcrt2). Each entry builds a triton wheel on one
+# ZW-M890P pod, installs it and runs a smoke, then uploads the wheel as an
+# artifact. The matrix is composed by the prepare-matrix job from the two
+# workflow_dispatch inputs; entries are NOT hand-listed.
+#
+# Compile recipe follows tmake.build / .aoneci/script/build.sh:
+#   source /usr/local/PPU_SDK/envsetup.sh
+#   export TRITON_IR_FORMATTER_PATH=/usr/local/PPU_SDK/bin/llvm-irformatter
+#   python setup.py bdist_wheel && pip install dist/triton*.whl
+# plus the hardening from integration-tests-ppu.yml (bundled-triton purge,
+# NAS LLVM dep-cache pre-seeding, MAX_JOBS=16).
+#
+# Wheel naming: TRITON_WHEEL_VERSION_SUFFIX (read by setup.py
+# get_triton_version_suffix) appends the runtime config as a PEP 440 local
+# version segment, e.g. triton-3.7.1+hggcrt2-cp312-...whl vs
+# triton-3.7.1+hggcrt3-... . On release branches the wheel version is
+# exactly <version>+<config>; on non-release refs the git hash suffix
+# comes first and the config joins with '-' (setup.py allows only one
+# '+'), e.g. triton-3.7.1+<hash>-hggcrt2.
+#
+# Runtime configs:
+#   - hggcrt3: the pytorch: sdk2.2.0-<torch>-...-hggcrt3 image family with
+#     preinstalled torch; <torch> follows the ref's series (3.6 <-> 2.10.0,
+#     later <-> 2.13.0; for-sail release numbers denote the PyTorch
+#     pairing - keep in sync with each branch's integration-tests-ppu.yml).
+#     Full @triton.jit smoke on device.
+#   - hggcrt2: the plain ppu: sdk2.2.0-hggcrt2 SDK image, no bundled
+#     torch; the smoke degrades to an import-only check (installing the
+#     hggcrt3 torch wheel would contaminate the hggcrt2 configuration).
+#
+# Publishing: after every matrix entry passes, the per-entry wheel artifacts
+# are merged and published to a temporary wheel directory through the
+# reusable t-head/ci-infra push-tmp-wheel.yml template (same channel as
+# DeepGEMM-for-sail deepgemm-ut-upload-tmp.yml), gated on the suite so a
+# failed entry keeps its wheel as a run artifact only. Requires
+# RELEASE_USERNAME / RELEASE_TOKEN secrets (TEMPLATE_TOKEN for private
+# templates).
+#
+# Structure modeled on DeepGEMM-for-sail deepgemm-ut-upload-tmp.yml, with
+# the matrix dimension switched from boards to refs x configs (single
+# board ZW-M890P).
+
+on:
+  schedule:
+    # Daily at 11:30 UTC. NOTE: GitHub only runs scheduled workflows from
+    # the repository default branch, so on this feature branch this block
+    # is inert and the workflow is effectively dispatch-only; delete to
+    # make it explicit.
+    - cron: '30 11 * * *'
+  workflow_dispatch:
+    inputs:
+      refs:
+        description: "JSON array of refs (branches/tags) to build, e.g. [\"release/3.7.x\",\"3.7.0+v0.1.0\"]"
+        required: false
+        type: string
+        default: '["release/3.7.x"]'
+      configs:
+        description: "JSON array of runtime configs to build each ref with (hggcrt3 and/or hggcrt2)"
+        required: false
+        type: string
+        default: '["hggcrt3","hggcrt2"]'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: triton-build-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prepare-matrix:
+    name: Compose matrix (refs x configs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.compose.outputs.matrix }}
+    steps:
+      - name: Compose matrix entries
+        id: compose
+        shell: bash
+        env:
+          REFS: ${{ inputs.refs || '["release/3.7.x"]' }}
+          CONFIGS: ${{ inputs.configs || '["hggcrt3","hggcrt2"]' }}
+        run: |
+          set -euo pipefail
+          matrix=$(python3 - "$REFS" "$CONFIGS" <<'PYEOF'
+          import json
+          import sys
+
+          refs = json.loads(sys.argv[1])
+          configs = json.loads(sys.argv[2])
+          if not isinstance(refs, list) or not refs or not all(isinstance(r, str) for r in refs):
+              raise SystemExit(f"refs must be a non-empty JSON array of strings, got: {refs!r}")
+          if not isinstance(configs, list) or not configs or not all(isinstance(c, str) for c in configs):
+              raise SystemExit(f"configs must be a non-empty JSON array of strings, got: {configs!r}")
+
+          # hggcrt3 pod image: torch pairing follows the ref's series
+          # (3.6 <-> torch 2.10.0, later series <-> torch 2.13.0).
+          HGGCRT3_TORCH = {"3.6": "2.10.0"}
+          HGGCRT3_IMAGE = "download.t-head.cn/docker_release/pytorch:sdk2.2.0-{torch}-ubuntu24.04-hggcrt3-py312-20261005"
+          HGGCRT2_IMAGE = "download.t-head.cn/docker_release/ppu:sdk2.2.0-hggcrt2-ubuntu24.04-py312-20261005"
+
+          def series(ref):
+              base = ref.split("+")[0]
+              if base.startswith("release/"):
+                  base = base[len("release/"):]
+              parts = base.split(".")
+              return ".".join(parts[:2]) if len(parts) >= 2 else base
+
+          entries = []
+          for ref in refs:
+              for cfg in configs:
+                  if cfg == "hggcrt3":
+                      image = HGGCRT3_IMAGE.format(torch=HGGCRT3_TORCH.get(series(ref), "2.13.0"))
+                  elif cfg == "hggcrt2":
+                      image = HGGCRT2_IMAGE
+                  else:
+                      raise SystemExit(f"unknown config {cfg!r} (supported: hggcrt3, hggcrt2)")
+                  entries.append({"ref": ref, "image": image, "tag": cfg})
+          print(json.dumps(entries))
+          PYEOF
+          )
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "Composed matrix:" && echo "$matrix"
+
+  build-wheel:
+    name: Build wheel (${{ matrix.entry.ref }} / ${{ matrix.entry.tag }})
+    needs: prepare-matrix
+    runs-on: k8s-runner-group-cpu-thead
+    container:
+      image: ghcr.io/actions/actions-runner:latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        entry: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
+    steps:
+      - name: Compute ref slug
+        id: ref
+        shell: bash
+        run: |
+          SAFE_REF=$(printf '%s' '${{ matrix.entry.ref }}' | tr '/' '-')
+          echo "safe_id=${SAFE_REF}-${{ matrix.entry.tag }}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout (${{ matrix.entry.ref }})
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.entry.ref }}
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Build wheel on PPU (${{ matrix.entry.tag }})
+        id: ppu-build
+        uses: t-head/ci-infra/cluster-run@main
+        with:
+          image: ${{ matrix.entry.image }}
+          container_options: |
+            cpus: "40"
+          nnodes: 0
+          nproc_per_node: 1
+          node_selector: "board-type=ZW-M890P"
+          namespace: ppu-sched
+          timeout_minutes: 180
+          command: |
+            set -euo pipefail
+            cd /workspace/source
+            # Fix: image bakes in PIP_INDEX_URL pointing to unreachable internal server
+            unset PIP_INDEX_URL || true
+            # Fix: image bakes in git insteadOf redirecting github.com to unreachable internal gerrit
+            git config --global --unset-all url.https://ai-gerrit.eng.t-head.cn/Public/Github/.insteadOf 2>/dev/null || true
+            git config --global --add safe.directory '*'
+            # PPU SDK is pre-installed in the docker image
+            source /usr/local/PPU_SDK/envsetup.sh
+            export TRITON_IR_FORMATTER_PATH=/usr/local/PPU_SDK/bin/llvm-irformatter
+            echo "[INFO] PPU_SDK=$PPU_SDK"
+            echo "[INFO] TRITON_IR_FORMATTER_PATH=$TRITON_IR_FORMATTER_PATH"
+
+            # ── Uninstall any image-bundled triton before building from source ──
+            echo "[INFO] triton-related packages before uninstall:"; pip list 2>/dev/null | grep -i triton || true
+            for pkg in $(pip list --format=freeze 2>/dev/null | grep -iE '^[^=]*triton[^=]*=' | cut -d= -f1); do
+              pip uninstall -y "$pkg" || true
+            done
+            pip uninstall -y triton pytorch-triton triton-nightly 2>/dev/null || true
+            # Post-uninstall assertion (run from a neutral cwd so the source
+            # tree can never satisfy the import)
+            if (cd "$HOME" && python -c "import triton" 2>/dev/null); then
+              echo "[FATAL] triton is STILL importable after uninstall:"
+              (cd "$HOME" && python -c "import triton; print(triton.__file__)") || true
+              SP=$(python -c "import sys; print(next((p for p in sys.path if p.endswith('site-packages')), ''))" 2>/dev/null || true)
+              if [ -n "$SP" ]; then
+                rm -rf "$SP"/triton "$SP"/triton-*.dist-info "$SP"/triton-*.egg-info "$SP"/__editable__*triton* "$SP"/*triton*.pth 2>/dev/null || true
+              fi
+              if (cd "$HOME" && python -c "import triton" 2>/dev/null); then
+                echo "[FATAL] image-bundled triton could NOT be removed; aborting to guarantee a clean wheel build"; exit 1
+              fi
+              echo "[INFO] leftover triton removed from site-packages"
+            else
+              echo "[INFO] confirmed: no triton importable before build"
+            fi
+
+            # ── Triton dep cache: copy pre-seeded LLVM/deps from NAS to ~/.triton ──
+            TRITON_DEP_CACHE=/mnt/wl_nas/cache/triton
+            _llvm=$( (python3 -c "import json;print(json.load(open('cmake/llvm-info.json'))['llvm_hash'])" 2>/dev/null || cat cmake/llvm-hash.txt 2>/dev/null) | cut -c1-8)
+            _dep=$(cat cmake/*.json cmake/*.txt 2>/dev/null | sha256sum | cut -c1-8)
+            _src=$TRITON_DEP_CACHE/llvm-${_llvm}-${_dep}
+            _dst=${TRITON_HOME:-$HOME}/.triton
+            if [ -n "$_llvm" ] && [ -f "$_src/SEEDED_BY" ] && [ -d "$_src/.triton" ]; then
+              echo "[triton-cache] copy $_src/.triton -> $_dst"
+              mkdir -p "$_dst"
+              if cp -a "$_src/.triton/." "$_dst/"; then
+                find "$_dst/llvm" -maxdepth 1 -type l -delete 2>/dev/null || true
+              else
+                echo "[triton-cache] copy failed, fallback to download"
+                rm -rf "$_dst"
+              fi
+            else
+              echo "[triton-cache] no cache for llvm-${_llvm}-${_dep}, skip"
+            fi
+
+            # ── Build wheel (tmake.build / .aoneci build.sh recipe) ──
+            pip install pybind11 setuptools==68.1.2 wheel
+            export MAX_JOBS=16
+            # Tag the wheel with the runtime config: setup.py's
+            # get_triton_version_suffix() appends this as a PEP 440 local
+            # version segment (triton-<ver>+<config>-cp312-...whl). Refs too
+            # old to have the hook simply build an untagged wheel.
+            export TRITON_WHEEL_VERSION_SUFFIX=+${{ matrix.entry.tag }}
+            # Kept from the tmake.build recipe; not read by current setup.py
+            # but harmless for older refs whose build may consult them.
+            export BUILD_PLATFORM=ubuntu
+            export BUILD_DEVICE_PPU=1
+            rm -rf build python/build dist
+            LOG_FILE="build.log"
+            ERROR_LOG="error.log"
+            echo "START TO BUILD WHEEL"
+            set +e
+            python setup.py bdist_wheel > "$LOG_FILE" 2> "$ERROR_LOG"
+            BUILD_EXIT_CODE=$?
+            set -e
+            if [ "$BUILD_EXIT_CODE" -ne 0 ]; then
+              echo "Build failed with exit code $BUILD_EXIT_CODE"
+              cat "$ERROR_LOG"
+              echo "----- last 1000 lines of $LOG_FILE -----"
+              tail -n 1000 "$LOG_FILE"
+              exit 1
+            fi
+            echo "✅ Build succeeded!"
+            tail -n 200 "$LOG_FILE"
+            echo "[INFO] wheel: $(cd dist && ls triton*.whl 2>/dev/null)"
+
+            # ── Install the wheel and verify it is the one just built ──
+            pip uninstall -y triton 2>/dev/null || true
+            pip install dist/triton*.whl --force-reinstall
+            cd "$HOME"
+            python -c "import triton, sys; f=getattr(triton,'__file__',''); print('[INFO] triton.__file__ =', f); print('[INFO] triton.__version__ =', getattr(triton,'__version__','?')); sys.exit(0 if ('site-packages' in f or 'dist-packages' in f) else 1)" \
+              || { echo "[FATAL] imported triton is NOT the installed wheel (expected under site-packages)"; exit 1; }
+
+            # ── SMOKE: jit kernel on device when torch is present (pytorch:
+            # hggcrt3 images), import-only check otherwise (plain ppu: images
+            # ship no torch, and installing the hggcrt3 torch wheel would
+            # contaminate the hggcrt2 runtime configuration under test) ──
+            echo "START SMOKE"
+            SMOKE_RESULT=PASS
+            python3 - <<'PYEOF' || { echo "[FATAL] smoke failed"; exit 1; }
+            import importlib.util
+
+            have_torch = importlib.util.find_spec("torch") is not None
+            import triton
+
+            print(f"[smoke] triton {triton.__version__} from {triton.__file__}")
+            print(f"[smoke] torch available: {have_torch}")
+            if not have_torch:
+                # Wheel-built extension imports cleanly; no on-device launch
+                # possible without torch in this image.
+                print("[smoke] SMOKE_IMPORT_ONLY: no torch in image, skipped jit kernel launch")
+                raise SystemExit(0)
+
+            import torch
+            import triton.language as tl
+
+            print(f"[smoke] torch {torch.__version__}, cuda available: {torch.cuda.is_available()}")
+            assert torch.cuda.is_available(), "no cuda/ppu device visible to torch"
+
+            @triton.jit
+            def _add_kernel(x_ptr, y_ptr, out_ptr, n, BLOCK: tl.constexpr):
+                pid = tl.program_id(0)
+                offs = pid * BLOCK + tl.arange(0, BLOCK)
+                mask = offs < n
+                x = tl.load(x_ptr + offs, mask=mask)
+                y = tl.load(y_ptr + offs, mask=mask)
+                tl.store(out_ptr + offs, x + y, mask=mask)
+
+            n = 1 << 14
+            x = torch.rand(n, device="cuda")
+            y = torch.rand(n, device="cuda")
+            out = torch.empty_like(x)
+            _add_kernel[(triton.cdiv(n, 1024),)](x, y, out, n, BLOCK=1024)
+            torch.cuda.synchronize()
+            assert torch.allclose(out, x + y), "add kernel result mismatch"
+            print("[smoke] SMOKE_OK: jit add kernel compiled and verified on device")
+            PYEOF
+            if python3 -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('torch') is None else 1)"; then
+              SMOKE_RESULT=PASS_IMPORT_ONLY
+            fi
+
+            # ── Stage wheel + build metadata on NAS for the runner to pick up ──
+            REF_SLUG=$(printf '%s' '${{ matrix.entry.ref }}' | tr '/' '-')
+            SAFE_ID="$REF_SLUG-${{ matrix.entry.tag }}"
+            NAS_RESULT_DIR="/mnt/wl_nas/devops/triton-build-matrix/${{ github.run_id }}/${{ github.run_attempt }}/$SAFE_ID"
+            mkdir -p "$NAS_RESULT_DIR/wheels"
+            cp /workspace/source/dist/*.whl "$NAS_RESULT_DIR/wheels/"
+            cp /workspace/source/"$LOG_FILE" "$NAS_RESULT_DIR/" 2>/dev/null || true
+            {
+              echo "ref=${{ matrix.entry.ref }}"
+              echo "config=${{ matrix.entry.tag }}"
+              echo "commit=$(git -C /workspace/source rev-parse HEAD)"
+              echo "image=${{ matrix.entry.image }}"
+              echo "triton_version=$(python -c 'import triton; print(getattr(triton, "__version__", "unknown"))')"
+              echo "wheel=$(cd /workspace/source/dist && ls triton*.whl 2>/dev/null | head -1)"
+              echo "smoke=$SMOKE_RESULT"
+            } > "$NAS_RESULT_DIR/build_meta.txt"
+            echo "[INFO] wheels staged at $NAS_RESULT_DIR/wheels"
+          cleanup_policy: on_success
+
+      - name: Upload wheel (${{ matrix.entry.ref }} / ${{ matrix.entry.tag }})
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: triton-wheel-${{ github.run_id }}-${{ github.run_attempt }}-${{ steps.ref.outputs.safe_id }}
+          path: /wl_nas/devops/triton-build-matrix/${{ github.run_id }}/${{ github.run_attempt }}/${{ steps.ref.outputs.safe_id }}/wheels/*.whl
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+          retention-days: 14
+
+      - name: Build summary (${{ matrix.entry.ref }} / ${{ matrix.entry.tag }})
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          NAS_RESULT_DIR="/wl_nas/devops/triton-build-matrix/${{ github.run_id }}/${{ github.run_attempt }}/${{ steps.ref.outputs.safe_id }}"
+          echo "## Build: ${{ matrix.entry.ref }} (${{ matrix.entry.tag }})" >> "$GITHUB_STEP_SUMMARY"
+          if [[ ! -f "$NAS_RESULT_DIR/build_meta.txt" ]]; then
+            echo "Build metadata not found: $NAS_RESULT_DIR/build_meta.txt (build failed before staging)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          cat "$NAS_RESULT_DIR/build_meta.txt" >> "$GITHUB_STEP_SUMMARY"
+
+  merge:
+    name: Merge wheel artifacts
+    # Every matrix entry must pass before anything is published.
+    needs: build-wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      artifact_name: ${{ steps.artifact-name.outputs.artifact_name }}
+    steps:
+      - name: Set merged artifact name
+        id: artifact-name
+        shell: bash
+        run: |
+          echo "artifact_name=triton-wheels-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
+
+      - name: Merge wheel artifacts
+        uses: actions/upload-artifact/merge@v4
+        with:
+          name: ${{ steps.artifact-name.outputs.artifact_name }}
+          pattern: triton-wheel-${{ github.run_id }}-${{ github.run_attempt }}-*
+          compression-level: 0
+          delete-merged: false
+
+  push:
+    name: Call temporary wheel upload template
+    needs: merge
+    uses: t-head/ci-infra/.github/workflows/push-tmp-wheel.yml@main
+    with:
+      # run_attempt moves when only the publishing job is rerun.
+      artifact_name: ${{ needs.merge.outputs.artifact_name }}
+      template_repository: t-head/ci-infra
+      template_ref: main
+    secrets:
+      release_username: ${{ secrets.RELEASE_USERNAME }}
+      release_token: ${{ secrets.RELEASE_TOKEN }}
+      template_token: ${{ secrets.TEMPLATE_TOKEN }}
+
+  result:
+    name: Show batch directory URL
+    needs: push
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Write to logs and job summary
+        shell: bash
+        env:
+          UPLOAD_URL: ${{ needs.push.outputs.upload_url }}
+        run: |
+          set -euo pipefail
+          printf 'Batch directory: %s\n' "$UPLOAD_URL" | tee -a "$GITHUB_STEP_SUMMARY"
