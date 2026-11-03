@@ -602,7 +602,8 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
     auto mod = op->getParentOfType<ModuleOp>();
     int numWarps = ttg::lookupNumWarps(op);
     int warpSize = ttg::TritonGPUDialect::getThreadsPerWarp(mod);
-    Value warpID = ppugpu::WarpIdOp::create(rewriter, loc);
+    Value warpID = mlir::triton::gpu::WarpIdOp::create(
+        rewriter, loc, /*omitUniformHint=*/false);
     warpID = LLVM::PPU::toUniformB32(loc, rewriter, warpID);
 
     int elementSizeInBytes =
@@ -736,7 +737,8 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
     auto mod = op->getParentOfType<ModuleOp>();
     int numWarps = ttg::lookupNumWarps(op);
     int warpSize = ttg::TritonGPUDialect::getThreadsPerWarp(mod);
-    Value warpID = ppugpu::WarpIdOp::create(rewriter, loc);
+    Value warpID = mlir::triton::gpu::WarpIdOp::create(
+        rewriter, loc, /*omitUniformHint=*/false);
     warpID = LLVM::PPU::toUniformB32(loc, rewriter, warpID);
 
     int elementSizeInBytes =
