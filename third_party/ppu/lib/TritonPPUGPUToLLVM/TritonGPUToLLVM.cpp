@@ -80,7 +80,10 @@ public:
     addLegalDialect<cf::ControlFlowDialect>();
     addLegalDialect<mlir::triton::ppugpu::PPUGPUDialect>();
     addIllegalDialect<triton::TritonDialect>();
-    addIllegalDialect<triton::gpu::TritonGPUDialect>();
+    addDynamicallyLegalDialect<triton::gpu::TritonGPUDialect>(
+        [](mlir::Operation *op) {
+          return isa<triton::gpu::WarpIdOp>(op);
+        });
     addIllegalDialect<triton::ppu_gpu::TritonPPUGPUDialect>();
     addIllegalDialect<mlir::gpu::GPUDialect>();
     addLegalOp<mlir::UnrealizedConversionCastOp>();
