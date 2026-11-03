@@ -89,9 +89,4 @@ def PPUGPU_LoadAcquireOp : PPUGPU_Op<"ld_acquire", [MemoryEffects<[MemRead]>]> {
   let assemblyFormat = "$sem `,` $scope `,` $addr (`,` $mask^)? attr-dict `:` functional-type($addr, $result)";
 }
 
-def PPUGPU_WarpIdOp : PPUGPU_Op<"warp_id", [Pure]> {
-  let results = (outs I32:$result);
-  let assemblyFormat = "attr-dict";
-}
-
 #endif
