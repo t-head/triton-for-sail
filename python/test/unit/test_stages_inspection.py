@@ -4,7 +4,7 @@ import os
 import pathlib
 import hashlib
 import pytest
-from triton._internal_testing import is_cuda
+from triton._internal_testing import is_cuda, is_ppu
 from triton._instrumentation import instrument, is_enabled, register_instrumentation, unregister_instrumentation
 
 
@@ -33,7 +33,7 @@ def test_dynamic_instrumentation_and_dialect_loading():
     assert not instrument("context", point="load-dialects", backend="test")
 
 
-@pytest.mark.skipif(not is_cuda(), reason="only currently tested on CUDA")
+@pytest.mark.skipif(not (is_cuda() or is_ppu()), reason="only currently tested on CUDA or PPU")
 def test_inspection(monkeypatch, fresh_knobs, tmp_path: pathlib.Path):
     stage_name = 'make_ttgir'
     curr_repro_path = tmp_path / ("repro_prefix." + stage_name + ".repro.mlir")
