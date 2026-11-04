@@ -1,0 +1,638 @@
+name: Triton Wheel Build On Sail
+
+# Composed per-version compile matrix: refs (branches/tags) x runtime
+# configs (hggcrt3 / hggcrt2). Each entry builds a triton wheel on one
+# OAM-810E pod, installs it and runs a smoke, then uploads the wheel as an
+# artifact. The matrix is composed by the prepare-matrix job from the two
+# workflow_dispatch inputs; entries are NOT hand-listed.
+# Nightly (schedule) builds the four maintenance refs (release/3.6.x,
+# release/3.7.x, release/3.8.x, main); (ref, config) entries whose commit
+# is unchanged since the last successful build (no PR merged, no direct
+# push) are skipped, so an idle branch costs no accelerator time. State
+# lives on NAS; a branch with no state file yet is always built.
+#
+# Compile recipe follows tmake.build / .aoneci/script/build.sh:
+#   source /usr/local/PPU_SDK/envsetup.sh
+#   export TRITON_IR_FORMATTER_PATH=/usr/local/PPU_SDK/bin/llvm-irformatter
+#   python setup.py bdist_wheel && pip install dist/triton*.whl
+# plus the hardening from integration-tests-ppu.yml (bundled-triton purge,
+# NAS LLVM dep-cache pre-seeding, MAX_JOBS=16).
+#
+# Wheel naming: TRITON_WHEEL_VERSION_SUFFIX (read by setup.py
+# get_triton_version_suffix) appends the runtime config as a PEP 440 local
+# version segment, e.g. triton-3.7.1+hggcrt2-cp312-...whl vs
+# triton-3.7.1+hggcrt3-... . On release branches the wheel version is
+# exactly <version>+<config>; on non-release refs the git hash suffix
+# comes first and the config joins with '-' (setup.py allows only one
+# '+'), e.g. triton-3.7.1+<hash>-hggcrt2.
+#
+# Runtime configs:
+#   - hggcrt3: the pytorch: sdk2.2.0-<torch>-...-hggcrt3 image family with
+#     preinstalled torch; <torch> follows the ref's series (3.6 <-> 2.10.0,
+#     later <-> 2.13.0; for-sail release numbers denote the PyTorch
+#     pairing - keep in sync with each branch's integration-tests-ppu.yml).
+#     Full @triton.jit kernel smoke on device, plus the repo CI's own
+#     curated PPU unit subset (unit/ppu aiu/models/mxfp minus perf and the
+#     same ignores/deselects run_checkin_tests.py applies), all against the
+#     just-installed wheel.
+#   - hggcrt2: the plain ppu: sdk2.2.0-hggcrt2 SDK image, no bundled
+#     torch; the smoke degrades to an import-only check (installing the
+#     hggcrt3 torch wheel would contaminate the hggcrt2 configuration).
+#
+# Publishing: after every matrix entry passes, the per-entry wheel artifacts
+# are merged and published to a temporary wheel directory through the
+# reusable t-head/ci-infra push-tmp-wheel.yml template (same channel as
+# DeepGEMM-for-sail deepgemm-ut-upload-tmp.yml), gated on the suite so a
+# failed entry keeps its wheel as a run artifact only. Requires
+# RELEASE_USERNAME / RELEASE_TOKEN secrets (TEMPLATE_TOKEN for private
+# templates).
+#
+# Structure modeled on DeepGEMM-for-sail deepgemm-ut-upload-tmp.yml, with
+# the matrix dimension switched from boards to refs x configs (single
+# board OAM-810E).
+
+on:
+  schedule:
+    # Nightly at 11:30 UTC (07:30 Beijing): build the maintenance refs
+    # release/3.6.x / release/3.7.x / release/3.8.x / main, skipping every
+    # (ref, config) entry unchanged since the last successful build.
+    # Schedules only run from the default branch, so this stays inert until
+    # the workflow lands on main.
+    - cron: '30 11 * * *'
+  # Push trigger scoped to this feature branch ONLY: pushing the branch
+  # (i.e. landing or updating the workflow file) runs the full matrix
+  # end-to-end as a merge-gate validation, which workflow_dispatch cannot
+  # provide before the file exists on the default branch. GitHub Actions
+  # runs the workflow definition from the pushed commit, so this exercises
+  # exactly the file being validated. After the branch merges into main the
+  # filter no longer matches and the trigger goes inert — pushes to main do
+  # NOT start builds.
+  push:
+    branches:
+      - feature/ci-build-matrix
+  workflow_dispatch:
+    inputs:
+      refs:
+        description: "JSON array of refs (branches/tags) to build, e.g. [\"main\",\"release/3.7.x\",\"3.7.0+v0.1.0\"]"
+        required: false
+        type: string
+        default: '["main"]'
+      configs:
+        description: "JSON array of runtime configs to build each ref with (hggcrt3 and/or hggcrt2)"
+        required: false
+        type: string
+        default: '["hggcrt3","hggcrt2"]'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: triton-build-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prepare-matrix:
+    name: Compose matrix (refs x configs)
+    # Self-hosted pool (not ubuntu-latest): the nightly skip logic below
+    # reads last-built-commit state files from NAS. On this runner NAS is
+    # mounted at /wl_nas; PPU pods see the same volume at /mnt/wl_nas
+    # (the remap cluster-run's submit.sh itself uses). Same container image
+    # the build job and the production integration-tests-ppu.yml use, so
+    # python3 + git are known-available here.
+    runs-on: k8s-runner-group-cpu-thead
+    container:
+      image: ghcr.io/actions/actions-runner:latest
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.compose.outputs.matrix }}
+    steps:
+      - name: Compose matrix entries
+        id: compose
+        shell: bash
+        env:
+          # Push-triggered validation runs build the pushed branch itself
+          # (the pushed workflow definition is what executes); nightly
+          # (schedule) runs build the maintenance refs; dispatched runs keep
+          # the documented default refs (["main"]).
+          REFS: ${{ github.event_name == 'push' && format('["{0}"]', github.ref_name) || github.event_name == 'schedule' && '["release/3.6.x","release/3.7.x","release/3.8.x","main"]' || inputs.refs || '["main"]' }}
+          CONFIGS: ${{ inputs.configs || '["hggcrt3","hggcrt2"]' }}
+          EVENT_NAME: ${{ github.event_name }}
+          STATE_DIR: /wl_nas/devops/triton-build-matrix/state
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          matrix=$(python3 - "$REFS" "$CONFIGS" "$EVENT_NAME" <<'PYEOF'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          refs = json.loads(sys.argv[1])
+          configs = json.loads(sys.argv[2])
+          event_name = sys.argv[3]
+          if not isinstance(refs, list) or not refs or not all(isinstance(r, str) for r in refs):
+              raise SystemExit(f"refs must be a non-empty JSON array of strings, got: {refs!r}")
+          if not isinstance(configs, list) or not configs or not all(isinstance(c, str) for c in configs):
+              raise SystemExit(f"configs must be a non-empty JSON array of strings, got: {configs!r}")
+
+          # hggcrt3 pod image: torch pairing follows the ref's series
+          # (3.6 <-> torch 2.10.0, later series <-> torch 2.13.0).
+          HGGCRT3_TORCH = {"3.6": "2.10.0"}
+          HGGCRT3_IMAGE = "download.t-head.cn/docker_release/pytorch:sdk2.2.0-{torch}-ubuntu24.04-hggcrt3-py312-20261005"
+          HGGCRT2_IMAGE = "download.t-head.cn/docker_release/ppu:sdk2.2.0-hggcrt2-ubuntu24.04-py312-20261005"
+
+          def series(ref):
+              base = ref.split("+")[0]
+              if base.startswith("release/"):
+                  base = base[len("release/"):]
+              parts = base.split(".")
+              return ".".join(parts[:2]) if len(parts) >= 2 else base
+
+          # Nightly skip (schedule events only): an entry is skipped when the
+          # ref's current tip equals the commit of its last successful build
+          # (state file written by the build job on NAS) - i.e. no PR merged
+          # and no direct push landed since. Commit comparison is a superset
+          # of a "PRs merged since" check. Entries without a state file yet
+          # are always built. Non-schedule triggers never skip anything.
+          state_dir = os.environ.get("STATE_DIR")
+          tip_cache = {}
+
+          def ref_tip(ref):
+              if ref not in tip_cache:
+                  url = "https://x-access-token:{}@github.com/{}.git".format(
+                      os.environ["GITHUB_TOKEN"], os.environ["GITHUB_REPOSITORY"])
+                  # stderr is discarded so a failed ls-remote can never leak
+                  # the token-embedding URL into the log.
+                  proc = subprocess.run(
+                      ["git", "ls-remote", url, ref],
+                      capture_output=True, text=True, check=False)
+                  lines = [l for l in proc.stdout.splitlines() if l.strip()]
+                  if proc.returncode != 0 or not lines:
+                      raise SystemExit(f"git ls-remote failed for ref {ref!r}")
+                  tip_cache[ref] = lines[0].split()[0]
+              return tip_cache[ref]
+
+          def last_built(safe_id):
+              try:
+                  with open(os.path.join(state_dir, safe_id + ".commit")) as f:
+                      return f.read().strip()
+              except OSError:
+                  return None
+
+          entries = []
+          skipped = []
+          for ref in refs:
+              for cfg in configs:
+                  if cfg == "hggcrt3":
+                      image = HGGCRT3_IMAGE.format(torch=HGGCRT3_TORCH.get(series(ref), "2.13.0"))
+                  elif cfg == "hggcrt2":
+                      image = HGGCRT2_IMAGE
+                  else:
+                      raise SystemExit(f"unknown config {cfg!r} (supported: hggcrt3, hggcrt2)")
+                  if event_name == "schedule":
+                      safe_id = ref.replace("/", "-") + "-" + cfg
+                      built = last_built(safe_id)
+                      if built is not None and built == ref_tip(ref):
+                          skipped.append(f"{ref} / {cfg} (tip {built[:9]} unchanged since last successful build)")
+                          continue
+                  entries.append({"ref": ref, "image": image, "tag": cfg})
+          print(json.dumps(entries))
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary and (entries or skipped):
+              with open(summary, "a") as f:
+                  f.write("## Matrix composition\n\n")
+                  for e in entries:
+                      f.write(f"- BUILD: {e['ref']} ({e['tag']})\n")
+                  for s in skipped:
+                      f.write(f"- SKIP: {s}\n")
+          if skipped:
+              # MUST go to stderr: stdout of this heredoc is captured by
+              # matrix=$(python3 ...) below; diagnostics there would make the
+              # GITHUB_OUTPUT value multiline and poison fromJson(matrix).
+              # (GITHUB_STEP_SUMMARY above already carries the same SKIP lines.)
+              print("[nightly] skipped (no PR merged / no direct push since last successful build):", file=sys.stderr)
+              for s in skipped:
+                  print("  - " + s, file=sys.stderr)
+          PYEOF
+          )
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "Composed matrix:" && echo "$matrix"
+
+  build-wheel:
+    name: Build wheel (${{ matrix.entry.ref }} / ${{ matrix.entry.tag }})
+    needs: prepare-matrix
+    # Nightly all-unchanged case: compose outputs "[]" and an empty matrix
+    # vector makes strategy evaluation FAIL ("Matrix vector ... does not
+    # contain any values") instead of skipping. Guard the job; the publish
+    # chain skips with it via needs, so an idle nightly stays a green no-op.
+    if: needs.prepare-matrix.outputs.matrix != '[]'
+    runs-on: k8s-runner-group-cpu-thead
+    container:
+      image: ghcr.io/actions/actions-runner:latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        entry: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
+    steps:
+      - name: Compute ref slug
+        id: ref
+        shell: bash
+        run: |
+          SAFE_REF=$(printf '%s' '${{ matrix.entry.ref }}' | tr '/' '-')
+          echo "safe_id=${SAFE_REF}-${{ matrix.entry.tag }}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout (${{ matrix.entry.ref }})
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.entry.ref }}
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Build wheel on PPU (${{ matrix.entry.tag }})
+        id: ppu-build
+        uses: t-head/ci-infra/cluster-run@main
+        with:
+          image: ${{ matrix.entry.image }}
+          container_options: |
+            cpus: "40"
+          nnodes: 0
+          nproc_per_node: 1
+          node_selector: "board-type=OAM-810E"
+          namespace: ppu-sched
+          timeout_minutes: 180
+          command: |
+            set -euo pipefail
+            cd /workspace/source
+            # Fix: image bakes in PIP_INDEX_URL pointing to an unreachable internal
+            # server. Unsetting it is not enough here: the build deps from
+            # python/requirements.txt (pybind11 / nanobind, cmake, ninja, ...) are
+            # not preinstalled in every matrix image (the ppu: hggcrt2 image lacks
+            # pybind11), and the pod's egress proxy 403s pypi.org. Point pip at the
+            # t-head-internal art-pub artifactory pypi mirror instead - the same
+            # artifactory this repo's CI already uses for SDK/torch tarballs.
+            export PIP_INDEX_URL=https://art-pub.eng.t-head.cn/artifactory/api/pypi/pypi_index/simple
+            # Fix: image bakes in git insteadOf redirecting github.com to unreachable internal gerrit
+            git config --global --unset-all url.https://ai-gerrit.eng.t-head.cn/Public/Github/.insteadOf 2>/dev/null || true
+            git config --global --add safe.directory '*'
+            # PPU SDK is pre-installed in the docker image
+            source /usr/local/PPU_SDK/envsetup.sh
+            export TRITON_IR_FORMATTER_PATH=/usr/local/PPU_SDK/bin/llvm-irformatter
+            echo "[INFO] PPU_SDK=$PPU_SDK"
+            echo "[INFO] TRITON_IR_FORMATTER_PATH=$TRITON_IR_FORMATTER_PATH"
+
+            # ── Uninstall any image-bundled triton before building from source ──
+            echo "[INFO] triton-related packages before uninstall:"; pip list 2>/dev/null | grep -i triton || true
+            for pkg in $(pip list --format=freeze 2>/dev/null | grep -iE '^[^=]*triton[^=]*=' | cut -d= -f1); do
+              pip uninstall -y "$pkg" || true
+            done
+            pip uninstall -y triton pytorch-triton triton-nightly 2>/dev/null || true
+            # Post-uninstall assertion (run from a neutral cwd so the source
+            # tree can never satisfy the import)
+            if (cd "$HOME" && python -c "import triton" 2>/dev/null); then
+              echo "[FATAL] triton is STILL importable after uninstall:"
+              (cd "$HOME" && python -c "import triton; print(triton.__file__)") || true
+              SP=$(python -c "import sys; print(next((p for p in sys.path if p.endswith('site-packages')), ''))" 2>/dev/null || true)
+              if [ -n "$SP" ]; then
+                rm -rf "$SP"/triton "$SP"/triton-*.dist-info "$SP"/triton-*.egg-info "$SP"/__editable__*triton* "$SP"/*triton*.pth 2>/dev/null || true
+              fi
+              if (cd "$HOME" && python -c "import triton" 2>/dev/null); then
+                echo "[FATAL] image-bundled triton could NOT be removed; aborting to guarantee a clean wheel build"; exit 1
+              fi
+              echo "[INFO] leftover triton removed from site-packages"
+            else
+              echo "[INFO] confirmed: no triton importable before build"
+            fi
+
+            # ── Triton dep cache: copy pre-seeded LLVM/deps from NAS to ~/.triton ──
+            TRITON_DEP_CACHE=/mnt/wl_nas/cache/triton
+            _llvm=$( (python3 -c "import json;print(json.load(open('cmake/llvm-info.json'))['llvm_hash'])" 2>/dev/null || cat cmake/llvm-hash.txt 2>/dev/null) | cut -c1-8)
+            _dep=$(cat cmake/*.json cmake/*.txt 2>/dev/null | sha256sum | cut -c1-8)
+            _src=$TRITON_DEP_CACHE/llvm-${_llvm}-${_dep}
+            _dst=${TRITON_HOME:-$HOME}/.triton
+            if [ -n "$_llvm" ] && [ -f "$_src/SEEDED_BY" ] && [ -d "$_src/.triton" ]; then
+              echo "[triton-cache] copy $_src/.triton -> $_dst"
+              mkdir -p "$_dst"
+              if cp -a "$_src/.triton/." "$_dst/"; then
+                find "$_dst/llvm" -maxdepth 1 -type l -delete 2>/dev/null || true
+              else
+                echo "[triton-cache] copy failed, fallback to download"
+                rm -rf "$_dst"
+              fi
+            else
+              echo "[triton-cache] no cache for llvm-${_llvm}-${_dep}, skip"
+            fi
+
+            # ── Build wheel (tmake.build / .aoneci build.sh recipe) ──
+            # Build deps come from the ref's OWN python/requirements.txt so
+            # each series gets its correct binding library: release/3.7.x and
+            # older use pybind11, main / 3.8+ import nanobind at setup.py top
+            # level (nanobind==2.10.2 plus packaging>=22.0). Hardcoding
+            # pybind11 (the 3.7 tmake recipe) fails main-series refs with
+            # "ModuleNotFoundError: No module named 'nanobind'". All packages
+            # are mirrored on the art-pub pypi_index set above.
+            pip install -r python/requirements.txt
+            export MAX_JOBS=16
+            # Tag the wheel with the runtime config: setup.py's
+            # get_triton_version_suffix() appends this as a PEP 440 local
+            # version segment (triton-<ver>+<config>-cp312-...whl). Refs too
+            # old to have the hook simply build an untagged wheel.
+            export TRITON_WHEEL_VERSION_SUFFIX=+${{ matrix.entry.tag }}
+            # Kept from the tmake.build recipe; not read by current setup.py
+            # but harmless for older refs whose build may consult them.
+            export BUILD_PLATFORM=ubuntu
+            export BUILD_DEVICE_PPU=1
+            rm -rf build python/build dist
+            LOG_FILE="build.log"
+            ERROR_LOG="error.log"
+            echo "START TO BUILD WHEEL"
+            set +e
+            python setup.py bdist_wheel > "$LOG_FILE" 2> "$ERROR_LOG"
+            BUILD_EXIT_CODE=$?
+            set -e
+            if [ "$BUILD_EXIT_CODE" -ne 0 ]; then
+              echo "Build failed with exit code $BUILD_EXIT_CODE"
+              cat "$ERROR_LOG"
+              echo "----- last 1000 lines of $LOG_FILE -----"
+              tail -n 1000 "$LOG_FILE"
+              exit 1
+            fi
+            echo "✅ Build succeeded!"
+            tail -n 200 "$LOG_FILE"
+            echo "[INFO] wheel: $(cd dist && ls triton*.whl 2>/dev/null)"
+
+            # ── Install the wheel and verify it is the one just built ──
+            pip uninstall -y triton 2>/dev/null || true
+            pip install dist/triton*.whl --force-reinstall
+            cd "$HOME"
+            python -c "import triton, sys; f=getattr(triton,'__file__',''); print('[INFO] triton.__file__ =', f); print('[INFO] triton.__version__ =', getattr(triton,'__version__','?')); sys.exit(0 if ('site-packages' in f or 'dist-packages' in f) else 1)" \
+              || { echo "[FATAL] imported triton is NOT the installed wheel (expected under site-packages)"; exit 1; }
+
+            # ── SMOKE: jit kernel on device when torch is present (pytorch:
+            # hggcrt3 images), import-only check otherwise (plain ppu: images
+            # ship no torch, and installing the hggcrt3 torch wheel would
+            # contaminate the hggcrt2 runtime configuration under test) ──
+            echo "START SMOKE"
+            SMOKE_RESULT=PASS
+            # The smoke must run from a real .py file, NOT stdin: @triton.jit
+            # calls inspect.getsourcelines() on the kernel, which fails for
+            # stdin-sourced code with "ValueError: @jit functions should be
+            # defined in a Python file".
+            SMOKE_PY=/tmp/triton_bm_smoke.py
+            cat > "$SMOKE_PY" <<'PYEOF'
+            import importlib.util
+
+            have_torch = importlib.util.find_spec("torch") is not None
+            import triton
+
+            print(f"[smoke] triton {triton.__version__} from {triton.__file__}")
+            print(f"[smoke] torch available: {have_torch}")
+            if not have_torch:
+                # Wheel-built extension imports cleanly; no on-device launch
+                # possible without torch in this image.
+                print("[smoke] SMOKE_IMPORT_ONLY: no torch in image, skipped jit kernel launch")
+                raise SystemExit(0)
+
+            import torch
+            import triton.language as tl
+
+            print(f"[smoke] torch {torch.__version__}, cuda available: {torch.cuda.is_available()}")
+            assert torch.cuda.is_available(), "no cuda/ppu device visible to torch"
+
+            @triton.jit
+            def _add_kernel(x_ptr, y_ptr, out_ptr, n, BLOCK: tl.constexpr):
+                pid = tl.program_id(0)
+                offs = pid * BLOCK + tl.arange(0, BLOCK)
+                mask = offs < n
+                x = tl.load(x_ptr + offs, mask=mask)
+                y = tl.load(y_ptr + offs, mask=mask)
+                tl.store(out_ptr + offs, x + y, mask=mask)
+
+            n = 1 << 14
+            x = torch.rand(n, device="cuda")
+            y = torch.rand(n, device="cuda")
+            out = torch.empty_like(x)
+            _add_kernel[(triton.cdiv(n, 1024),)](x, y, out, n, BLOCK=1024)
+            torch.cuda.synchronize()
+            assert torch.allclose(out, x + y), "add kernel result mismatch"
+            print("[smoke] SMOKE_OK: jit add kernel compiled and verified on device")
+            PYEOF
+            python3 "$SMOKE_PY" || { echo "[FATAL] smoke failed"; exit 1; }
+            if python3 -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('torch') is None else 1)"; then
+              SMOKE_RESULT=PASS_IMPORT_ONLY
+            else
+              # ── Phase 2 (torch images only): selected PPU unit cases ──
+              # Reuses the repo CI's own curation (run_checkin_tests.py main
+              # batch): the unit/ppu subtree minus perf benchmarks, minus the
+              # four aiu files the CI ignores, minus the broken test_chunk
+              # case. These exercise the INSTALLED wheel (site-packages), not
+              # the source tree. --import-mode=importlib is what guarantees
+              # that: main-series refs ship python/conftest.py, and pytest's
+              # default prepend mode imports it by inserting its basedir
+              # (/workspace/source/python, no __init__.py there) at
+              # sys.path[0] - which makes every "import triton" in the tests
+              # bind to the source tree and die with "cannot import name
+              # 'getenv' from 'triton._C.libtriton' (unknown location)"
+              # (no compiled libtriton under the source tree). Importlib
+              # mode imports conftests and test modules without touching
+              # sys.path, so the wheel stays authoritative. Verified safe for
+              # this subset: no unit/ppu file does sibling sys.path imports
+              # and none uses python/conftest.py-only fixtures.
+              echo "START UT SMOKE (curated PPU unit cases)"
+              # Back to the source tree: the wheel-verification step above
+              # deliberately ran from $HOME, but the UT paths and the ref's
+              # test-requirements.txt are relative to /workspace/source. Safe
+              # for the wheel under test: no __init__.py package chain exists
+              # under python/test on any series ref, so pytest's conftest
+              # collection only puts python/test (not python/) on sys.path and
+              # the source tree can never shadow the installed wheel.
+              cd /workspace/source
+              # Test deps: only the pytest stack from the ref's own
+              # test-requirements.txt plus numpy/einops (all that unit/ppu
+              # actually imports). Installing the full file instead pins
+              # packages absent from the art-pub mirror (pandas==2.3.3 on
+              # main, numpy==2.5.4 on release/3.8.x) and drags in report-only
+              # deps the smoke subset never imports.
+              grep -E '^pytest' python/test-requirements.txt > /tmp/bm-ut-req.txt
+              pip install -r /tmp/bm-ut-req.txt
+              python -c "import numpy" 2>/dev/null || pip install numpy
+              python -c "import einops" 2>/dev/null || pip install einops
+              # Per-ref-series curation, mirroring each ref's OWN production
+              # harness (.github/ppu-ci/run_checkin_tests.py) so the smoke set
+              # is exactly what that series' CI proves green - the harnesses
+              # diverge across refs:
+              #   main          : main batch ignores aiu {binary, chained_dot,
+              #                   load_padding, descending}; models/* and
+              #                   mxfp/* in full; deselect test_fla_dplr::test_chunk
+              #   release/3.7.x, release/3.8.x : same shape but the aiu ignore
+              #                   list swaps descending -> block_ptr_load
+              #   release/3.6.x : ppu runs as dedicated batches - whole aiu dir
+              #                   (its 810E board-deselects all live inside
+              #                   test_aiu_binary.py, ignored whole-file here =
+              #                   strict subset), models ONLY test_fla_ops.py,
+              #                   and mxfp/test_mxfp_matmul.py is skip_boards=[
+              #                   "OAM-810E"] - this workflow pins OAM-810E, so it
+              #                   is ignored on 3.6-series refs.
+              # Refs whose trees lack an ignored path are unaffected: pytest
+              # silently no-ops --ignore/--deselect entries that match nothing
+              # (verified: exit 0). test_fla_dplr::test_chunk stays global for
+              # the same reason - it is a no-op on 3.6, which lacks the file.
+              UT_IGNORE_ARGS=()
+              case "${{ matrix.entry.ref }}" in
+                release/3.6*|3.6*)
+                  UT_IGNORE_ARGS+=(
+                    "--ignore=python/test/unit/ppu/aiu/test_aiu_binary.py"
+                    "--ignore=python/test/unit/ppu/models/test_alibi.py"
+                    "--ignore=python/test/unit/ppu/models/test_fused_moe.py"
+                    "--ignore=python/test/unit/ppu/mxfp/test_mxfp_matmul.py"
+                  )
+                  ;;
+                release/3.7*|release/3.8*|3.7*|3.8*)
+                  UT_IGNORE_ARGS+=(
+                    "--ignore=python/test/unit/ppu/aiu/test_aiu_binary.py"
+                    "--ignore=python/test/unit/ppu/aiu/test_aiu_chained_dot.py"
+                    "--ignore=python/test/unit/ppu/aiu/test_aiu_load_padding.py"
+                    "--ignore=python/test/unit/ppu/aiu/test_aiu_block_ptr_load.py"
+                  )
+                  ;;
+                *)
+                  # main-series harness main batch
+                  UT_IGNORE_ARGS+=(
+                    "--ignore=python/test/unit/ppu/aiu/test_aiu_binary.py"
+                    "--ignore=python/test/unit/ppu/aiu/test_aiu_chained_dot.py"
+                    "--ignore=python/test/unit/ppu/aiu/test_aiu_load_padding.py"
+                    "--ignore=python/test/unit/ppu/aiu/test_aiu_descending.py"
+                  )
+                  ;;
+              esac
+              set +e
+              pytest python/test/unit/ppu/aiu python/test/unit/ppu/models python/test/unit/ppu/mxfp \
+                "${UT_IGNORE_ARGS[@]}" \
+                --deselect "python/test/unit/ppu/models/test_fla_dplr.py::test_chunk" \
+                --import-mode=importlib \
+                --tb=short --no-header --timeout=300 -n 2 \
+                --junitxml=ut_smoke_result.xml
+              UT_RC=$?
+              set -e
+              if [ "$UT_RC" -ne 0 ]; then
+                echo "[FATAL] curated PPU unit tests failed (pytest exit $UT_RC; 5 = nothing collected)"
+                exit 1
+              fi
+              python3 - <<'UTEOF' | tee ut_summary.txt
+            import xml.etree.ElementTree as ET
+            root = ET.parse("ut_smoke_result.xml").getroot()
+            ts = root if root.tag == "testsuite" else root.find(".//testsuite")
+            print(f"ut_total={ts.get('tests')} ut_failed={ts.get('failures')} "
+                  f"ut_errors={ts.get('errors')} ut_skipped={ts.get('skipped')} time={ts.get('time')}")
+            UTEOF
+              SMOKE_RESULT=PASS_UT
+            fi
+
+            # ── Stage wheel + build metadata on NAS for the runner to pick up ──
+            REF_SLUG=$(printf '%s' '${{ matrix.entry.ref }}' | tr '/' '-')
+            SAFE_ID="$REF_SLUG-${{ matrix.entry.tag }}"
+            NAS_RESULT_DIR="/mnt/wl_nas/devops/triton-build-matrix/${{ github.run_id }}/${{ github.run_attempt }}/$SAFE_ID"
+            mkdir -p "$NAS_RESULT_DIR/wheels"
+            cp /workspace/source/dist/*.whl "$NAS_RESULT_DIR/wheels/"
+            cp /workspace/source/"$LOG_FILE" "$NAS_RESULT_DIR/" 2>/dev/null || true
+            {
+              echo "ref=${{ matrix.entry.ref }}"
+              echo "config=${{ matrix.entry.tag }}"
+              echo "commit=$(git -C /workspace/source rev-parse HEAD)"
+              echo "image=${{ matrix.entry.image }}"
+              echo "triton_version=$(python -c 'import triton; print(getattr(triton, "__version__", "unknown"))')"
+              echo "wheel=$(cd /workspace/source/dist && ls triton*.whl 2>/dev/null | head -1)"
+              echo "smoke=$SMOKE_RESULT"
+            } > "$NAS_RESULT_DIR/build_meta.txt"
+            if [ -f ut_smoke_result.xml ]; then
+              cp ut_smoke_result.xml "$NAS_RESULT_DIR/"
+              cat ut_summary.txt >> "$NAS_RESULT_DIR/build_meta.txt"
+            fi
+            echo "[INFO] wheels staged at $NAS_RESULT_DIR/wheels"
+
+            # ── Record the built commit as nightly-skip state ──
+            # Must be done here in the pod (root, proven write access to the
+            # NAS result tree) rather than on the runner: the runner-side
+            # container runs as a non-root user and cannot mkdir under a
+            # root-owned NAS directory. Compose (runner) only ever READS this
+            # state, which world-readable root-owned files allow.
+            STATE_DIR=/mnt/wl_nas/devops/triton-build-matrix/state
+            mkdir -p "$STATE_DIR"
+            printf '%s\n' "$(git -C /workspace/source rev-parse HEAD)" > "$STATE_DIR/$SAFE_ID.commit"
+            echo "[INFO] recorded $SAFE_ID state for nightly skip"
+          cleanup_policy: on_success
+
+      - name: Upload wheel (${{ matrix.entry.ref }} / ${{ matrix.entry.tag }})
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: triton-wheel-${{ github.run_id }}-${{ github.run_attempt }}-${{ steps.ref.outputs.safe_id }}
+          path: /wl_nas/devops/triton-build-matrix/${{ github.run_id }}/${{ github.run_attempt }}/${{ steps.ref.outputs.safe_id }}/wheels/*.whl
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+          retention-days: 14
+
+      - name: Build summary (${{ matrix.entry.ref }} / ${{ matrix.entry.tag }})
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          NAS_RESULT_DIR="/wl_nas/devops/triton-build-matrix/${{ github.run_id }}/${{ github.run_attempt }}/${{ steps.ref.outputs.safe_id }}"
+          echo "## Build: ${{ matrix.entry.ref }} (${{ matrix.entry.tag }})" >> "$GITHUB_STEP_SUMMARY"
+          if [[ ! -f "$NAS_RESULT_DIR/build_meta.txt" ]]; then
+            echo "Build metadata not found: $NAS_RESULT_DIR/build_meta.txt (build failed before staging)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          cat "$NAS_RESULT_DIR/build_meta.txt" >> "$GITHUB_STEP_SUMMARY"
+
+  merge:
+    name: Merge wheel artifacts
+    # Every matrix entry must pass before anything is published.
+    needs: build-wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      artifact_name: ${{ steps.artifact-name.outputs.artifact_name }}
+    steps:
+      - name: Set merged artifact name
+        id: artifact-name
+        shell: bash
+        run: |
+          echo "artifact_name=triton-wheels-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
+
+      - name: Merge wheel artifacts
+        uses: actions/upload-artifact/merge@v4
+        with:
+          name: ${{ steps.artifact-name.outputs.artifact_name }}
+          pattern: triton-wheel-${{ github.run_id }}-${{ github.run_attempt }}-*
+          compression-level: 0
+          delete-merged: false
+
+  push:
+    name: Call temporary wheel upload template
+    needs: merge
+    uses: t-head/ci-infra/.github/workflows/push-tmp-wheel.yml@main
+    with:
+      # run_attempt moves when only the publishing job is rerun.
+      artifact_name: ${{ needs.merge.outputs.artifact_name }}
+      template_repository: t-head/ci-infra
+      template_ref: main
+    secrets:
+      release_username: ${{ secrets.RELEASE_USERNAME }}
+      release_token: ${{ secrets.RELEASE_TOKEN }}
+      template_token: ${{ secrets.TEMPLATE_TOKEN }}
+
+  result:
+    name: Show batch directory URL
+    needs: push
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Write to logs and job summary
+        shell: bash
+        env:
+          UPLOAD_URL: ${{ needs.push.outputs.upload_url }}
+        run: |
+          set -euo pipefail
+          printf 'Batch directory: %s\n' "$UPLOAD_URL" | tee -a "$GITHUB_STEP_SUMMARY"
