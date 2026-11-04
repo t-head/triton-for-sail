@@ -442,7 +442,7 @@ class PPUBackend(BaseBackend):
             paths = [path for (name, path) in options.extern_libs]
             llvm.link_extern_libs(llvm_mod, paths)
 
-        llvm.optimize_module(llvm_mod, llvm.OPTIMIZE_O3)
+        llvm.optimize_module(llvm_mod, llvm.OPTIMIZE_O3, expand_masked_div_rem=True)
 
         # Get some metadata
         total_num_warps = src.get_int_attr("ttg.total-num-warps")
