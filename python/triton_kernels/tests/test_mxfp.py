@@ -16,7 +16,7 @@ from triton_kernels.numerics_details.mxfp import (
     upcast_from_mxfp_torch,
 )
 from triton_kernels.numerics_details.mxfp_details._upcast_from_mxfp import upcast_mxfp4_tile, upcast_ue8m0_scale
-from triton_kernels.target_info import cuda_capability_geq, is_cuda
+from triton_kernels.target_info import cuda_capability_geq, is_cuda, is_ppu
 from triton_kernels.tensor import convert_layout, wrap_torch_tensor
 from triton_kernels.tensor_details.layout import StridedLayout
 from triton_kernels.testing import assert_close, assert_equal
@@ -96,7 +96,7 @@ def _mxfp_scale_boundary_data(src_dtype, dst_dtype, device):
 @pytest.mark.parametrize("dst_dtype", [torch.float16, torch.bfloat16, torch.float32])
 @pytest.mark.parametrize("axis", [0, -1])
 def test_mxfp_upcast_scale_boundaries(upcast, src_dtype, dst_dtype, axis, device):
-    if (upcast is upcast_from_mxfp and src_dtype == torch.float8_e4m3fn and is_cuda()
+    if (upcast is upcast_from_mxfp and src_dtype == torch.float8_e4m3fn and (is_cuda() or is_ppu())
             and torch.cuda.get_device_capability() < (8, 9)):
         pytest.skip("E4M3 conversion requires CUDA capability 8.9 or newer")
     tensor, scale, expected = _mxfp_scale_boundary_data(src_dtype, dst_dtype, device)
@@ -136,7 +136,7 @@ def test_mxfp4_tile_upcast_scale_boundaries(dst_dtype, device):
     torch.testing.assert_close(actual, expected, rtol=0, atol=0, equal_nan=True)
 
 
-@pytest.mark.skipif(not is_cuda(), reason="Only supported on cuda")
+@pytest.mark.skipif(not (is_cuda() or is_ppu()), reason="Only supported on CUDA or PPU")
 @pytest.mark.parametrize("dst_dtype", ["float16", "bfloat16", "float32"])
 def test_mxfp4_tile_upcast_matches_reference(dst_dtype, device):
     torch.manual_seed(0)
@@ -236,7 +236,7 @@ def test_mxfp4_rounding_cases(dst_dtype, device):
 @pytest.mark.parametrize("src_dtype", ["float4_e2m1", "float8_e5m2", "float8_e4m3fn"])
 @pytest.mark.parametrize("dst_dtype", ["float16", "bfloat16", "float32"])
 def test_mxfp_extreme_values(src_dtype, dst_dtype, device):
-    if src_dtype == "float8_e4m3fn" and is_cuda() and torch.cuda.get_device_capability() < (8, 9):
+    if src_dtype == "float8_e4m3fn" and (is_cuda() or is_ppu()) and torch.cuda.get_device_capability() < (8, 9):
         pytest.skip("E4M3 conversion requires CUDA capability 8.9 or newer")
     src_dtype = dtype_str_to_torch(src_dtype)
     dst_dtype = dtype_str_to_torch(dst_dtype)
@@ -253,7 +253,7 @@ def test_mxfp_extreme_values(src_dtype, dst_dtype, device):
 @pytest.mark.parametrize("src_dtype", ["float4_e2m1", "float8_e5m2", "float8_e4m3fn"])
 @pytest.mark.parametrize("dst_dtype", ["float16", "bfloat16", "float32"])
 def test_mxfp_quant_dequant(src_dtype, dst_dtype, device):
-    if src_dtype == "float8_e4m3fn" and is_cuda() and torch.cuda.get_device_capability() < (8, 9):
+    if src_dtype == "float8_e4m3fn" and (is_cuda() or is_ppu()) and torch.cuda.get_device_capability() < (8, 9):
         pytest.skip("E4M3 conversion requires CUDA capability 8.9 or newer")
     limit_range = src_dtype == "float8_e5m2" and dst_dtype == "float16"
 
@@ -333,7 +333,7 @@ def test_mxfp_casting(
     microblock_size: int,
     device,
 ):
-    if ((quant_dtype == "float8_e4m3fn" or scale_dtype == torch.float8_e4m3fn) and is_cuda()
+    if ((quant_dtype == "float8_e4m3fn" or scale_dtype == torch.float8_e4m3fn) and (is_cuda() or is_ppu())
             and torch.cuda.get_device_capability() < (8, 9)):
         pytest.skip("E4M3 conversion requires CUDA capability 8.9 or newer")
     torch.manual_seed(0)

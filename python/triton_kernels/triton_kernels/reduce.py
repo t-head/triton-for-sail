@@ -178,7 +178,7 @@ def _select_reduce_forward_config(
     use_rowidxs = (
         mask_chainable
         and K <= 32
-        and target_info.is_cuda()
+        and (target_info.is_cuda() or target_info.is_ppu())
         and torch.cuda.get_device_capability()[0] >= 9
     )
 

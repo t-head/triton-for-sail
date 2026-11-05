@@ -8,6 +8,7 @@ from triton.language.target_info import (
     is_hip_cdna3,
     is_hip_cdna4,
     is_hip_gfx1250,
+    is_ppu,
 )
 
 __all__ = [
@@ -22,6 +23,7 @@ __all__ = [
     "is_hip_cdna3",
     "is_hip_cdna4",
     "is_hip_gfx1250",
+    "is_ppu",
     "num_sms",
 ]
 

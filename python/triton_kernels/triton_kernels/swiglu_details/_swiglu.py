@@ -37,7 +37,7 @@ def swiglu_launch_metadata(grid, kernel, args):
 
 @triton.jit
 def exp_ftz(x):
-    if tl.target_info.is_cuda():
+    if tl.target_info.is_cuda() or tl.target_info.is_ppu():
         log2_e: tl.constexpr = 1.4426950408889634
         x *= log2_e
         return tl.inline_asm_elementwise(
