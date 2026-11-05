@@ -1,3 +1,4 @@
+from triton._utils import is_ppu_device
 from triton.runtime import driver
 from triton.runtime.jit import constexpr_function
 
@@ -14,12 +15,13 @@ def current_target():
 
 
 current_target.__triton_builtin__ = True
+is_ppu_device.__triton_builtin__ = True
 
 
 @constexpr_function
 def is_cuda():
     target = current_target()
-    return target is not None and target.backend == "cuda"
+    return target is not None and target.backend == "cuda" and not is_ppu_device()
 
 
 @constexpr_function
@@ -58,3 +60,9 @@ def is_hip_cdna4():
 def is_hip_gfx1250():
     target = current_target()
     return target is not None and target.arch == "gfx1250"
+
+
+@constexpr_function
+def is_ppu():
+    target = current_target()
+    return target is not None and target.backend == "cuda" and is_ppu_device()

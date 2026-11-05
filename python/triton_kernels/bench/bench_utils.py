@@ -7,7 +7,7 @@ from triton_kernels.matmul import PrecisionConfig, FlexCtx, FnSpecs, FusedActiva
 from triton_kernels.numerics import InFlexData
 from triton_kernels.numerics_details.mxfp import MXFP_BLOCK_SIZE, downcast_to_mxfp
 from triton_kernels.tensor import convert_layout, wrap_torch_tensor, FP4, Tensor
-from triton_kernels.target_info import is_cuda, get_cdna_version, cuda_capability_geq, is_hip
+from triton_kernels.target_info import is_cuda, is_ppu, get_cdna_version, cuda_capability_geq, is_hip
 from triton_kernels.tensor_details import layout
 import torch
 
@@ -19,7 +19,7 @@ def _quantize_weight(w, dtype, **opt):
     elif dtype == "fp8":
         fp8e4_dtype = torch.float8_e4m3fn if get_cdna_version() != 3 else torch.float8_e4m3fnuz
         wq = w.to(fp8e4_dtype)
-        if is_cuda() and not cuda_capability_geq(10, 0):
+        if (is_cuda() or is_ppu()) and not cuda_capability_geq(10, 0):
             wq = wq.transpose(-1, -2).contiguous().transpose(-1, -2)
         return wq, InFlexData(dtype=wq.dtype, scale=w.abs().max().unsqueeze(0)), None
     else:
