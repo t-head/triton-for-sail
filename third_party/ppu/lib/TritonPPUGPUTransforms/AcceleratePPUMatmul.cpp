@@ -133,7 +133,9 @@ static bool supportPPUMMA(Value value, int version) {
 static bool supportPPUMMA(triton::DotOp op, int version) {
   auto aElemTy = op.getA().getType().getElementType();
   auto bElemTy = op.getB().getType().getElementType();
-  // PPU support FP32 input
+  if (aElemTy.isF32() && bElemTy.isF32() &&
+      op.getInputPrecision() == InputPrecision::IEEE)
+    return mlir::triton::tools::getBoolEnv("PPU_ENABLE_FP32_MMA");
   return supportPPUMMA(op.getA(), version) && supportPPUMMA(op.getB(), version);
 }
 
