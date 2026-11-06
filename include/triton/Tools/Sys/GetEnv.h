@@ -56,6 +56,7 @@ inline const std::set<std::string> CACHE_INVALIDATING_ENV_VARS = {
     "TRITON_PARTITION_SCHEDULING_DUMP_LOOP_ONLY",
     "FORCE_USE_M16MMA",
     "FORCE_USE_M8MMA",
+    "PPU_ENABLE_FP32_MMA",
     // clang-format on
 };
 
