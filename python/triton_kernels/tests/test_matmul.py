@@ -23,7 +23,7 @@ from triton_kernels.numerics_details.mxfp import upcast_from_mxfp, quantize_mxfp
 # testing utilities
 from triton_kernels.testing import assert_close, make_random_tensor
 # target-specific utilities
-from triton_kernels.target_info import is_cuda, is_hip, is_hip_cdna3, is_hip_cdna4, is_hip_gfx1250
+from triton_kernels.target_info import is_cuda, is_ppu, is_hip, is_hip_cdna3, is_hip_cdna4, is_hip_gfx1250
 from triton_kernels.swiglu import swiglu, swiglu_fn
 from triton_kernels.swiglu import PrecisionConfig as SwiGLUPrecisionConfig
 from triton_kernels.tensor_details import layout
@@ -360,7 +360,7 @@ def _test_op(m, n, k, split_k, do_gather, do_scatter, inner_expt_opt, do_gamma, 
     b_dtype = DType(weight_dtype_str)
     c_dtype = DType(output_dtype_str or act_dtype_str)
     device_capability = torch.cuda.get_device_capability()[0]
-    if is_cuda():
+    if is_cuda() or is_ppu():
         if device_capability < 10 and (a_dtype.is_nvfp4 or b_dtype.is_nvfp4 or c_dtype.is_nvfp4):
             pytest.skip("NVFP4 matmul only tested on Blackwell or newer")
         if device_capability < 9 and (a_dtype.uses_fp8e4nv or b_dtype.uses_fp8e4nv or c_dtype.uses_fp8e4nv):
@@ -676,7 +676,7 @@ def _test_op(m, n, k, split_k, do_gather, do_scatter, inner_expt_opt, do_gamma, 
     ((273, 544, 576), False, {}),
 ])
 def test_matmul_mixed_fp8_resource_limits(shape, fp8_lhs, constraints, device, opt_flags_scope):
-    if is_cuda() and torch.cuda.get_device_capability()[0] < 9:
+    if (is_cuda() or is_ppu()) and torch.cuda.get_device_capability()[0] < 9:
         pytest.skip("requires Hopper or newer")
     if is_hip() and constraints.get("is_persistent"):
         pytest.skip("Persistent kernel not supported on AMD GPU")
@@ -706,7 +706,7 @@ def test_matmul_mixed_fp8_resource_limits(shape, fp8_lhs, constraints, device, o
 ])
 def test_matmul_mixed_fp8_matches_upcast(fp8_lhs, dtype, out_dtype, b_transpose, use_fpsan, shape,
                                         constraints, device, opt_flags_scope, fresh_knobs):
-    if is_cuda() and torch.cuda.get_device_capability()[0] < 9:
+    if (is_cuda() or is_ppu()) and torch.cuda.get_device_capability()[0] < 9:
         pytest.skip("requires Hopper or newer")
     if is_hip() and constraints.get("is_persistent"):
         pytest.skip("Persistent kernel not supported on AMD GPU")
@@ -741,7 +741,7 @@ def test_matmul_mixed_fp8_matches_upcast(fp8_lhs, dtype, out_dtype, b_transpose,
 @pytest.mark.parametrize("fp8_lhs", [False, True])
 @pytest.mark.parametrize("is_persistent", [False, True])
 def test_matmul_mixed_fp8_preserves_fp16_precision(fp8_lhs, is_persistent, device, opt_flags_scope):
-    if is_cuda() and torch.cuda.get_device_capability()[0] < 9:
+    if (is_cuda() or is_ppu()) and torch.cuda.get_device_capability()[0] < 9:
         pytest.skip("requires Hopper or newer")
     if is_hip() and is_persistent:
         pytest.skip("Persistent kernel not supported on AMD GPU")
@@ -767,7 +767,7 @@ def test_matmul_mixed_fp8_preserves_fp16_precision(fp8_lhs, is_persistent, devic
 @pytest.mark.parametrize("is_persistent", [False, True])
 @pytest.mark.parametrize("n", [960, 1024, 1536, 1568, 1600, 1632, 1664])
 def test_mxfp8_act_scale_store_zeroes_partial_group(n, is_persistent, device):
-    if not is_cuda() or torch.cuda.get_device_capability()[0] < 10:
+    if not (is_cuda() or is_ppu()) or torch.cuda.get_device_capability()[0] < 10:
         pytest.skip("requires Blackwell or newer")
 
     torch.manual_seed(0)
@@ -823,7 +823,7 @@ def test_mxfp8_act_scale_store_zeroes_partial_group(n, is_persistent, device):
 @pytest.mark.parametrize("scale_slice_sizes", [None, (128, 128), (130, 126), (129, 127)],
                          ids=["shared", "different-block-offsets", "different-slice-offsets", "equal-copy"])
 def test_gathered_ragged_act_scale_indexing(device, scale_slice_sizes):
-    if not is_cuda() or torch.cuda.get_device_capability()[0] < 10:
+    if not (is_cuda() or is_ppu()) or torch.cuda.get_device_capability()[0] < 10:
         pytest.skip("requires Blackwell or newer")
 
     m, k = 256, 128
@@ -866,7 +866,7 @@ def test_gathered_ragged_act_scale_indexing(device, scale_slice_sizes):
 
 
 def test_k_ragged_mxfp8_act_scale_swizzling(device):
-    if not is_cuda() or torch.cuda.get_device_capability()[0] < 10:
+    if not (is_cuda() or is_ppu()) or torch.cuda.get_device_capability()[0] < 10:
         pytest.skip("requires Blackwell or newer")
 
     m, n, k = 64, 128, 96
@@ -914,7 +914,7 @@ def test_k_ragged_mxfp8_act_scale_swizzling(device):
 
 
 def test_set_idle_sms():
-    if not is_cuda():
+    if not (is_cuda() or is_ppu()):
         pytest.skip("Only supported on CUDA")
     from triton_kernels.matmul_details.opt_flags import make_opt_flags
     num_idle_sms = 24
@@ -1030,7 +1030,7 @@ def _fused_comm_writes_issued():
 @pytest.mark.parametrize("ragged", [False, True])
 @pytest.mark.parametrize("is_persistent", [False, True])
 def test_fused_comm_no_local_output(dtype, n_peers, ragged, is_persistent):
-    if not is_cuda() or torch.cuda.device_count() < n_peers:
+    if not (is_cuda() or is_ppu()) or torch.cuda.device_count() < n_peers:
         pytest.skip("Requires CUDA devices for all communication peers")
     if is_persistent and torch.cuda.get_device_capability()[0] < 9:
         pytest.skip("Persistent matmul requires compute capability >= 9")

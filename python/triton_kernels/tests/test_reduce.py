@@ -5,7 +5,7 @@ from triton_kernels.reduce import reduce, reduce_torch, PostprocessFn, FnSpecs
 from triton_kernels.reduce import scoped_opt_flags_constraints
 from triton_kernels.numerics_details.mxfp import upcast_from_mxfp_torch, downcast_to_mxfp_torch
 from triton_kernels.numerics import InFlexData, OutFlexData
-from triton_kernels.target_info import is_cuda, is_hip, is_hip_cdna3, is_hip_cdna4
+from triton_kernels.target_info import is_cuda, is_ppu, is_hip, is_hip_cdna3, is_hip_cdna4
 import triton
 import triton.language as tl
 
@@ -43,7 +43,7 @@ def plus_a_reduce(x, a):
 @pytest.mark.parametrize("scale", [0, 1, 127, 128, 255])
 @pytest.mark.parametrize("scale_dtype", [torch.uint8, torch.int8])
 def test_reduce_mxfp_scale_boundaries(dtype, k, scale, scale_dtype, device):
-    if dtype == torch.float8_e4m3fn and is_cuda() and torch.cuda.get_device_capability() < (8, 9):
+    if dtype == torch.float8_e4m3fn and (is_cuda() or is_ppu()) and torch.cuda.get_device_capability() < (8, 9):
         pytest.skip("E4M3 conversion requires CUDA capability 8.9 or newer")
 
     x = torch.full((k, 3, 128), 4, dtype=dtype, device=device).requires_grad_()
@@ -88,7 +88,7 @@ def test_reduce_mxfp_scale_boundaries(dtype, k, scale, scale_dtype, device):
 def test_op(B, M, N, dtype_str, dim, mask_mode, postprocess_fn):
     # Check float8 hardware support
     if "float8" in dtype_str:
-        if is_cuda() and torch.cuda.get_device_capability() < (9, 0):
+        if (is_cuda() or is_ppu()) and torch.cuda.get_device_capability() < (9, 0):
             pytest.skip("float8 not supported on CUDA < 9.0")
         if is_hip() and not (is_hip_cdna3() or is_hip_cdna4()):
             pytest.skip("float8 not supported on AMD GPU < CDNA3")
@@ -177,7 +177,7 @@ def test_op_empty_forward_backward(B, M, N, dtype, mask_mode):
 
 @pytest.mark.enable_warmup(min_capability=9, priority=1)
 def test_unpadded_batch_size_rowidxs_subtile():
-    if not torch.cuda.is_available() or not is_cuda():
+    if not torch.cuda.is_available() or not (is_cuda() or is_ppu()):
         pytest.skip("rowidxs path requires CUDA")
     if torch.cuda.get_device_capability()[0] < 9:
         pytest.skip("rowidxs path requires CUDA capability >= 9")
