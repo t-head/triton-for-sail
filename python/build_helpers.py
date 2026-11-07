@@ -333,6 +333,15 @@ class DependencyArchive:
 
     @property
     def url(self):
+        base = os.environ.get("TRITON_DEPENDENCY_BASE_URL", "")
+        if base:
+            parsed = urllib.parse.urlsplit(base)
+            parsed.port
+            if (parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username is not None
+                    or parsed.password is not None or parsed.query or parsed.fragment):
+                raise ValueError("TRITON_DEPENDENCY_BASE_URL must be an HTTP(S) URL without credentials, query or fragment")
+            return f"{base.rstrip('/')}/{self.mirror_path}"
+
         # Prefer OAI-internal blobstore, if available. Never fall back to public
         # storage after a mirror failure.
         base = os.environ.get("OAIARTIFACTS_BASE_URL", "").rstrip("/")
