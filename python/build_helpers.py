@@ -333,6 +333,7 @@ class DependencyArchive:
 
     @property
     def url(self):
+        # An explicit dependency mirror takes precedence over the OAI mirror.
         base = os.environ.get("TRITON_DEPENDENCY_BASE_URL", "")
         if base:
             parsed = urllib.parse.urlsplit(base)
