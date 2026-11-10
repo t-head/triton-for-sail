@@ -14,6 +14,7 @@ This repository is the **PPU fork** of Triton, providing support for the PPU ind
 
 | Branch | Upstream base |
 |---|---|
+| [`release/3.9.x`](../../tree/release/3.9.x) | [Triton 3.9.0](https://github.com/triton-lang/triton/releases/tag/v3.9.0) |
 | [`release/3.8.x`](../../tree/release/3.8.x) | [Triton 3.8.0](https://github.com/triton-lang/triton/releases/tag/v3.8.0) |
 | [`release/3.7.x`](../../tree/release/3.7.x) | [Triton 3.7.1](https://github.com/triton-lang/triton/releases/tag/v3.7.1) |
 | [`release/3.6.x`](../../tree/release/3.6.x) | [Triton 3.6.0](https://github.com/triton-lang/triton/releases/tag/v3.6.0) |
