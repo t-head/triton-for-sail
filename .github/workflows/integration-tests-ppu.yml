@@ -12,8 +12,9 @@ permissions:
   contents: read
 
 env:
-  SDK_URL: https://art-pub.eng.t-head.cn/artifactory/apackage/daily/ppu.2v2_release/latest/PPU_SDK/ppu_1.0.0_Ubuntu2404_v13_release.run
-  TORCH_URL: https://art-pub.eng.t-head.cn/artifactory/apackage/daily/ppu.2v2_release/latest/PPU_SDK_PYPI/pytorch/ppu_sdk_hggcrt3-pytorch2.10.0-ubuntu2404-py312.tar.gz
+  PPU_IMAGE: download.t-head.cn/docker_release/pytorch:sdk2.2.0-2.13.0-ubuntu24.04-hggcrt3-py312-20261005
+  # SDK_URL: https://art-pub.eng.t-head.cn/artifactory/apackage/daily/ppu.2v2_release/latest/PPU_SDK/ppu_1.0.0_Ubuntu2404_v13_release.run
+  # TORCH_URL: https://art-pub.eng.t-head.cn/artifactory/apackage/daily/ppu.2v2_release/latest/PPU_SDK_PYPI/pytorch/ppu_sdk_hggcrt3-pytorch2.10.0-ubuntu2404-py312.tar.gz
 
 jobs:
   integration-tests-ppu:
@@ -35,7 +36,7 @@ jobs:
         id: ppu-test
         uses: t-head/ci-infra/cluster-run@main
         with:
-          image: download.t-head.cn/docker_release/pytorch:sdk2.2.0-2.13.0-ubuntu24.04-hggcrt3-py312-20261005
+          image: ${{ env.PPU_IMAGE }}
           nnodes: 0
           nproc_per_node: 1
           node_selector: "board-type=${{ matrix.runner }}"
@@ -100,7 +101,7 @@ jobs:
             # Verify the imported triton is the source-built editable one (resolves under /workspace/source)
             python -c "import triton, sys; f=getattr(triton,'__file__',''); print('[INFO] triton.__file__ =', f); print('[INFO] triton.__version__ =', getattr(triton,'__version__','?')); sys.exit(0 if '/workspace/source' in f else 1)" || { echo "[FATAL] imported triton is NOT the source-built one (expected under /workspace/source)"; exit 1; }
             # Install test dependencies
-            pip install -r python/test-requirements.txt pandas
+            pip install -r python/test-requirements.txt
             # Run checkin tests; capture exit code so NAS copy always runs on failure
             python .github/ppu-ci/run_checkin_tests.py -o test_result.xml --test-dir /workspace/source --env-output env_info.json || TEST_RC=$?
             TEST_RC=${TEST_RC:-0}
@@ -135,7 +136,7 @@ jobs:
             --xml "$NAS_RESULT_DIR/test_result.xml" \
             --env-info "$NAS_RESULT_DIR/env_info.json" \
             --title "Triton PPU Test Results (${{ matrix.runner }})" \
-            --docker-image "download.t-head.cn/docker_release/pytorch:sdk2.2.0-2.13.0-ubuntu24.04-hggcrt3-py312-20261005" \
+            --docker-image "$PPU_IMAGE" \
             --run-number "${{ github.run_number }}" \
             --branch "${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}" \
             --job-status "${{ steps.ppu-test.outputs.job_status }}" \
