@@ -52,8 +52,7 @@ def load_kernel_fp32(a_ptr, c_ptr, M, K, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_
 @pytest.mark.parametrize("M, K", [(1024, 1024)])
 @pytest.mark.parametrize(
     "BLOCK_M, BLOCK_K",
-    [(16, 64), (32, 256), (64, 16), (128, 32), (256, 128),
-     (16, 256), (64, 128), (256, 32), (128, 64), (256, 256)],
+    [(16, 64), (32, 256), (64, 16), (128, 32), (256, 128), (16, 256), (64, 128), (256, 32), (128, 64), (256, 256)],
 )
 def test_load_fp32(num_stages, M, K, BLOCK_M, BLOCK_K, num_warps):
     device = "cuda"
@@ -65,31 +64,19 @@ def test_load_fp32(num_stages, M, K, BLOCK_M, BLOCK_K, num_warps):
     C_ref = torch.empty((M, K), device=A.device, dtype=torch.float32)
 
     grid = (triton.cdiv(M, BLOCK_M) * triton.cdiv(K, BLOCK_K), 1, 1)
-    load_kernel_aiu_fp32[grid](
-        A, C_tri,
-        M, K,
-        BLOCK_SIZE_M=BLOCK_M,
-        BLOCK_SIZE_K=BLOCK_K,
-        num_warps=num_warps,
-        num_stages=num_stages
-    )
+    load_kernel_aiu_fp32[grid](A, C_tri, M, K, BLOCK_SIZE_M=BLOCK_M, BLOCK_SIZE_K=BLOCK_K, num_warps=num_warps,
+                               num_stages=num_stages)
 
-    load_kernel_fp32[grid](
-        A, C_ref,
-        M, K,
-        BLOCK_SIZE_M=BLOCK_M,
-        BLOCK_SIZE_K=BLOCK_K,
-        num_warps=num_warps,
-        num_stages=num_stages
-    )
+    load_kernel_fp32[grid](A, C_ref, M, K, BLOCK_SIZE_M=BLOCK_M, BLOCK_SIZE_K=BLOCK_K, num_warps=num_warps,
+                           num_stages=num_stages)
 
     max_diff = (C_tri - C_ref).abs().max().item()
     torch.set_printoptions(sci_mode=False, precision=6)
-
 
     print(f"Max diff: {max_diff:.6e}")
     print(f"allclose: {torch.allclose(C_tri, C_ref, atol=1e-3, rtol=1e-3)}")
     np.testing.assert_allclose(to_numpy(C_tri), to_numpy(C_ref), atol=1e-3, rtol=1e-3)
     np.testing.assert_allclose(to_numpy(A), to_numpy(C_tri), atol=1e-3, rtol=1e-3)
+
 
 # test_load_fp32(1, 16, 16, 16, 16, 1)

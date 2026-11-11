@@ -51,7 +51,8 @@ DEFINE_DISPATCH(ExternLibHggc, memHostAlloc, hgMemHostAlloc, void **, size_t,
                 unsigned int)
 
 DEFINE_DISPATCH(ExternLibHggc, memHostGetDevicePointer,
-                hgMemHostGetDevicePointer_v2, HGdeviceptr *, void *, unsigned int)
+                hgMemHostGetDevicePointer_v2, HGdeviceptr *, void *,
+                unsigned int)
 
 DEFINE_DISPATCH(ExternLibHggc, memFreeHost, hgMemFreeHost, void *)
 
@@ -65,10 +66,10 @@ Device getDevice(uint64_t index) {
   hggc::deviceGet<true>(&device, index);
   int clockRate;
   hggc::deviceGetAttribute<true>(&clockRate, HG_DEVICE_ATTRIBUTE_CLOCK_RATE,
-                               device);
+                                 device);
   int memoryClockRate;
   hggc::deviceGetAttribute<true>(&memoryClockRate,
-                               HG_DEVICE_ATTRIBUTE_MEMORY_CLOCK_RATE, device);
+                                 HG_DEVICE_ATTRIBUTE_MEMORY_CLOCK_RATE, device);
   int busWidth;
   hggc::deviceGetAttribute<true>(
       &busWidth, HG_DEVICE_ATTRIBUTE_GLOBAL_MEMORY_BUS_WIDTH, device);

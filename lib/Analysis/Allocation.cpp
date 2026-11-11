@@ -312,15 +312,14 @@ private:
         Operation *user = use.getOwner();
         if (auto localLoad = dyn_cast<triton::gpu::LocalLoadOp>(user)) {
           auto dstTy = localLoad.getType();
-          auto dotEnc =
-              dyn_cast<triton::gpu::DotOperandEncodingAttr>(dstTy.getEncoding());
+          auto dotEnc = dyn_cast<triton::gpu::DotOperandEncodingAttr>(
+              dstTy.getEncoding());
           if (!dotEnc)
             continue;
-          auto mmaEnc = dyn_cast<triton::gpu::PPUMmaEncodingAttr>(
-              dotEnc.getParent());
-          auto sharedEnc =
-              dyn_cast<triton::gpu::PPUAIUSharedEncodingAttr>(
-                  localLoad.getSrc().getType().getEncoding());
+          auto mmaEnc =
+              dyn_cast<triton::gpu::PPUMmaEncodingAttr>(dotEnc.getParent());
+          auto sharedEnc = dyn_cast<triton::gpu::PPUAIUSharedEncodingAttr>(
+              localLoad.getSrc().getType().getEncoding());
           if (sharedEnc && sharedEnc.isPPU0010() && mmaEnc &&
               mmaEnc.isPPU0010() && mmaEnc.getInstrShape().size() >= 2 &&
               mmaEnc.getInstrShape()[mmaEnc.getInstrShape().size() - 2] == 8 &&
@@ -336,7 +335,8 @@ private:
                llvm::enumerate(branch->getSuccessors())) {
             SuccessorOperands successorOperands =
                 branch.getSuccessorOperands(successorIndex);
-            unsigned producedCount = successorOperands.getProducedOperandCount();
+            unsigned producedCount =
+                successorOperands.getProducedOperandCount();
             for (auto [operandIndex, operand] :
                  llvm::enumerate(successorOperands.getForwardedOperands())) {
               if (operand == currentValue)

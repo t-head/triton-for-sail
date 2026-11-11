@@ -78,12 +78,14 @@ def block_scale_mxfp_matmul(  #
     c_mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
     tl.store(output_ptrs, accumulator, mask=c_mask)
 
+
 def fp8e8m0_to_float32(scale):
     scale = scale.view(torch.uint8)
     scale = scale.to(torch.int32)
     scale = scale << 23
     scale = scale.view(torch.float32)
     return scale
+
 
 @pytest.mark.parametrize("M, N, K", [(1024, 512, 256), (998, 111, 512), (63, 128, 512)])
 @pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K", [(128, 128, 128), (256, 128, 128), (128, 256, 128),

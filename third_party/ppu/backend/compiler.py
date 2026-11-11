@@ -37,7 +37,6 @@ import os
 import subprocess
 from pathlib import Path
 
-
 instrument = functools.partial(_instrument, backend="ppu")
 
 
@@ -149,7 +148,7 @@ def llir_get_kernel_name(llir: str) -> str:
         line = line.strip()
         if line.startswith('define void @'):
             return line.split('(')[0][13:]
-        elif re.match(r'define \w+_kernel void @', line):    
+        elif re.match(r'define \w+_kernel void @', line):
             return line.split('(')[0][24:]
 
 
@@ -266,11 +265,7 @@ class PPUBackend(BaseBackend):
     def get_codegen_implementation(self, options):
         import triton.language.extra.ppu as ppu
         capability = int(self._parse_arch(options.arch))
-        codegen_fns = {
-            "convert_custom_types":
-            ppu.convert_custom_float8, "min_dot_size":
-            min_dot_size(self.target)
-        }
+        codegen_fns = {"convert_custom_types": ppu.convert_custom_float8, "min_dot_size": min_dot_size(self.target)}
         return codegen_fns
 
     def get_module_map(self) -> Dict[str, ModuleType]:
@@ -477,11 +472,9 @@ class PPUBackend(BaseBackend):
                     with open(log_file, "a") as f:
                         f.write(f"IR Formatter reproduce command: {format_cmd}\n")
             except subprocess.CalledProcessError as e:
-                error_msg = (
-                    f"IR Formatter error: `{e.cmd}` failed with return code {e.returncode}\n"
-                    f"IR Formatter stderr:\n{e.stderr or ''}\n"
-                    f"IR Formatter reproduce command: {format_cmd}\n"
-                )
+                error_msg = (f"IR Formatter error: `{e.cmd}` failed with return code {e.returncode}\n"
+                             f"IR Formatter stderr:\n{e.stderr or ''}\n"
+                             f"IR Formatter reproduce command: {format_cmd}\n")
                 with open(log_file, "a") as f:
                     f.write(error_msg)
                 print(f"""
@@ -561,11 +554,9 @@ please share the reproducer above with Triton project.
                     with open(log_file, "a") as f:
                         f.write(f"ppu-llc reproduce command: {ppullc_cmd}\n")
             except subprocess.CalledProcessError as e:
-                error_msg = (
-                    f"ppu-llc error: `{e.cmd}` failed with return code {e.returncode}\n"
-                    f"ppu-llc stderr:\n{e.stderr or ''}\n"
-                    f"ppu-llc reproduce command: {ppullc_cmd}\n"
-                )
+                error_msg = (f"ppu-llc error: `{e.cmd}` failed with return code {e.returncode}\n"
+                             f"ppu-llc stderr:\n{e.stderr or ''}\n"
+                             f"ppu-llc reproduce command: {ppullc_cmd}\n")
                 with open(log_file, "a") as f:
                     f.write(error_msg)
                 print(f"""

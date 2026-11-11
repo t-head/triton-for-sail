@@ -18,8 +18,8 @@ from triton.language.extra import libdevice
 def _exp2_kernel(x_ptr, y_ptr, N: tl.constexpr):
     off = tl.arange(0, N)
     x = tl.load(x_ptr + off)
-    a = tl.math.exp2(x)      # -> __nv_exp2f -> renamed __ppu_exp2f
-    b = libdevice.exp2(x)    # -> __ppu_exp2f (extern_elementwise)
+    a = tl.math.exp2(x)  # -> __nv_exp2f -> renamed __ppu_exp2f
+    b = libdevice.exp2(x)  # -> __ppu_exp2f (extern_elementwise)
     tl.store(y_ptr + off, a + b)
 
 
@@ -29,7 +29,7 @@ def test_exp2_math_and_libdevice_no_symbol_redefinition():
     x = torch.randn(N, device="cuda", dtype=torch.float32)
     y = torch.empty_like(x)
 
-    _exp2_kernel[(1,)](x, y, N=N)  # must compile without redefinition
+    _exp2_kernel[(1, )](x, y, N=N)  # must compile without redefinition
     torch.cuda.synchronize()
 
     expected = 2.0 * torch.exp2(x)

@@ -37,7 +37,8 @@ hggc_roots = [hggc_path]
 if os.path.basename(os.path.normpath(hggc_path)) == "CUDA_SDK":
     hggc_roots.append(os.path.dirname(os.path.normpath(hggc_path)))
 include_dirs = [
-    os.path.join(root, relative) for root in hggc_roots
+    os.path.join(root, relative)
+    for root in hggc_roots
     for relative in ("include", os.path.join("targets", "x86_64-linux", "include"))
 ]
 libdevice_dir = os.path.join(hggc_path, "lib")
@@ -602,7 +603,6 @@ PyMODINIT_FUNC PyInit___triton_launcher(void) {{
     return src
 
 
-
 def make_tensordesc_arg(arg, metadata):
     # Currently the host side tensor descriptors get decomposed in
     # the frontend to tensor desc, shape, and strides. We have no
@@ -619,7 +619,6 @@ def make_tensordesc_arg(arg, metadata):
         *arg.shape,
         *arg.strides,
     ]
-
 
 
 def wrap_handle_tensordesc(launcher, signature, tensordesc_meta):

@@ -19,6 +19,6 @@ private:
   void doSetMode(const std::vector<std::string> &modeAndOptions) override;
 };
 
-}
+} // namespace proton
 
 #endif

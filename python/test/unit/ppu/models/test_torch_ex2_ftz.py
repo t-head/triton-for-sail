@@ -33,7 +33,7 @@ def test_ex2_ftz():
     x_in = torch.tensor([-128.0], dtype=torch.float32, device="cuda")
     out = torch.empty(1, dtype=torch.float32, device="cuda")
 
-    grid = lambda meta: (1,)
+    grid = lambda meta: (1, )
     pow_fused_pow_kernel[grid](x_in, out, 1, 1)
 
     result = out.item()

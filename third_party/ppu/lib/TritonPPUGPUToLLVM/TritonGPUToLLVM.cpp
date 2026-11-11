@@ -81,9 +81,7 @@ public:
     addLegalDialect<mlir::triton::ppugpu::PPUGPUDialect>();
     addIllegalDialect<triton::TritonDialect>();
     addDynamicallyLegalDialect<triton::gpu::TritonGPUDialect>(
-        [](mlir::Operation *op) {
-          return isa<triton::gpu::WarpIdOp>(op);
-        });
+        [](mlir::Operation *op) { return isa<triton::gpu::WarpIdOp>(op); });
     addIllegalDialect<triton::ppu_gpu::TritonPPUGPUDialect>();
     addIllegalDialect<mlir::gpu::GPUDialect>();
     addLegalOp<mlir::UnrealizedConversionCastOp>();
@@ -133,8 +131,8 @@ static void MarkChainedDot(ModuleOp mod) {
         auto encoding = descTy.getEncoding();
         if (auto srcSharedLayout =
                 dyn_cast<triton::gpu::PPUAIUSharedEncodingAttr>(encoding)) {
-          // TODO: temporarily disable DotOperand1 ChainedDot Optimiation for AIU load
-          // if (srcSharedLayout.getOrder()[0] == 0)
+          // TODO: temporarily disable DotOperand1 ChainedDot Optimiation for
+          // AIU load if (srcSharedLayout.getOrder()[0] == 0)
           continue;
         } else if (auto srcSharedLayout =
                        dyn_cast<triton::gpu::SwizzledSharedEncodingAttr>(
@@ -191,7 +189,8 @@ static void MarkChainedDot(ModuleOp mod) {
 }
 
 struct ConvertTritonGPUToLLVMPPU
-    : public triton::impl::ConvertTritonGPUToLLVMPPUBase<ConvertTritonGPUToLLVMPPU> {
+    : public triton::impl::ConvertTritonGPUToLLVMPPUBase<
+          ConvertTritonGPUToLLVMPPU> {
   using ConvertTritonGPUToLLVMPPUBase::ConvertTritonGPUToLLVMPPUBase;
 
   ConvertTritonGPUToLLVMPPU(int32_t computeCapability)
@@ -264,7 +263,7 @@ struct ConvertTritonGPUToLLVMPPU
     mlir::triton::populateControlFlowOpToLLVMPattern(typeConverter, patterns,
                                                      targetInfo, benefit);
     mlir::triton::ppu::populateSPMDOpToLLVMPattern(typeConverter, patterns,
-                                                      benefit);
+                                                   benefit);
     mlir::triton::populateSPMDOpToLLVMPattern(typeConverter, patterns,
                                               targetInfo, benefit);
     // TODO(thomas): this should probably be done in a separate step to not
@@ -284,7 +283,7 @@ struct ConvertTritonGPUToLLVMPPU
     mlir::triton::populateMakeRangeOpToLLVMPattern(typeConverter, targetInfo,
                                                    patterns, benefit);
     mlir::triton::ppu::populateFp4ToFpToLLVMPatterns(typeConverter, patterns,
-                                                        benefit);
+                                                     benefit);
     mlir::triton::populateInstrumentationToLLVMPatterns(typeConverter, patterns,
                                                         targetInfo);
     mlir::triton::populateFpSanToLLVMPatterns(typeConverter, patterns);

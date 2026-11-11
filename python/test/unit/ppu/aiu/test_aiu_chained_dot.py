@@ -6,12 +6,21 @@ import triton.language as tl
 
 @triton.jit
 def attn_kernel_aiu(
-    q_ptr, k_ptr, v_ptr, o_ptr,
-    stride_qm, stride_qk,
-    stride_km, stride_kk,
-    stride_vm, stride_vk,
-    stride_om, stride_ok,
-    M, N, K,
+    q_ptr,
+    k_ptr,
+    v_ptr,
+    o_ptr,
+    stride_qm,
+    stride_qk,
+    stride_km,
+    stride_kk,
+    stride_vm,
+    stride_vk,
+    stride_om,
+    stride_ok,
+    M,
+    N,
+    K,
     sm_scale,
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
@@ -22,8 +31,8 @@ def attn_kernel_aiu(
 
     q = tl.aiu_load(q_ptr, (offs_m, 0), (BLOCK_SIZE_M, BLOCK_SIZE_K), (M, K), tl.float16)
 
-    m_i = tl.full((BLOCK_SIZE_M,), float("-inf"), dtype=tl.float32)
-    l_i = tl.zeros((BLOCK_SIZE_M,), dtype=tl.float32)
+    m_i = tl.full((BLOCK_SIZE_M, ), float("-inf"), dtype=tl.float32)
+    l_i = tl.zeros((BLOCK_SIZE_M, ), dtype=tl.float32)
     acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_K), dtype=tl.float32)
 
     offs_n = 0
@@ -64,8 +73,7 @@ def attn_kernel_aiu(
     "BLOCK_M, BLOCK_N, BLOCK_K",
     [(32, 32, 64), (64, 64, 64), (128, 64, 64)],
 )
-def test_attn(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K,
-              num_warps, num_stages, device="cuda"):
+def test_attn(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, num_warps, num_stages, device="cuda"):
     torch.manual_seed(0)
     sm_scale = 0.5
 
@@ -77,12 +85,21 @@ def test_attn(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K,
     grid = (triton.cdiv(M, BLOCK_M), 1, 1)
 
     attn_kernel_aiu[grid](
-        Q, K_, V, O,
-        Q.stride(0),  Q.stride(1),
-        K_.stride(0), K_.stride(1),
-        V.stride(0),  V.stride(1),
-        O.stride(0),  O.stride(1),
-        M, N, K,
+        Q,
+        K_,
+        V,
+        O,
+        Q.stride(0),
+        Q.stride(1),
+        K_.stride(0),
+        K_.stride(1),
+        V.stride(0),
+        V.stride(1),
+        O.stride(0),
+        O.stride(1),
+        M,
+        N,
+        K,
         sm_scale,
         BLOCK_SIZE_M=BLOCK_M,
         BLOCK_SIZE_N=BLOCK_N,
@@ -93,13 +110,11 @@ def test_attn(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K,
 
     # ref
     qk_ref = torch.matmul(Q.float(), K_.float().T) * sm_scale
-    p_ref  = torch.softmax(qk_ref, dim=-1).half()
+    p_ref = torch.softmax(qk_ref, dim=-1).half()
     ref_out = torch.matmul(p_ref, V)
 
     torch.testing.assert_close(ref_out, O, rtol=1e-3, atol=1e-3)
-    print(
-        f"[PASSED] M={M} N={N} K={K} "
-        f"BLOCK=({BLOCK_M},{BLOCK_N},{BLOCK_K}) "
-        f"warps={num_warps} stages={num_stages} | "
-        f"max_err={(ref_out - O).abs().max().item():.5f}"
-    )
+    print(f"[PASSED] M={M} N={N} K={K} "
+          f"BLOCK=({BLOCK_M},{BLOCK_N},{BLOCK_K}) "
+          f"warps={num_warps} stages={num_stages} | "
+          f"max_err={(ref_out - O).abs().max().item():.5f}")

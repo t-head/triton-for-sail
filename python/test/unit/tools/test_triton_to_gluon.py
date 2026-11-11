@@ -65,7 +65,6 @@ def add_kernel(x_ptr, y_ptr, out_ptr, n_elements, BLOCK: tl.constexpr):
     tl.store(out_ptr + offsets, x + y)
 
 
-
 def test_simple_kernel(tmp_path):
     kernel = convert_kernel(add_kernel, "add_kernel", tmp_path)
 

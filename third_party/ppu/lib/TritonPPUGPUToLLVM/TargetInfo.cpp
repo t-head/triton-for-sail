@@ -109,9 +109,9 @@ LLVM::LLVMFuncOp getAssertfailDeclaration(RewriterBase &rewriter) {
 namespace mlir::triton::ppu {
 
 // Check if the reduction can use a redux op and return the kind.
-static std::optional<NVVM::ReductionKind> matchReduxKind(triton::ReduceOp op,
-                                                     int computeCapability,
-                                                     bool &useNanQualifier) {
+static std::optional<NVVM::ReductionKind>
+matchReduxKind(triton::ReduceOp op, int computeCapability,
+               bool &useNanQualifier) {
   useNanQualifier = false;
   if (computeCapability < 80)
     return std::nullopt;
@@ -157,15 +157,15 @@ bool TargetInfo::supportMaximumMinimum() const {
 // balanced tree changes the order of maxnum/fadd chains in the generated
 // IR, which measurably affects the downstream PPU instruction scheduler.
 unsigned TargetInfo::getReductionTreeArity(Operation *combinerOp) const {
-  if (isa<arith::AddFOp, arith::MaximumFOp, arith::MinimumFOp,
-      arith::MaxNumFOp, arith::MinNumFOp>(combinerOp))
+  if (isa<arith::AddFOp, arith::MaximumFOp, arith::MinimumFOp, arith::MaxNumFOp,
+          arith::MinNumFOp>(combinerOp))
     return 32;
   return 2;
 }
 
 Value TargetInfo::getClusterCTAId(RewriterBase &rewriter, Location loc) const {
   return triton::ppugpu::ClusterCTAIdOp::create(rewriter, loc,
-                                               rewriter.getI32Type());
+                                                rewriter.getI32Type());
 }
 
 Value TargetInfo::ballot(RewriterBase &rewriter, Location loc, Type type,

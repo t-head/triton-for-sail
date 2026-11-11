@@ -1295,6 +1295,7 @@ class CodeGenerator(ast.NodeVisitor):
         # Check if base ptr depends on loop variable
         loop_var = node.target.id if isinstance(node.target, ast.Name) else None
         if loop_var is not None:
+
             def addr_depends_on_loop_var(addr_node, loop_var):
                 for n in ast.walk(addr_node):
                     if isinstance(n, ast.Name) and n.id == loop_var:
@@ -1315,9 +1316,7 @@ class CodeGenerator(ast.NodeVisitor):
                     load_base_ptr = inner_node.args[0]
 
                     if addr_depends_on_loop_var(load_base_ptr, loop_var):
-                        self.negative_loop_make_block_ptr.add(
-                            (inner_node.col_offset, inner_node.end_col_offset)
-                        )
+                        self.negative_loop_make_block_ptr.add((inner_node.col_offset, inner_node.end_col_offset))
 
         if IteratorClass == language.static_range:
             iterator = IteratorClass(*iter_args, **iter_kwargs)

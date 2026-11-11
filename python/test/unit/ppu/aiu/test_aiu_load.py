@@ -49,9 +49,9 @@ def test_aiu_load(monkeypatch, num_stages, M, K, BLOCK_M, BLOCK_K, num_warps, m8
     # IdxA = torch.from_numpy(npR).to(torch.float16)
     # A = IdxA.to(device)
 
-    load_kernel_aiu[(triton.cdiv(M, BLOCK_M) * triton.cdiv(K, BLOCK_K), 1, 1)](
-        A, C, M, K, BLOCK_M, BLOCK_K, num_warps=num_warps, num_stages=num_stages
-    )
+    load_kernel_aiu[(triton.cdiv(M, BLOCK_M) * triton.cdiv(K, BLOCK_K), 1, 1)](A, C, M, K, BLOCK_M, BLOCK_K,
+                                                                               num_warps=num_warps,
+                                                                               num_stages=num_stages)
     torch.testing.assert_close(A, C, rtol=1e-3, atol=1e-3)
 
 
@@ -61,12 +61,12 @@ def test_aiu_load(monkeypatch, num_stages, M, K, BLOCK_M, BLOCK_K, num_warps, m8
 # test_aiu_load(2, 32, 32, 32, 32, 1)
 # test_aiu_load(4, 32, 32, 32, 32, 8)
 
+
 @pytest.mark.parametrize("num_stages", [1, 2, 4, 7])
 @pytest.mark.parametrize("num_warps", [1, 2, 4, 8])
 @pytest.mark.parametrize("M, K", [(1024, 1024)])
-@pytest.mark.parametrize(
-    "BLOCK_M, BLOCK_K", [(16, 16), (16, 32), (16, 64), (32, 16), (32, 32), (32, 64), (64, 16), (64, 32), (64, 64)]
-)
+@pytest.mark.parametrize("BLOCK_M, BLOCK_K", [(16, 16), (16, 32), (16, 64), (32, 16), (32, 32), (32, 64), (64, 16),
+                                              (64, 32), (64, 64)])
 @pytest.mark.parametrize("m8_mma", [0, 1])
 def test_aiu_load_small_block(monkeypatch, num_stages, M, K, BLOCK_M, BLOCK_K, num_warps, m8_mma):
     monkeypatch.setenv("FORCE_USE_M8MMA", str(m8_mma))
@@ -80,7 +80,7 @@ def test_aiu_load_small_block(monkeypatch, num_stages, M, K, BLOCK_M, BLOCK_K, n
     A = torch.randn((M, K), dtype=torch.float16, device=device)
     C = torch.empty((M, K), dtype=torch.float16, device=device)
 
-    load_kernel_aiu[(triton.cdiv(M, BLOCK_M) * triton.cdiv(K, BLOCK_K), 1, 1)](
-        A, C, M, K, BLOCK_M, BLOCK_K, num_warps=num_warps, num_stages=num_stages
-    )
+    load_kernel_aiu[(triton.cdiv(M, BLOCK_M) * triton.cdiv(K, BLOCK_K), 1, 1)](A, C, M, K, BLOCK_M, BLOCK_K,
+                                                                               num_warps=num_warps,
+                                                                               num_stages=num_stages)
     torch.testing.assert_close(A, C, rtol=1e-3, atol=1e-3)

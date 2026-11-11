@@ -191,7 +191,7 @@ Operation *mlir::triton::predicateOp(RewriterBase &rewriter, Operation *op,
     return op;
   if (isa<ttng::TMEMAllocOp, ttng::TMEMLoadOp>(op))
     return op;
-  if(isa<triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp>(op))
+  if (isa<triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp>(op))
     return op;
   if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
     rewriter.setInsertionPoint(op);
@@ -432,9 +432,7 @@ Value mlir::triton::createAlloc(Operation *insertBefore, RankedTensorType ty,
   return alloc;
 }
 
-bool mlir::triton::isAIULoad(Operation *op) {
-  return isa<tt::AIULoadOp>(op);
-}
+bool mlir::triton::isAIULoad(Operation *op) { return isa<tt::AIULoadOp>(op); }
 
 bool mlir::triton::canPipelineTMALoad(Operation *op) {
   auto tensorTy = cast<RankedTensorType>(op->getResultTypes()[0]);
@@ -585,19 +583,18 @@ ttg::SharedEncodingTrait mlir::triton::getSharedEncoding(Operation *op) {
     assert(mod && "Parent ModuleOp not found for AIULoadOp");
     auto computeCapability = getPPUComputeCapability(mod);
     unsigned version = (computeCapability == 80) ? 1 : 2;
-    auto aiuLoad = mlir::LLVM::PPU::AIULoadStrategy(
-        numWarps, tileW, tileC, elemBytes, version);
+    auto aiuLoad = mlir::LLVM::PPU::AIULoadStrategy(numWarps, tileW, tileC,
+                                                    elemBytes, version);
     if (failed(aiuLoad)) {
       op->emitError() << "unsupported AIU load tile for PPU AIU version "
-                      << version << ": channel width is "
-                      << tileC * elemBytes
+                      << version << ": channel width is " << tileC * elemBytes
                       << " bytes and contiguous width is " << tileW
                       << " elements";
       return {};
     }
 
-    return ttg::PPUAIUSharedEncodingAttr::get(
-        ty.getContext(), version, *aiuLoad, aiuOrder, cgaLayout);
+    return ttg::PPUAIUSharedEncodingAttr::get(ty.getContext(), version,
+                                              *aiuLoad, aiuOrder, cgaLayout);
   }
 
   if (localAllocEnc)

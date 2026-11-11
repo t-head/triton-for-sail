@@ -330,18 +330,19 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
           tixBuilder.newAddrOperand(ptrElems[vecStart], "l", in_off);
 
       // Define the instruction opcode
-      auto &ld = tixBuilder.create("ppu.ld")
-                     ->o("volatile", op.getIsVolatile())
-                     .global()
-                     .o("ca", cachePolicy->modifier == triton::CacheModifier::CA)
-                     .o("cg", cachePolicy->modifier == triton::CacheModifier::CG)
-                     .o("cs", cachePolicy->modifier == triton::CacheModifier::CS)
-                     .o("cv", cachePolicy->modifier == triton::CacheModifier::CV)
-                     .o("L1::evict_first", l1Policy == "evict_first")
-                     .o("L1::evict_last", l1Policy == "evict_last")
-                     .o("L2::cache_hint", l2PolicyReg != Value())
-                     .v(nWords)
-                     .b(width);
+      auto &ld =
+          tixBuilder.create("ppu.ld")
+              ->o("volatile", op.getIsVolatile())
+              .global()
+              .o("ca", cachePolicy->modifier == triton::CacheModifier::CA)
+              .o("cg", cachePolicy->modifier == triton::CacheModifier::CG)
+              .o("cs", cachePolicy->modifier == triton::CacheModifier::CS)
+              .o("cv", cachePolicy->modifier == triton::CacheModifier::CV)
+              .o("L1::evict_first", l1Policy == "evict_first")
+              .o("L1::evict_last", l1Policy == "evict_last")
+              .o("L2::cache_hint", l2PolicyReg != Value())
+              .v(nWords)
+              .b(width);
 
       TIXBuilder::Operand *evictOpr = nullptr;
       if (l2PolicyReg)
@@ -556,8 +557,8 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
 
   LogicalResult
   PPUAIUV1Conversion(triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp op,
-                  OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const {
+                     OpAdaptor adaptor,
+                     ConversionPatternRewriter &rewriter) const {
     auto loc = op.getLoc();
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     Type llvmElemTy =
@@ -576,7 +577,8 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
 
     int elementSizeInBytes =
         op.getResult().getType().getElementType().getIntOrFloatBitWidth() / 8;
-    assert((elementSizeInBytes == 4 || elementSizeInBytes == 2 || elementSizeInBytes == 1) &&
+    assert((elementSizeInBytes == 4 || elementSizeInBytes == 2 ||
+            elementSizeInBytes == 1) &&
            "AIU load only supports b32, b16 and b8 element type on PPU0010");
 
     int totalNumElements = product(op.getResult().getType().getShape());
@@ -632,17 +634,18 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
 
     unsigned numCopies = tileC / channelElemsPerCTA;
     //@$0
-    std::string dtype = (elementSizeInBytes == 4) ? ".b32" :
-                        (elementSizeInBytes == 2) ? ".b16" : ".b8";
+    std::string dtype = (elementSizeInBytes == 4)   ? ".b32"
+                        : (elementSizeInBytes == 2) ? ".b16"
+                                                    : ".b8";
     std::string aiuInst =
         "ppu.cp.async.aiu.bulk.tensor.shared.global.padz.swzl.zfill." +
-        std::to_string(rank) +
-        "d" + dtype + " [$0], [$1], {$2, $3, $4, $5, $6, $7}, {$8, $9, $10, $11};";
+        std::to_string(rank) + "d" + dtype +
+        " [$0], [$1], {$2, $3, $4, $5, $6, $7}, {$8, $9, $10, $11};";
     if (isNeedPred) {
       aiuInst =
           "@$0 ppu.cp.async.aiu.bulk.tensor.shared.global.padz.swzl.zfill." +
-          std::to_string(rank) +
-          "d" + dtype + " [$1], [$2], {$3, $4, $5, $6, $7, $8}, {$9, $10, $11, $12};";
+          std::to_string(rank) + "d" + dtype +
+          " [$1], [$2], {$3, $4, $5, $6, $7, $8}, {$9, $10, $11, $12};";
     }
     for (int copyIdx = 0; copyIdx < numCopies; copyIdx++) {
       Value xOffset = b.add(xCoord, b.mul(warpIdxM, b.i32_val(cubeWElems)));
@@ -682,9 +685,9 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
     }
 
     // Drop the result token.
-    Value zero = LLVM::ConstantOp::create(
-        rewriter, op.getLoc(), IntegerType::get(op.getContext(), 32),
-        rewriter.getI32IntegerAttr(0));
+    Value zero = LLVM::ConstantOp::create(rewriter, op.getLoc(),
+                                          IntegerType::get(op.getContext(), 32),
+                                          rewriter.getI32IntegerAttr(0));
     rewriter.replaceOp(op, zero);
     return success();
   }
@@ -727,7 +730,7 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
     unsigned swizzledElems = swizzledBytes / elementSizeInBytes;
     unsigned aiuFactor = swizzledElems / cubeCElems;
     assert((cubeCElems == 32 / elementSizeInBytes && aiuFactor == 2) ||
-             (cubeCElems != 32 / elementSizeInBytes && aiuFactor == 1));
+           (cubeCElems != 32 / elementSizeInBytes && aiuFactor == 1));
     unsigned cubeElems = cubeWElems * cubeCElems * aiuFactor;
 
     unsigned warpCopyC = aiuLoad[2];
@@ -780,14 +783,19 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
     }
     //@$0
     std::string aiuInst;
-    std::string dtype = (elementSizeInBytes == 4)
-                            ? ".b32"
-                            : (elementSizeInBytes == 2) ? ".b16" : ".b8";
-    aiuInst = "ppu.cp.async.aiu.bulk.tensor.shared.global.2d.tile.padz.swzl" + dtype +
-              "[$0], [$1], {$2, $3, $4}, {$5, $6, $7}, {$8, $9}, {$10, $11, $12}, $13;";
-    if(isNeedPred) {
-      aiuInst = "@$0 ppu.cp.async.aiu.bulk.tensor.shared.global.2d.tile.padz.swzl" + dtype +
-                "[$1], [$2], {$3, $4, $5}, {$6, $7, $8}, {$9, $10}, {$11, $12, $13}, $14;";
+    std::string dtype = (elementSizeInBytes == 4)   ? ".b32"
+                        : (elementSizeInBytes == 2) ? ".b16"
+                                                    : ".b8";
+    aiuInst = "ppu.cp.async.aiu.bulk.tensor.shared.global.2d.tile.padz.swzl" +
+              dtype +
+              "[$0], [$1], {$2, $3, $4}, {$5, $6, $7}, {$8, $9}, {$10, $11, "
+              "$12}, $13;";
+    if (isNeedPred) {
+      aiuInst =
+          "@$0 ppu.cp.async.aiu.bulk.tensor.shared.global.2d.tile.padz.swzl" +
+          dtype +
+          "[$1], [$2], {$3, $4, $5}, {$6, $7, $8}, {$9, $10}, {$11, $12, $13}, "
+          "$14;";
     }
     Value predW = b.icmp_ult(warpIdxM, b.i32_val(warpCopyW));
     auto i32Ty = IntegerType::get(op.getContext(), 32);
@@ -797,7 +805,8 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
       Value predC = b.icmp_ult(b.add(copiesLoc, warpsLoc), b.i32_val(tileC));
       Value pred = b.and_(predC, predW);
 
-      Value tensorStrideW = b.mul(b.trunc(i32Ty, dimC), b.i32_val(elementSizeInBytes));
+      Value tensorStrideW =
+          b.mul(b.trunc(i32Ty, dimC), b.i32_val(elementSizeInBytes));
       Value tensorStrideN = b.mul(b.trunc(i32Ty, dimW), tensorStrideW);
 #if 1
       Value startW = b.add(coordW, b.mul(warpIdxM, b.i32_val(cubeWElems)));
@@ -842,9 +851,9 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
     }
 
     // Drop the result token.
-    Value zero = LLVM::ConstantOp::create(
-        rewriter, op.getLoc(), IntegerType::get(op.getContext(), 32),
-        rewriter.getI32IntegerAttr(0));
+    Value zero = LLVM::ConstantOp::create(rewriter, op.getLoc(),
+                                          IntegerType::get(op.getContext(), 32),
+                                          rewriter.getI32IntegerAttr(0));
     rewriter.replaceOp(op, zero);
     return success();
   }
@@ -1336,8 +1345,8 @@ struct AsyncCopyGlobalToLocalOpConversion
       vals.push_back(packedArr);
     }
 
-    auto srcLayout =
-        ttg::toLinearLayout(srcTy).removeZeroBasesAlongDim(str_attr("register"));
+    auto srcLayout = ttg::toLinearLayout(srcTy).removeZeroBasesAlongDim(
+        str_attr("register"));
 
     // We can load N elements at a time if:
     //  1. Every group of N source pointers are contiguous.  For example, if
@@ -1373,7 +1382,8 @@ struct AsyncCopyGlobalToLocalOpConversion
     auto emitCpAsync = [&b, threadPred, ptrTy, hasMask = bool(llMask)](
                            RewriterBase &rewriter, Location loc,
                            ArrayRef<Value> vals, Value shmemAddr, int startIdx,
-                           VectorType vecTy, Value ctaId) -> SmallVector<Value> {
+                           VectorType vecTy,
+                           Value ctaId) -> SmallVector<Value> {
       assert(!ctaId && "cp.async does not support cross-cta loads");
       assert(isa<VectorType>(vecTy));
       auto *ctx = rewriter.getContext();
@@ -1466,7 +1476,6 @@ static LinearLayout getUnswizzledLayout(triton::gpu::MemDescType type) {
       type.getShape(), cast<NVMMASharedEncodingAttr>(type.getEncoding()),
       ttg::TMAMode::Tiled, /*disableSwizzle=*/true);
 }
-
 
 struct AsyncWaitOpConversion
     : public ConvertOpToLLVMPattern<triton::gpu::AsyncWaitOp> {

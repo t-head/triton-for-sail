@@ -6,14 +6,11 @@ import triton
 import triton.language as tl
 import torch.nn.functional as F
 
-
 exp = tl.exp
 gather = tl.gather
 
 
-@triton.heuristics({
-    'IS_VARLEN': lambda args: args['cu_seqlens'] is not None
-})
+@triton.heuristics({'IS_VARLEN': lambda args: args['cu_seqlens'] is not None})
 @triton.autotune(
     configs=[
         triton.Config({}, num_warps=num_warps, num_stages=num_stages)
@@ -23,33 +20,10 @@ gather = tl.gather
     key=['BK', 'BT'],
 )
 @triton.jit(do_not_specialize=['T'])
-def chunk_dplr_fwd_A_kernel_intra_sub_intra(
-    q,
-    k,
-    a,
-    b,
-    gi,
-    ge,
-    qg,
-    kg,
-    ag,
-    bg,
-    Aqk,
-    Aqb,
-    Aab,
-    Aak,
-    cu_seqlens,
-    chunk_indices,
-    scale: tl.constexpr,
-    T,
-    H: tl.constexpr,
-    K: tl.constexpr,
-    BT: tl.constexpr,
-    BC: tl.constexpr,
-    BK: tl.constexpr,
-    IS_VARLEN: tl.constexpr,
-    GATHER_SUPPORTED: tl.constexpr
-):
+def chunk_dplr_fwd_A_kernel_intra_sub_intra(q, k, a, b, gi, ge, qg, kg, ag, bg, Aqk, Aqb, Aab, Aak, cu_seqlens,
+                                            chunk_indices, scale: tl.constexpr, T, H: tl.constexpr, K: tl.constexpr,
+                                            BT: tl.constexpr, BC: tl.constexpr, BK: tl.constexpr,
+                                            IS_VARLEN: tl.constexpr, GATHER_SUPPORTED: tl.constexpr):
     i_t, i_b, i_h = tl.program_id(0), tl.program_id(1), tl.program_id(2)
 
     if IS_VARLEN:
@@ -66,20 +40,20 @@ def chunk_dplr_fwd_A_kernel_intra_sub_intra(
     o_k = tl.arange(0, BK)
     m_k = o_k < K
     m_A = (i_t * BT + tl.arange(0, BC)) < T
-    last_idx = min((i_t+1) * BT, T) - 1
-    o_A = (bos + i_t * BT + tl.arange(0, BC)) * H*BT + i_h * BT
-    p_q = tl.make_block_ptr(q + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT, 0), (BC, BK), (1, 0))
-    p_k = tl.make_block_ptr(k + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT, 0), (BC, BK), (1, 0))
-    p_a = tl.make_block_ptr(a + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT, 0), (BC, BK), (1, 0))
-    p_b = tl.make_block_ptr(b + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT, 0), (BC, BK), (1, 0))
-    p_gi = tl.make_block_ptr(gi + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT, 0), (BC, BK), (1, 0))
-    p_ge = tl.make_block_ptr(ge + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT, 0), (BC, BK), (1, 0))
+    last_idx = min((i_t + 1) * BT, T) - 1
+    o_A = (bos + i_t * BT + tl.arange(0, BC)) * H * BT + i_h * BT
+    p_q = tl.make_block_ptr(q + (bos * H + i_h) * K, (T, K), (H * K, 1), (i_t * BT, 0), (BC, BK), (1, 0))
+    p_k = tl.make_block_ptr(k + (bos * H + i_h) * K, (T, K), (H * K, 1), (i_t * BT, 0), (BC, BK), (1, 0))
+    p_a = tl.make_block_ptr(a + (bos * H + i_h) * K, (T, K), (H * K, 1), (i_t * BT, 0), (BC, BK), (1, 0))
+    p_b = tl.make_block_ptr(b + (bos * H + i_h) * K, (T, K), (H * K, 1), (i_t * BT, 0), (BC, BK), (1, 0))
+    p_gi = tl.make_block_ptr(gi + (bos * H + i_h) * K, (T, K), (H * K, 1), (i_t * BT, 0), (BC, BK), (1, 0))
+    p_ge = tl.make_block_ptr(ge + (bos * H + i_h) * K, (T, K), (H * K, 1), (i_t * BT, 0), (BC, BK), (1, 0))
     p_g_last = gi + (bos * H + i_h) * K + last_idx * H * K + tl.arange(0, BK)
     b_g_last = tl.load(p_g_last, mask=m_k, other=0)
-    p_qg = tl.make_block_ptr(qg + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT, 0), (BC, BK), (1, 0))
-    p_kg = tl.make_block_ptr(kg + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT, 0), (BC, BK), (1, 0))
-    p_ag = tl.make_block_ptr(ag + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT, 0), (BC, BK), (1, 0))
-    p_bg = tl.make_block_ptr(bg + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT, 0), (BC, BK), (1, 0))
+    p_qg = tl.make_block_ptr(qg + (bos * H + i_h) * K, (T, K), (H * K, 1), (i_t * BT, 0), (BC, BK), (1, 0))
+    p_kg = tl.make_block_ptr(kg + (bos * H + i_h) * K, (T, K), (H * K, 1), (i_t * BT, 0), (BC, BK), (1, 0))
+    p_ag = tl.make_block_ptr(ag + (bos * H + i_h) * K, (T, K), (H * K, 1), (i_t * BT, 0), (BC, BK), (1, 0))
+    p_bg = tl.make_block_ptr(bg + (bos * H + i_h) * K, (T, K), (H * K, 1), (i_t * BT, 0), (BC, BK), (1, 0))
 
     b_q = tl.load(p_q, boundary_check=(0, 1))
     b_q = b_q * scale
@@ -136,15 +110,11 @@ def chunk_dplr_fwd_A_kernel_intra_sub_intra(
         tl.store(Aak + o_A + j, b_A_ak.to(dtype=Aqk.dtype.element_ty, fp_downcast_rounding="rtne"), mask=m_A)
 
 
-@pytest.mark.parametrize(
-    ('B', 'T', 'H', 'D', 'scale', 'gate_logit_normalizer', 'mask_p', 'dtype'),
-    [
-        pytest.param(*test, id="B{0}_T{1}_H{2}_D{3}_scale{4}_normalizer{5}_maskp{6}_{7}".format(*test))
-        for test in [
-            (1, 63, 1, 64, 1, 1, 0, torch.float16),
-        ]
+@pytest.mark.parametrize(('B', 'T', 'H', 'D', 'scale', 'gate_logit_normalizer', 'mask_p', 'dtype'), [
+    pytest.param(*test, id="B{0}_T{1}_H{2}_D{3}_scale{4}_normalizer{5}_maskp{6}_{7}".format(*test)) for test in [
+        (1, 63, 1, 64, 1, 1, 0, torch.float16),
     ]
-)
+])
 def test_chunk(
     B: int,
     T: int,
@@ -172,10 +142,10 @@ def test_chunk(
     h0 = torch.randn(B, H, D, D, dtype=torch.float)
     q, k, v, a, b, gk, h0 = map(lambda x: x.to(device).requires_grad_(True), (q, k, v, a, b, gk, h0))
 
-    initial_state=h0.clone()
-    output_final_state=True,
-    cu_seqlens=None
-    scale = k.shape[-1] ** -0.5 if scale is None else scale
+    initial_state = h0.clone()
+    output_final_state = True,
+    cu_seqlens = None
+    scale = k.shape[-1]**-0.5 if scale is None else scale
     chunk_size = 16
     B, T, H, K = k.shape
     BT = chunk_size
@@ -195,33 +165,12 @@ def test_chunk(
     ag = torch.empty_like(a, dtype=q.dtype)
     bg = torch.empty_like(b, dtype=q.dtype)
     gi, ge = torch.empty_like(gk, dtype=torch.float), torch.empty_like(gk, dtype=torch.float)
-    chunk_dplr_fwd_A_kernel_intra_sub_intra[grid](
-        q=q,
-        k=k,
-        a=a,
-        b=b,
-        gi=gi,
-        ge=ge,
-        Aqk=Aqk,
-        Aqb=Aqb,
-        Aab=Aab,
-        Aak=Aak,
-        qg=qg,
-        kg=kg,
-        ag=ag,
-        bg=bg,
-        cu_seqlens=cu_seqlens,
-        chunk_indices=chunk_indices,
-        scale=scale,
-        T=T,
-        H=H,
-        K=K,
-        BT=BT,
-        BC=BT,
-        BK=BK,
-        GATHER_SUPPORTED=True
-    )
+    chunk_dplr_fwd_A_kernel_intra_sub_intra[grid](q=q, k=k, a=a, b=b, gi=gi, ge=ge, Aqk=Aqk, Aqb=Aqb, Aab=Aab, Aak=Aak,
+                                                  qg=qg, kg=kg, ag=ag, bg=bg, cu_seqlens=cu_seqlens,
+                                                  chunk_indices=chunk_indices, scale=scale, T=T, H=H, K=K, BT=BT, BC=BT,
+                                                  BK=BK, GATHER_SUPPORTED=True)
     print("success")
+
 
 if __name__ == "__main__":
     test_chunk(1, 63, 1, 64, 1, 1, 0, torch.float16)

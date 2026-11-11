@@ -197,8 +197,8 @@ template <typename SourceOp>
 class PPUGPUOpGenericPattern : public OpRewritePattern<SourceOp> {
 public:
   explicit PPUGPUOpGenericPattern(MLIRContext *context, std::string tixAsm,
-                                 Constraints outputConstraints,
-                                 Constraints inputConstraints)
+                                  Constraints outputConstraints,
+                                  Constraints inputConstraints)
       : OpRewritePattern<SourceOp>(context), tixAsm(std::move(tixAsm)),
         outputConstraints(outputConstraints),
         inputConstraints(inputConstraints) {}
@@ -245,8 +245,8 @@ public:
     Value warpId = b.udiv(tid, b.i32_val(32));
     if (!op.getOmitUniformHint()) {
       // This indicates to ppu-llc that the result and its derived values are
-      // uniform across the warp. For example, if a branch condition derives from
-      // this value, it can be proven to be non-divergent.
+      // uniform across the warp. For example, if a branch condition derives
+      // from this value, it can be proven to be non-divergent.
       warpId = LLVM::PPU::shuffleIdx(loc, rewriter, warpId, 0);
     }
     rewriter.replaceOp(op, warpId);
@@ -421,9 +421,9 @@ public:
 
 LogicalResult
 ppugpu::rewriteAsTixAsm(Operation *op, PatternRewriter &rewriter,
-                       std::string tixAsm,
-                       const OperandsAndConstraints &operandsAndConstraints,
-                       const Constraints &outputConstraints) {
+                        std::string tixAsm,
+                        const OperandsAndConstraints &operandsAndConstraints,
+                        const Constraints &outputConstraints) {
   auto ctx = rewriter.getContext();
   auto loc = op->getLoc();
   tixAsm = patchTixAsm(op, std::move(tixAsm));
