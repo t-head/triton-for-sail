@@ -83,8 +83,8 @@ loadX4(ConversionPatternRewriter &rewriter, Location loc, Value smemBase,
 
   // will be lowering to tsm.ld.swzl.b32x4.trans_b32
   if (elemBits == 32 && needTrans)
-    ldmatrix = *builder.create(
-        "ppu.ldmatrix.swzl.sync.bulk.tensor.m8n8.x2.trans.b32");
+    ldmatrix =
+        *builder.create("ppu.ldmatrix.swzl.sync.bulk.tensor.m8n8.x2.trans.b32");
 
   ldmatrix(resArgs, sbase, lboOpnd, sboOpnd, swzlModeOpnd);
 
@@ -134,8 +134,8 @@ Value composeValuesToDotOperandLayoutStruct(
 
 std::function<void(int, int, int)> getLoadMatrixFn(
     MemDescType descTy, const SharedMemoryObject &smemObj,
-    PPUMmaEncodingAttr mmaLayout, int warpsPerTile, uint32_t kOrder,
-    int kWidth, SmallVector<int> instrShape, SmallVector<int> matShape,
+    PPUMmaEncodingAttr mmaLayout, int warpsPerTile, uint32_t kOrder, int kWidth,
+    SmallVector<int> instrShape, SmallVector<int> matShape,
     SmallVector<Value> multiDimWarpId, Value lane, ValueTable &vals, bool isA,
     const LLVMTypeConverter *typeConverter, ConversionPatternRewriter &rewriter,
     Location loc, ArrayRef<unsigned> aiuLoad) {

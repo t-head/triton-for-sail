@@ -65,7 +65,7 @@ static bool hasMMAv5WaitsInLastStage(scf::ForOp forOp,
 
 // Return the per-iteration change of an AIU offset.
 static std::optional<int64_t> getAIUOffsetDelta(Value value, scf::ForOp loop,
-                                              unsigned depth = 0) {
+                                                unsigned depth = 0) {
   if (depth > 16)
     return std::nullopt;
   // Fixed values such as a row offset do not change between iterations.
@@ -109,7 +109,7 @@ static std::optional<int64_t> getAIUOffsetDelta(Value value, scf::ForOp loop,
     int64_t delta;
     if (lhs && rhs &&
         !(isa<arith::AddIOp>(op) ? llvm::AddOverflow(*lhs, *rhs, delta)
-                               : llvm::SubOverflow(*lhs, *rhs, delta)))
+                                 : llvm::SubOverflow(*lhs, *rhs, delta)))
       return delta;
   }
   // Constant scaling, e.g. i * 64 or (T - 1 - i) * 64.
@@ -130,8 +130,9 @@ static std::optional<int64_t> getAIUOffsetDelta(Value value, scf::ForOp loop,
   return std::nullopt;
 }
 
-static bool needsAIUEpiloguePeeling(
-    scf::ForOp loop, ArrayRef<std::pair<Operation *, unsigned>> schedule) {
+static bool
+needsAIUEpiloguePeeling(scf::ForOp loop,
+                        ArrayRef<std::pair<Operation *, unsigned>> schedule) {
   unsigned maxStage = 0;
   for (auto [op, stage] : schedule)
     maxStage = std::max(maxStage, stage);
@@ -141,8 +142,8 @@ static bool needsAIUEpiloguePeeling(
     if (!copy || stage == maxStage)
       continue;
     // Transpose can move the contiguous dimension; use the layout order.
-    auto encoding =
-        cast<PPUAIUSharedEncodingAttr>(copy.getResult().getType().getEncoding());
+    auto encoding = cast<PPUAIUSharedEncodingAttr>(
+        copy.getResult().getType().getEncoding());
     auto delta =
         getAIUOffsetDelta(copy.getCoord()[encoding.getOrder().front()], loop);
     // Keep the default pipeline when the coordinate change is unknown.

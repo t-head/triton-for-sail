@@ -52,16 +52,17 @@ template <bool CheckSuccess>
 HGresult memHostAlloc(void **pp, size_t bytesize, unsigned int flags);
 
 template <bool CheckSuccess>
-HGresult memHostGetDevicePointer(HGdeviceptr *pdptr, void *p, unsigned int flags);
+HGresult memHostGetDevicePointer(HGdeviceptr *pdptr, void *p,
+                                 unsigned int flags);
 
 template <bool CheckSuccess> HGresult memFreeHost(void *p);
 
 template <bool CheckSuccess>
-HGresult launchKernel(HGfunction f, unsigned int gridDimX, unsigned int gridDimY,
-                      unsigned int gridDimZ, unsigned int blockDimX,
-                      unsigned int blockDimY, unsigned int blockDimZ,
-                      unsigned int sharedMemBytes, HGstream hStream,
-                      void **kernelParams, void **extra);
+HGresult launchKernel(HGfunction f, unsigned int gridDimX,
+                      unsigned int gridDimY, unsigned int gridDimZ,
+                      unsigned int blockDimX, unsigned int blockDimY,
+                      unsigned int blockDimZ, unsigned int sharedMemBytes,
+                      HGstream hStream, void **kernelParams, void **extra);
 
 Device getDevice(uint64_t index);
 

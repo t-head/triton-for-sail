@@ -161,12 +161,16 @@ from triton._internal_testing import is_ppu
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--test", type=lambda x: x.lower() in ("true", "1", "yes"), default=True, help="test accuracy before benchmark")
-parser.add_argument("--reshape", type=lambda x: x.lower() in ("true", "1", "yes"), default=True, help="reshape scaleA and schale B to coalesce memory load")
+parser.add_argument("--test", type=lambda x: x.lower() in ("true", "1", "yes"), default=True,
+                    help="test accuracy before benchmark")
+parser.add_argument("--reshape", type=lambda x: x.lower() in ("true", "1", "yes"), default=True,
+                    help="reshape scaleA and schale B to coalesce memory load")
 args = parser.parse_args()
+
 
 def is_cuda():
     return triton.runtime.driver.active.get_current_target().backend == "cuda"
+
 
 def get_cuda_autotune_config():
     if not args.reshape:
@@ -236,10 +240,10 @@ def get_cuda_autotune_config():
     # ]
 
 
-
 def get_autotune_config():
     if is_cuda() or is_ppu():
         return get_cuda_autotune_config()
+
 
 @triton.autotune(
     configs=get_autotune_config(),
@@ -284,10 +288,12 @@ def block_scale_fp4_matmul(  #
     offs_am_aiu = (pid_m * (BLOCK_M // PACKING_ALONG_M_N))
     offs_bn_aiu = (pid_n * (BLOCK_N // PACKING_ALONG_M_N))
     offs_k_aiu = 0
-    
+
     for k in tl.range(0, tl.cdiv(K, BLOCK_K), num_stages=num_stages):
-        a = tl.aiu_load(a_ptr, (offs_am_aiu, offs_k_aiu), (BLOCK_M // PACKING_ALONG_M_N, BLOCK_K_PACKED), (M, K//2), tl.uint8, (1, 0))
-        b = tl.aiu_load(b_ptr, (offs_k_aiu, offs_bn_aiu), (BLOCK_K_PACKED, BLOCK_N // PACKING_ALONG_M_N), (K//2, N), tl.uint8, (0, 1))
+        a = tl.aiu_load(a_ptr, (offs_am_aiu, offs_k_aiu), (BLOCK_M // PACKING_ALONG_M_N, BLOCK_K_PACKED), (M, K // 2),
+                        tl.uint8, (1, 0))
+        b = tl.aiu_load(b_ptr, (offs_k_aiu, offs_bn_aiu), (BLOCK_K_PACKED, BLOCK_N // PACKING_ALONG_M_N), (K // 2, N),
+                        tl.uint8, (0, 1))
 
         if a_scale is not None:
             scale_a = tl.load(a_scale_ptr)
@@ -309,6 +315,7 @@ def block_scale_fp4_matmul(  #
     output_ptrs = output_ptr + stride_cm * offs_cm[:, None] + stride_cn * offs_cn[None, :]
     c_mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
     tl.store(output_ptrs, accumulator, mask=c_mask)
+
 
 @triton.autotune(
     configs=get_autotune_config(),
@@ -375,8 +382,8 @@ def block_scale_fp4_matmul_reshape(  #
     offs_sn_aiu = pid_n * (BLOCK_N // 128)
 
     for k in tl.range(0, tl.cdiv(K, BLOCK_K), num_stages=num_stages):
-        a = tl.aiu_load(a_ptr, (offs_am_aiu, offs_k_aiu), (BLOCK_M, BLOCK_K_PACKED), (M, K//2), tl.uint8, (1, 0))
-        b = tl.aiu_load(b_ptr, (offs_k_aiu, offs_bn_aiu), (BLOCK_K_PACKED, BLOCK_N), (K//2, N), tl.uint8, (0, 1))
+        a = tl.aiu_load(a_ptr, (offs_am_aiu, offs_k_aiu), (BLOCK_M, BLOCK_K_PACKED), (M, K // 2), tl.uint8, (1, 0))
+        b = tl.aiu_load(b_ptr, (offs_k_aiu, offs_bn_aiu), (BLOCK_K_PACKED, BLOCK_N), (K // 2, N), tl.uint8, (0, 1))
 
         scale_a = tl.load(a_scale_ptr)
         scale_b = tl.load(b_scale_ptr)
@@ -401,6 +408,7 @@ def block_scale_fp4_matmul_reshape(  #
     c_mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
     tl.store(output_ptrs, accumulator, mask=c_mask)
 
+
 # We can fuse `leaky_relu` by providing it as an `ACTIVATION` meta-parameter in `matmul_kernel`.
 @triton.jit
 def leaky_relu(x):
@@ -421,20 +429,38 @@ def matmul(a, b, output, M, N, K, a_scale, b_scale, VEC_SIZE, pack_along_k, acti
     grid = lambda META: (triton.cdiv(M, META['BLOCK_M']) * triton.cdiv(N, META['BLOCK_N']), )
 
     if args.reshape:
-        k = block_scale_fp4_matmul_reshape[grid](a, b, output, a_scale, b_scale, M, N, K, a_scale.stride(0), a_scale.stride(1),
-                                            a_scale.stride(2), a_scale.stride(3), a.stride(0), a.stride(1),
-                                        b.stride(0), b.stride(1), output.stride(0), output.stride(1), VEC_SIZE,  PACK_ALONG_K=pack_along_k
-                                        )
+        k = block_scale_fp4_matmul_reshape[grid](a, b, output, a_scale, b_scale, M, N, K, a_scale.stride(0),
+                                                 a_scale.stride(1), a_scale.stride(2), a_scale.stride(3), a.stride(0),
+                                                 a.stride(1), b.stride(0), b.stride(1), output.stride(0),
+                                                 output.stride(1), VEC_SIZE, PACK_ALONG_K=pack_along_k)
     else:
         stride_scale = a_scale.stride(0)
-        k = block_scale_fp4_matmul[grid](a, b, output, a_scale, b_scale, M, N, K, stride_scale, a.stride(0), a.stride(1),
-                                        b.stride(0), b.stride(1), output.stride(0), output.stride(1), VEC_SIZE,  PACK_ALONG_K=pack_along_k,
-                                        )
+        k = block_scale_fp4_matmul[grid](
+            a,
+            b,
+            output,
+            a_scale,
+            b_scale,
+            M,
+            N,
+            K,
+            stride_scale,
+            a.stride(0),
+            a.stride(1),
+            b.stride(0),
+            b.stride(1),
+            output.stride(0),
+            output.stride(1),
+            VEC_SIZE,
+            PACK_ALONG_K=pack_along_k,
+        )
     return output
+
 
 def flatten_scale(scale):
     num_chunk_m, num_chunk_k, _, _, _ = scale.shape
     return scale.permute(0, 3, 2, 1, 4).reshape(num_chunk_m * 128, num_chunk_k * 4).contiguous()
+
 
 def fp8e8m0_to_float32(scale):
     scale = scale.view(torch.uint8)
@@ -442,6 +468,7 @@ def fp8e8m0_to_float32(scale):
     scale = scale << 23
     scale = scale.view(torch.float32)
     return scale
+
 
 # %%
 # Unit Test
@@ -533,7 +560,6 @@ if args.test:
             print("✅ Triton and Torch match")
         else:
             print("❌ Triton and Torch differ")
-   
 
 # %%
 # Benchmark
@@ -559,8 +585,7 @@ configs.append(
         line_names=["Triton"],  # Line styles
         styles=[("green", "-"), ("blue", "-")],
         ylabel="TFLOPS",  # Label name for the y-axis
-        plot_name="matmul-performance-" +
-        ("mxfp4"),  # Name for the plot, used also as a file name for saving the plot.
+        plot_name="matmul-performance-" + ("mxfp4"),  # Name for the plot, used also as a file name for saving the plot.
         args={},
     ))
 
@@ -599,7 +624,8 @@ def benchmark(M, N, K, provider):
         quantiles = [0.5, 0.2, 0.8]
         output = a.new_empty((M, N), dtype=torch.float32)
         if provider == 'triton':
-            ms, min_ms, max_ms = triton.testing.do_bench(lambda: matmul(a, b, output, M, N, K, a_scale, b_scale, VEC_SIZE, pack_along_k), quantiles=quantiles)
+            ms, min_ms, max_ms = triton.testing.do_bench(
+                lambda: matmul(a, b, output, M, N, K, a_scale, b_scale, VEC_SIZE, pack_along_k), quantiles=quantiles)
         perf = lambda ms: 2 * M * N * K * 1e-12 / (ms * 1e-3)
         return perf(ms), perf(max_ms), perf(min_ms)
     else:
@@ -620,8 +646,10 @@ def benchmark(M, N, K, provider):
         quantiles = [0.5, 0.2, 0.8]
         output = a.new_empty((M, N), dtype=torch.float32)
         if provider == 'triton':
-            ms, min_ms, max_ms = triton.testing.do_bench(lambda: matmul(a, b, output, M, N, K, a_scale, b_scale, VEC_SIZE, pack_along_k), quantiles=quantiles)
+            ms, min_ms, max_ms = triton.testing.do_bench(
+                lambda: matmul(a, b, output, M, N, K, a_scale, b_scale, VEC_SIZE, pack_along_k), quantiles=quantiles)
         perf = lambda ms: 2 * M * N * K * 1e-12 / (ms * 1e-3)
         return perf(ms), perf(max_ms), perf(min_ms)
+
 
 benchmark.run(show_plots=True, print_data=True)

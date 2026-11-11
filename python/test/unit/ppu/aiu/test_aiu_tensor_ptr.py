@@ -41,9 +41,9 @@ def test_aiu_load(num_stages, M, K, BLOCK_M, BLOCK_K, num_warps):
     A = torch.randn((M, K), dtype=torch.float16, device=device)
     C = torch.empty((M, K), dtype=torch.float16, device=device)
 
-    load_kernel_aiu[(triton.cdiv(M, BLOCK_M) * triton.cdiv(K, BLOCK_K), 1, 1)](
-        A, C, M, K, BLOCK_M, BLOCK_K, num_warps=num_warps, num_stages=num_stages
-    )
+    load_kernel_aiu[(triton.cdiv(M, BLOCK_M) * triton.cdiv(K, BLOCK_K), 1, 1)](A, C, M, K, BLOCK_M, BLOCK_K,
+                                                                               num_warps=num_warps,
+                                                                               num_stages=num_stages)
 
     torch.testing.assert_close(A, C, rtol=1e-3, atol=1e-3)
 
@@ -84,12 +84,10 @@ def matmul_kernel_aiu(
     offs_k = 0
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 
-    a_tensor_ptr = tl.make_block_ptr(
-        a_ptr, (M, K), (stride_am, stride_ak), (offs_am, offs_k), (BLOCK_SIZE_M, BLOCK_SIZE_K), (1, 0)
-    )
-    b_tensor_ptr = tl.make_block_ptr(
-        b_ptr, (K, N), (stride_bk, stride_bn), (offs_k, offs_bn), (BLOCK_SIZE_K, BLOCK_SIZE_N), (1, 0)
-    )
+    a_tensor_ptr = tl.make_block_ptr(a_ptr, (M, K), (stride_am, stride_ak), (offs_am, offs_k),
+                                     (BLOCK_SIZE_M, BLOCK_SIZE_K), (1, 0))
+    b_tensor_ptr = tl.make_block_ptr(b_ptr, (K, N), (stride_bk, stride_bn), (offs_k, offs_bn),
+                                     (BLOCK_SIZE_K, BLOCK_SIZE_N), (1, 0))
 
     for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
         a = tl.aiu_load(a_tensor_ptr)
@@ -104,9 +102,8 @@ def matmul_kernel_aiu(
     # Write back the block of the output matrix C with masks.
     offs_cm = pid_m * BLOCK_SIZE_M
     offs_cn = pid_n * BLOCK_SIZE_N
-    c_tensor_ptr = tl.make_block_ptr(
-        c_ptr, (M, N), (stride_cm, stride_cn), (offs_cm, offs_cn), (BLOCK_SIZE_M, BLOCK_SIZE_N), (1, 0)
-    )
+    c_tensor_ptr = tl.make_block_ptr(c_ptr, (M, N), (stride_cm, stride_cn), (offs_cm, offs_cn),
+                                     (BLOCK_SIZE_M, BLOCK_SIZE_N), (1, 0))
     tl.store(c_tensor_ptr, c)
 
 
@@ -139,9 +136,8 @@ def matmul_kernel_aiu_mixed_load(
 
     offs_bn = pid_n * BLOCK_SIZE_N
     offs_k = 0
-    b_tensor_ptr = tl.make_block_ptr(
-        b_ptr, (K, N), (stride_bk, stride_bn), (offs_k, offs_bn), (BLOCK_SIZE_K, BLOCK_SIZE_N), (1, 0)
-    )
+    b_tensor_ptr = tl.make_block_ptr(b_ptr, (K, N), (stride_bk, stride_bn), (offs_k, offs_bn),
+                                     (BLOCK_SIZE_K, BLOCK_SIZE_N), (1, 0))
 
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 

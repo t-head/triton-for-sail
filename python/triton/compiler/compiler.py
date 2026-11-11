@@ -522,7 +522,8 @@ class CompiledKernel:
                 if self.metadata.tmem_size > max_tmem_size:
                     raise_(OutOfResources(self.metadata.tmem_size, max_tmem_size, "tensor memory"))
             if knobs.runtime.kernel_load_start_hook is not None:
-                knobs.runtime.kernel_load_start_hook(self.module, self.function, self.name, self.metadata_group, self.hash)
+                knobs.runtime.kernel_load_start_hook(self.module, self.function, self.name, self.metadata_group,
+                                                     self.hash)
 
             load_device = active_driver.get_current_device()
             if load_device != device:
@@ -548,7 +549,8 @@ class CompiledKernel:
             if self.metadata.num_warps * warp_size > self.n_max_threads:
                 raise_(OutOfResources(self.metadata.num_warps * warp_size, self.n_max_threads, "threads"))
             if knobs.runtime.kernel_load_end_hook is not None:
-                knobs.runtime.kernel_load_end_hook(self.module, self.function, self.name, self.metadata_group, self.hash)
+                knobs.runtime.kernel_load_end_hook(self.module, self.function, self.name, self.metadata_group,
+                                                   self.hash)
         except BaseException:
             module = self.module
             self.module = None

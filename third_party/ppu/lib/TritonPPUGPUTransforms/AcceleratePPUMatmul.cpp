@@ -41,8 +41,8 @@
 #include "triton/Dialect/TritonGPU/Transforms/DecomposeScaledBlocked.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/LayoutUtils.h"
-#include "triton/Tools/Sys/GetEnv.h"
 #include "triton/Tools/StrUtil.h"
+#include "triton/Tools/Sys/GetEnv.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
@@ -69,8 +69,7 @@ static bool shouldUseM8MMA(const ArrayRef<int64_t> shape, int numWarps,
   do {
     if (warp[0] * warp[1] >= numWarps)
       break;
-    if (shape[0] / M / warp[0] >=
-        shape[1] / N / warp[1]) {
+    if (shape[0] / M / warp[0] >= shape[1] / N / warp[1]) {
       if (warp[0] < shape[0] / M) {
         warp[0] *= 2;
       } else
@@ -101,7 +100,8 @@ PPUMmaVersionToInstrShape(int version, const ArrayRef<int64_t> &shape,
     auto rank = shape.size();
     SmallVector<unsigned, 3> ret(rank, 1);
     ret[rank - 1] = 16;
-    // Decide M dimension: use M8MMA when shape cannot be fully covered by m16mma tiles
+    // Decide M dimension: use M8MMA when shape cannot be fully covered by
+    // m16mma tiles
     if (version == 1 && shouldUseM8MMA(shape, numWarps, 1)) {
       ret[rank - 2] = 8;
     } else {
@@ -140,7 +140,8 @@ static bool supportPPUMMA(triton::DotOp op, int version) {
 }
 
 // Get the highest version supported for the hardware and the dot.
-// Returns versionMajor (1 or 2). useM8MMA is determined internally by instrShape.
+// Returns versionMajor (1 or 2). useM8MMA is determined internally by
+// instrShape.
 static int getMMAVersionSafe(int computeCapability, DotOp op) {
   // List supported mma version in order of preference.
   SmallVector<int> versionsSupported;
@@ -225,8 +226,8 @@ SmallVector<unsigned, 2> warpsPerTileMmaV1(DotOpInterface dotOp,
 
 // PPUv1 M8MMA (m8n16k16) warp tile computation
 SmallVector<unsigned, 2> warpsPerTileMmaV1m8(DotOpInterface dotOp,
-                                              const ArrayRef<int64_t> shape,
-                                              int numWarps) {
+                                             const ArrayRef<int64_t> shape,
+                                             int numWarps) {
   auto rank = shape.size();
   // Early exit for batched matmul
   if (rank == 3)
@@ -271,7 +272,7 @@ SmallVector<unsigned, 2> warpsPerTileMmaV1m8(DotOpInterface dotOp,
   do {
     if (ret[0] * ret[1] >= numWarps)
       break;
-    if (shape[0] / (shapePerWarp[0] *2) / ret[0] >=
+    if (shape[0] / (shapePerWarp[0] * 2) / ret[0] >=
         shape[1] / shapePerWarp[1] / ret[1]) {
       if (ret[0] < shape[0] / shapePerWarp[0]) {
         ret[0] *= 2;
@@ -377,8 +378,8 @@ getWarpsPerTile(DotOpInterface dotOp, const ArrayRef<int64_t> shape,
   case 1: {
     // Check if using M8MMA (m8n16k16) based on instrShape
     auto rank = shape.size();
-    bool useM8MMA = instrShape.size() >= 2 &&
-                    instrShape[instrShape.size() - 2] == 8;
+    bool useM8MMA =
+        instrShape.size() >= 2 && instrShape[instrShape.size() - 2] == 8;
     if (useM8MMA)
       return warpsPerTileMmaV1m8(dotOp, shape, numWarps);
     return warpsPerTileMmaV1(dotOp, shape, numWarps);
@@ -394,8 +395,8 @@ getWarpsPerTile(DotOpInterface dotOp, const ArrayRef<int64_t> shape,
 static bool bwdFilter(Operation *op) {
   return (op->hasTrait<OpTrait::Elementwise>() && isMemoryEffectFree(op)) ||
          isView(op) ||
-         isa<AIULoadOp, Fp4ToFpOp, LoadOp, DescriptorLoadOp, BroadcastOp, ConvertLayoutOp>(
-             op);
+         isa<AIULoadOp, Fp4ToFpOp, LoadOp, DescriptorLoadOp, BroadcastOp,
+             ConvertLayoutOp>(op);
 }
 
 // Finds the bitwidth with which the value x is loaded
@@ -699,8 +700,8 @@ public:
         oldRetType.getShape(), oldRetType.getElementType(), mmaEnc);
     // convert accumulator
     auto oldAcc = dotOp.getOperand(2);
-    auto newAcc = ConvertLayoutOp::create(rewriter, oldAcc.getLoc(), newRetType,
-                                          oldAcc);
+    auto newAcc =
+        ConvertLayoutOp::create(rewriter, oldAcc.getLoc(), newRetType, oldAcc);
 
     auto getDotOperand = [&](Value v, int opIdx, int bitwidth) {
       auto minType =

@@ -6,7 +6,6 @@ import triton.language as tl
 import triton
 from triton import MockTensor
 
-
 _metric_kernel_owners = threading.local()
 
 

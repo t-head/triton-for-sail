@@ -5,13 +5,21 @@ import time
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
+
 @triton.jit
 def int8_matmul_kernel(
-    a_ptr, b_ptr, c_ptr,
-    M, N, K,
-    stride_am, stride_ak,
-    stride_bk, stride_bn,
-    stride_cm, stride_cn,
+    a_ptr,
+    b_ptr,
+    c_ptr,
+    M,
+    N,
+    K,
+    stride_am,
+    stride_ak,
+    stride_bk,
+    stride_bn,
+    stride_cm,
+    stride_cn,
     BLOCK_M: tl.constexpr = 128,
     BLOCK_N: tl.constexpr = 128,
     BLOCK_K: tl.constexpr = 32,
@@ -43,6 +51,7 @@ def int8_matmul_kernel(
     c_ptrs = c_ptr + offs_cm[:, None] * stride_cm + offs_cn[None, :] * stride_cn
     tl.store(c_ptrs, acc)
 
+
 def benchmark_int8_perf(device=DEVICE):
     # 设置超参数
     matrix_size = 8192  # 需要根据显存容量调整
@@ -53,11 +62,8 @@ def benchmark_int8_perf(device=DEVICE):
     grid = lambda META: (triton.cdiv(matrix_size, META['BLOCK_M']) * triton.cdiv(matrix_size, META['BLOCK_N']), )
 
     # 预热
-    int8_matmul_kernel[grid](a, b, c, matrix_size, matrix_size, matrix_size,
-                              a.stride(0), a.stride(1),
-                              b.stride(0), b.stride(1),
-                              c.stride(0), c.stride(1),
-                              BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=4)
+    int8_matmul_kernel[grid](a, b, c, matrix_size, matrix_size, matrix_size, a.stride(0), a.stride(1), b.stride(0),
+                             b.stride(1), c.stride(0), c.stride(1), BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=4)
     import numpy as np
     torch_output = np.matmul(a.cpu().numpy().astype(np.float32), b.cpu().numpy().astype(np.float32())).astype(np.int8)
     torch.set_printoptions(threshold=1000000)
@@ -74,11 +80,8 @@ def benchmark_int8_perf(device=DEVICE):
     torch.cuda.synchronize()
     start_time = time.time()
     for _ in range(10):
-        int8_matmul_kernel[grid](a, b, c, matrix_size, matrix_size, matrix_size,
-                                  a.stride(0), a.stride(1),
-                                  b.stride(0), b.stride(1),
-                                  c.stride(0), c.stride(1),
-                                  BLOCK_M=128, BLOCK_N=128, BLOCK_K=32)
+        int8_matmul_kernel[grid](a, b, c, matrix_size, matrix_size, matrix_size, a.stride(0), a.stride(1), b.stride(0),
+                                 b.stride(1), c.stride(0), c.stride(1), BLOCK_M=128, BLOCK_N=128, BLOCK_K=32)
     torch.cuda.synchronize()
     elapsed = time.time() - start_time
 
@@ -86,6 +89,7 @@ def benchmark_int8_perf(device=DEVICE):
     total_ops = 2 * matrix_size**3 * 10  # 2*M*N*K per matrix multiply
     tflops = total_ops / elapsed / 1e12
     return tflops
+
 
 if __name__ == "__main__":
     peak_tflops = benchmark_int8_perf()

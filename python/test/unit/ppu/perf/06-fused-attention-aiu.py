@@ -21,6 +21,7 @@ import triton.language as tl
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
+
 def is_hip():
     return triton.runtime.driver.active.get_current_target().backend == "hip"
 
@@ -316,6 +317,7 @@ configs_bwd = [
     for w in [4, 8]
 ]
 
+
 @triton.autotune(list(configs_bwd), key=["N_CTX", "HEAD_DIM"])
 @triton.jit(ppu_hint='bwd')
 def _attn_bwd(Q, K, V, sm_scale,  #
@@ -528,14 +530,13 @@ class _attention(torch.autograd.Function):
         return dq, dk, dv, None, None
 
 
-
 @triton.jit(ppu_hint='fwd')
 def _attn_fwd_inner_aiu(acc, l_i, m_i, q,  #
-                    K_block_ptr, V_block_ptr,  #
-                    start_m, qk_scale,  #
-                    BLOCK_M: tl.constexpr, HEAD_DIM: tl.constexpr, BLOCK_N: tl.constexpr,  #
-                    STAGE: tl.constexpr, offs_m: tl.constexpr, offs_n: tl.constexpr,  #
-                    N_CTX: tl.constexpr, fp8_v: tl.constexpr):
+                        K_block_ptr, V_block_ptr,  #
+                        start_m, qk_scale,  #
+                        BLOCK_M: tl.constexpr, HEAD_DIM: tl.constexpr, BLOCK_N: tl.constexpr,  #
+                        STAGE: tl.constexpr, offs_m: tl.constexpr, offs_n: tl.constexpr,  #
+                        N_CTX: tl.constexpr, fp8_v: tl.constexpr):
     # range of values handled by this stage
     if STAGE == 1:
         lo, hi = 0, start_m * BLOCK_M
@@ -586,16 +587,16 @@ def _attn_fwd_inner_aiu(acc, l_i, m_i, q,  #
 @triton.autotune(list(filter(keep, configs)), key=["N_CTX", "HEAD_DIM", "STAGE"])
 @triton.jit(ppu_hint='fwd')
 def _attn_fwd_aiu(Q, K, V, sm_scale, M, Out,  #
-              stride_qz, stride_qh, stride_qm, stride_qk,  #
-              stride_kz, stride_kh, stride_kn, stride_kk,  #
-              stride_vz, stride_vh, stride_vk, stride_vn,  #
-              stride_oz, stride_oh, stride_om, stride_on,  #
-              Z, H, N_CTX,  #
-              HEAD_DIM: tl.constexpr,  #
-              BLOCK_M: tl.constexpr,  #
-              BLOCK_N: tl.constexpr,  #
-              STAGE: tl.constexpr  #
-              ):
+                  stride_qz, stride_qh, stride_qm, stride_qk,  #
+                  stride_kz, stride_kh, stride_kn, stride_kk,  #
+                  stride_vz, stride_vh, stride_vk, stride_vn,  #
+                  stride_oz, stride_oh, stride_om, stride_on,  #
+                  Z, H, N_CTX,  #
+                  HEAD_DIM: tl.constexpr,  #
+                  BLOCK_M: tl.constexpr,  #
+                  BLOCK_N: tl.constexpr,  #
+                  STAGE: tl.constexpr  #
+                  ):
     tl.static_assert(BLOCK_N <= HEAD_DIM)
     start_m = tl.program_id(0)
     off_hz = tl.program_id(1)
@@ -655,19 +656,19 @@ def _attn_fwd_aiu(Q, K, V, sm_scale, M, Out,  #
     # For causal = False, STAGE = 1, and _attn_fwd_inner gets 3 as its STAGE
     if STAGE & 1:
         acc, l_i, m_i = _attn_fwd_inner_aiu(acc, l_i, m_i, q, K_block_ptr, V_block_ptr,  #
-                                        start_m, qk_scale,  #
-                                        BLOCK_M, HEAD_DIM, BLOCK_N,  #
-                                        4 - STAGE, offs_m, offs_n, N_CTX, V.dtype.element_ty == tl.float8e5  #
-                                        )
+                                            start_m, qk_scale,  #
+                                            BLOCK_M, HEAD_DIM, BLOCK_N,  #
+                                            4 - STAGE, offs_m, offs_n, N_CTX, V.dtype.element_ty == tl.float8e5  #
+                                            )
     # stage 2: on-band
     if STAGE & 2:
         # barrier makes it easier for compielr to schedule the
         # two loops independently
         acc, l_i, m_i = _attn_fwd_inner_aiu(acc, l_i, m_i, q, K_block_ptr, V_block_ptr,  #
-                                        start_m, qk_scale,  #
-                                        BLOCK_M, HEAD_DIM, BLOCK_N,  #
-                                        2, offs_m, offs_n, N_CTX, V.dtype.element_ty == tl.float8e5  #
-                                        )
+                                            start_m, qk_scale,  #
+                                            BLOCK_M, HEAD_DIM, BLOCK_N,  #
+                                            2, offs_m, offs_n, N_CTX, V.dtype.element_ty == tl.float8e5  #
+                                            )
     # epilogue
     m_i += tl.math.log2(l_i)
     acc = acc / l_i[:, None]
@@ -806,9 +807,12 @@ def test_op_fp16(Z, H, N_CTX, HEAD_DIM, causal, dtype=torch.float16):
 @pytest.mark.parametrize("causal", [True])
 def test_op_fp8(Z, H, N_CTX, HEAD_DIM, causal):
     torch.manual_seed(20)
-    q = (torch.empty((Z, H, N_CTX, HEAD_DIM), dtype=torch.float16, device=DEVICE).normal_(mean=0.0, std=0.5)).requires_grad_()
-    k = (torch.empty((Z, H, N_CTX, HEAD_DIM), dtype=torch.float16, device=DEVICE).normal_(mean=0.0, std=0.5)).requires_grad_()
-    v = (torch.empty((Z, H, N_CTX, HEAD_DIM), dtype=torch.float16, device=DEVICE).normal_(mean=0.0, std=0.5)).requires_grad_()
+    q = (torch.empty((Z, H, N_CTX, HEAD_DIM), dtype=torch.float16, device=DEVICE).normal_(mean=0.0,
+                                                                                          std=0.5)).requires_grad_()
+    k = (torch.empty((Z, H, N_CTX, HEAD_DIM), dtype=torch.float16, device=DEVICE).normal_(mean=0.0,
+                                                                                          std=0.5)).requires_grad_()
+    v = (torch.empty((Z, H, N_CTX, HEAD_DIM), dtype=torch.float16, device=DEVICE).normal_(mean=0.0,
+                                                                                          std=0.5)).requires_grad_()
     sm_scale = 0.5
 
     q = q.to(torch.float8_e5m2)
@@ -829,7 +833,6 @@ def test_op_fp8(Z, H, N_CTX, HEAD_DIM, causal):
 
 # test_op_fp8(1, 2, 1024, 64, True)
 
-
 try:
     from flash_attn.flash_attn_interface import \
         flash_attn_qkvpacked_func as flash_attn_func
@@ -837,7 +840,7 @@ try:
 except BaseException:
     HAS_FLASH = False
 
-TORCH_HAS_FP8 = False #hasattr(torch, 'float8_e5m2')
+TORCH_HAS_FP8 = False  #hasattr(torch, 'float8_e5m2')
 if torch.cuda.get_device_capability()[0] == 8 and torch.cuda.get_device_capability()[1] == 9:
     TORCH_HAS_FP8 = hasattr(torch, "float8_e5m2")
 BATCH, N_HEADS, HEAD_DIM = 4, 32, 64

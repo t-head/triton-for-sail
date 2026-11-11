@@ -324,7 +324,8 @@ struct CanonicalizeConvertFromConvert
     auto srcType = op.getSrc().getType();
     auto dstType = op.getType();
     if (mlir::isa<DotOperandEncodingAttr>(dstType.getEncoding()) &&
-        mlir::isa<NvidiaMmaEncodingAttr, PPUMmaEncodingAttr>(srcType.getEncoding()))
+        mlir::isa<NvidiaMmaEncodingAttr, PPUMmaEncodingAttr>(
+            srcType.getEncoding()))
       return failure();
 
     Operation *arg = op.getSrc().getDefiningOp();
@@ -1105,8 +1106,7 @@ LogicalResult LocalAtomicScatterRMWOp::verify() {
   RMWOp rmwOp = getAtomicRmwOp();
   if (rmwOp == RMWOp::FADD && !isa<FloatType>(valuesEltTy))
     return emitError("fadd requires floating-point values");
-  if (rmwOp != RMWOp::FADD && rmwOp != RMWOp::XCHG &&
-      !valuesEltTy.isInteger())
+  if (rmwOp != RMWOp::FADD && rmwOp != RMWOp::XCHG && !valuesEltTy.isInteger())
     return emitError("integer atomic operation requires integer values");
 
   // Verify indices tensor has integer element type

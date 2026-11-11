@@ -40,12 +40,13 @@ convertKernelActivityToMetric(HGpti_Activity *activity,
   std::unique_ptr<Metric> metric;
   auto *kernel = reinterpret_cast<HGpti_ActivityKernel5 *>(activity);
   if (kernel->start < kernel->end) {
-    metric = std::make_unique<KernelMetric>(
-        static_cast<uint64_t>(kernel->start), static_cast<uint64_t>(kernel->end),
-        1, static_cast<uint64_t>(kernel->deviceId),
-        static_cast<uint64_t>(DeviceType::PPU),
-        static_cast<uint64_t>(kernel->streamId),
-        static_cast<uint64_t>(isMetricKernel));
+    metric =
+        std::make_unique<KernelMetric>(static_cast<uint64_t>(kernel->start),
+                                       static_cast<uint64_t>(kernel->end), 1,
+                                       static_cast<uint64_t>(kernel->deviceId),
+                                       static_cast<uint64_t>(DeviceType::PPU),
+                                       static_cast<uint64_t>(kernel->streamId),
+                                       static_cast<uint64_t>(isMetricKernel));
   }
   return metric;
 }
@@ -182,16 +183,16 @@ constexpr std::array<HGpti_CallbackId, 11> kGraphCallbacks = {
     HGPTI_HGGC_DRIVER_CBID_hgStreamBeginCaptureToGraph_ptsz,
     HGPTI_HGGC_DRIVER_CBID_hgStreamEndCapture};
 
-#define PROTON_KERNEL_CALLBACK_LIST(X)                                        \
-  X(HGPTI_HGGC_DRIVER_CBID_hgLaunch)                                          \
-  X(HGPTI_HGGC_DRIVER_CBID_hgLaunchGrid)                                      \
-  X(HGPTI_HGGC_DRIVER_CBID_hgLaunchGridAsync)                                 \
-  X(HGPTI_HGGC_DRIVER_CBID_hgLaunchKernel)                                    \
-  X(HGPTI_HGGC_DRIVER_CBID_hgLaunchKernel_ptsz)                               \
-  X(HGPTI_HGGC_DRIVER_CBID_hgLaunchKernelEx)                                  \
-  X(HGPTI_HGGC_DRIVER_CBID_hgLaunchKernelEx_ptsz)                             \
-  X(HGPTI_HGGC_DRIVER_CBID_hgLaunchCooperativeKernel)                         \
-  X(HGPTI_HGGC_DRIVER_CBID_hgLaunchCooperativeKernel_ptsz)                    \
+#define PROTON_KERNEL_CALLBACK_LIST(X)                                         \
+  X(HGPTI_HGGC_DRIVER_CBID_hgLaunch)                                           \
+  X(HGPTI_HGGC_DRIVER_CBID_hgLaunchGrid)                                       \
+  X(HGPTI_HGGC_DRIVER_CBID_hgLaunchGridAsync)                                  \
+  X(HGPTI_HGGC_DRIVER_CBID_hgLaunchKernel)                                     \
+  X(HGPTI_HGGC_DRIVER_CBID_hgLaunchKernel_ptsz)                                \
+  X(HGPTI_HGGC_DRIVER_CBID_hgLaunchKernelEx)                                   \
+  X(HGPTI_HGGC_DRIVER_CBID_hgLaunchKernelEx_ptsz)                              \
+  X(HGPTI_HGGC_DRIVER_CBID_hgLaunchCooperativeKernel)                          \
+  X(HGPTI_HGGC_DRIVER_CBID_hgLaunchCooperativeKernel_ptsz)                     \
   X(HGPTI_HGGC_DRIVER_CBID_hgLaunchCooperativeKernelMultiDevice)
 
 #define PROTON_KERNEL_CB_AS_ID(cbId) cbId,
@@ -249,8 +250,8 @@ void setHgtxCallbacks(HGpti_SubscriberHandle subscriber, bool enable) {
 
 bool isKernel(HGpti_CallbackId cbId) {
   switch (cbId) {
-#define PROTON_KERNEL_CB_AS_CASE(cbId)                                        \
-  case cbId:                                                                  \
+#define PROTON_KERNEL_CB_AS_CASE(cbId)                                         \
+  case cbId:                                                                   \
     return true;
     PROTON_KERNEL_CALLBACK_LIST(PROTON_KERNEL_CB_AS_CASE)
 #undef PROTON_KERNEL_CB_AS_CASE
@@ -284,7 +285,7 @@ bool isStreamCaptureEnd(HGpti_CallbackId cbId) {
 
 #undef PROTON_KERNEL_CALLBACK_LIST
 
-}
+} // namespace
 
 struct HgptiProfiler::HgptiProfilerPimpl
     : public GPUProfiler<HgptiProfiler>::GPUProfilerPimplInterface {
@@ -340,8 +341,8 @@ private:
 };
 
 void HgptiProfiler::HgptiProfilerPimpl::allocBuffer(uint8_t **buffer,
-                                                  size_t *bufferSize,
-                                                  size_t *maxNumRecords) {
+                                                    size_t *bufferSize,
+                                                    size_t *maxNumRecords) {
   const auto envBufferSize =
       getIntEnv("TRITON_PROFILE_BUFFER_SIZE", 64 * 1024 * 1024);
   *buffer = static_cast<uint8_t *>(aligned_alloc(AlignSize, envBufferSize));
@@ -352,9 +353,11 @@ void HgptiProfiler::HgptiProfilerPimpl::allocBuffer(uint8_t **buffer,
   *maxNumRecords = 0;
 }
 
-void HgptiProfiler::HgptiProfilerPimpl::completeBuffer(
-    HGcontext ctx, uint32_t streamId, uint8_t *buffer, size_t size,
-    size_t validSize) {
+void HgptiProfiler::HgptiProfilerPimpl::completeBuffer(HGcontext ctx,
+                                                       uint32_t streamId,
+                                                       uint8_t *buffer,
+                                                       size_t size,
+                                                       size_t validSize) {
   HgptiProfiler &profiler = threadState.profiler;
   uint64_t numCompletedTasks = 0;
   uint64_t maxCorrelationId = 0;
@@ -386,7 +389,8 @@ void HgptiProfiler::HgptiProfilerPimpl::completeBuffer(
 }
 
 void HgptiProfiler::HgptiProfilerPimpl::handleGraphResourceCallbacks(
-    HgptiProfiler &profiler, HGpti_CallbackId cbId, HGpti_GraphData *graphData) {
+    HgptiProfiler &profiler, HGpti_CallbackId cbId,
+    HGpti_GraphData *graphData) {
   uint32_t graphId = 0;
   uint32_t graphExecId = 0;
   if (graphData->graph)
@@ -435,9 +439,10 @@ void HgptiProfiler::HgptiProfilerPimpl::handleGraphResourceCallbacks(
       if (originalMetricNodeIt !=
           originalGraphState.metricNodeIdToState.end()) {
         auto metricNodeState = originalMetricNodeIt->second;
-        graphState.metricNodeIdToState.insert_or_assign(nodeId, metricNodeState);
+        graphState.metricNodeIdToState.insert_or_assign(nodeId,
+                                                        metricNodeState);
         graphState.metricSeqIdToNodeId.insert_or_assign(metricNodeState.seqId,
-                                                       nodeId);
+                                                        nodeId);
         graphState.numMetricWords += metricNodeState.numWords;
       }
     }
@@ -457,7 +462,8 @@ void HgptiProfiler::HgptiProfilerPimpl::handleResourceCallbacks(
     auto *moduleResource = static_cast<HGpti_ModuleResourceData *>(
         resourceData->resourceDescriptor);
     if (profiler.pcSamplingEnabled)
-      pcSampling.unloadModule(moduleResource->pCubin, moduleResource->cubinSize);
+      pcSampling.unloadModule(moduleResource->pCubin,
+                              moduleResource->cubinSize);
   } else if (cbId == HGPTI_CBID_RESOURCE_CONTEXT_CREATED) {
     if (profiler.pcSamplingEnabled)
       pcSampling.initialize(resourceData->context);
@@ -529,7 +535,7 @@ void HgptiProfiler::HgptiProfilerPimpl::handleApiEnterLaunchCallbacks(
     return;
 
   profiler.correlation.correlate(callbackData->correlationId, scope.scopeId,
-                                  numNodes, scope.name.empty(), dataToEntry);
+                                 numNodes, scope.name.empty(), dataToEntry);
   if (profiler.pcSamplingEnabled)
     pcSampling.start(callbackData->context);
 
@@ -561,9 +567,10 @@ void HgptiProfiler::HgptiProfilerPimpl::handleApiCallbacks(
   }
 }
 
-void HgptiProfiler::HgptiProfilerPimpl::callbackFn(
-    void *userData, HGpti_CallbackDomain domain, HGpti_CallbackId cbId,
-    const void *cbData) {
+void HgptiProfiler::HgptiProfilerPimpl::callbackFn(void *userData,
+                                                   HGpti_CallbackDomain domain,
+                                                   HGpti_CallbackId cbId,
+                                                   const void *cbData) {
   HgptiProfiler &profiler = threadState.profiler;
   auto *pImpl = dynamic_cast<HgptiProfilerPimpl *>(profiler.pImpl.get());
   if (domain == HGPTI_CB_DOMAIN_RESOURCE) {
@@ -656,11 +663,11 @@ void HgptiProfiler::doSetMode(const std::vector<std::string> &modeAndOptions) {
     pcSamplingEnabled = true;
   } else if (proton::toLower(mode) == "periodic_flushing") {
     detail::setPeriodicFlushingMode(periodicFlushingEnabled,
-                                   periodicFlushingFormat, modeAndOptions,
-                                   "HgptiProfiler");
+                                    periodicFlushingFormat, modeAndOptions,
+                                    "HgptiProfiler");
   } else if (!mode.empty()) {
     throw makeInvalidArgument("HgptiProfiler: unsupported mode: " + mode);
   }
 }
 
-}
+} // namespace proton
