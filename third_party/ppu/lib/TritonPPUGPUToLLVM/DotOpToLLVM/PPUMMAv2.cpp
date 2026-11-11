@@ -60,9 +60,8 @@ Value loadC(Value tensor, Value llTensor,
   // rebuild has to use; the MLIR element type is not necessarily the same.
   auto llElemTy =
       cast<LLVM::LLVMStructType>(llTensor.getType()).getBody().front();
-  bool expanded = fcSize != cast<LLVM::LLVMStructType>(llTensor.getType())
-                                .getBody()
-                                .size();
+  bool expanded =
+      fcSize != cast<LLVM::LLVMStructType>(llTensor.getType()).getBody().size();
 
   auto numMmaRets = cElemTy.getIntOrFloatBitWidth() / 4;
   assert(numMmaRets == 8 || numMmaRets == 4);

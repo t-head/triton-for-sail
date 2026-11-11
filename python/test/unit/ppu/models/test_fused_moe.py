@@ -61,12 +61,12 @@ def fused_moe_persistence_kernel(
     unroll: tl.constexpr = loop_k_iters if faltten else 1
 
     for tid in tl.range(
-        swizzle_pid,
-        all_tiles,
-        num_workers,
-        num_stages=num_stages,
-        loop_unroll_factor=unroll,
-        flatten=faltten,
+            swizzle_pid,
+            all_tiles,
+            num_workers,
+            num_stages=num_stages,
+            loop_unroll_factor=unroll,
+            flatten=faltten,
     ):
         tid_m = tid // grid_size_n
         tid_n = tid % grid_size_n
@@ -74,9 +74,7 @@ def fused_moe_persistence_kernel(
         offs_row = tl.arange(0, BLOCK_SIZE_M)
         offs_token = tid_m * BLOCK_SIZE_M + offs_row
         token_mask = offs_token < num_valid_tokens
-        a_ptrs = a_ptr + (
-            offs_token[:, None] // top_k * stride_am + offs_k[None, :] * stride_ak
-        )
+        a_ptrs = a_ptr + (offs_token[:, None] // top_k * stride_am + offs_k[None, :] * stride_ak)
         # loop-carried expert base: loaded inside the loop, so the flattened
         # remainder loop carries it as a poison-initialized value
         off_experts = tl.load(expert_ids_ptr + tid_m).to(tl.int64)
@@ -133,7 +131,7 @@ def test_fused_moe_aiu_zero_trip_prologue(K, BLOCK_K, unroll):
     assert tiles % num_workers == 0, "uneven tile split; pick another grid"
     assert (tiles // num_workers) % unroll == 0, "test requires zero remainder trips"
 
-    fused_moe_persistence_kernel[(num_workers,)](
+    fused_moe_persistence_kernel[(num_workers, )](
         a,
         b,
         c,

@@ -1107,10 +1107,9 @@ class TritonSemantic(Generic[TensorTy]):
         if not all(len(order) == len(values) for values in (shape, offsets)):
             raise ValueError("Expected shape, offsets, and order to have the same length")
 
-        handle = self.builder.create_aiu_load(
-            ptr.handle, offsets, shape, order, type.to_ir(self.builder),
-            self._str_to_load_cache_modifier(cache_modifier),
-            self._str_to_eviction_policy(eviction_policy))
+        handle = self.builder.create_aiu_load(ptr.handle, offsets, shape, order, type.to_ir(self.builder),
+                                              self._str_to_load_cache_modifier(cache_modifier),
+                                              self._str_to_eviction_policy(eviction_policy))
         return self.tensor(handle, type)
 
     def descriptor_load(self, desc: tl.tensor_descriptor_base, offsets, cache_policy) -> TensorTy:
@@ -2044,10 +2043,8 @@ class TritonSemantic(Generic[TensorTy]):
             non_contiguous_extent = tl._unwrap_if_constexpr(block_shape[-2])
             has_dense_rows = contiguous_shape is non_contiguous_stride or (
                 isinstance(contiguous_shape, int) and isinstance(non_contiguous_stride, int)
-                and contiguous_shape == non_contiguous_stride
-            )
-            promote_use_aiu = (non_contiguous_extent % 16 == 0 and contig_dim_size * elem_size >= 32
-                               and has_dense_rows)
+                and contiguous_shape == non_contiguous_stride)
+            promote_use_aiu = (non_contiguous_extent % 16 == 0 and contig_dim_size * elem_size >= 32 and has_dense_rows)
         if os.getenv("PPU_DISABLE_AIU_PROMOTION", "").upper() in {"ON", "1", "YES", "TRUE", "Y"}:
             promote_use_aiu = False
 

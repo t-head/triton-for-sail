@@ -61,16 +61,17 @@ HGptiResult activityGetNextRecord(uint8_t *buffer, size_t validBufferSizeBytes,
                                   HGpti_Activity **record);
 
 template <bool CheckSuccess>
-HGptiResult activityPushExternalCorrelationId(HGpti_ExternalCorrelationKind kind,
-                                              uint64_t id);
+HGptiResult
+activityPushExternalCorrelationId(HGpti_ExternalCorrelationKind kind,
+                                  uint64_t id);
 
 template <bool CheckSuccess>
 HGptiResult activityPopExternalCorrelationId(HGpti_ExternalCorrelationKind kind,
                                              uint64_t *lastId);
 
 template <bool CheckSuccess>
-HGptiResult activitySetAttribute(HGpti_ActivityAttribute attr, size_t *valueSize,
-                                 void *value);
+HGptiResult activitySetAttribute(HGpti_ActivityAttribute attr,
+                                 size_t *valueSize, void *value);
 
 template <bool CheckSuccess>
 HGptiResult unsubscribe(HGpti_SubscriberHandle subscriber);

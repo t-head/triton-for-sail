@@ -81,7 +81,7 @@ def test_aiu_addmm(monkeypatch, num_stages, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, 
     A = torch.randn((M, K), dtype=torch.float16, device=device)
     B = torch.randn((K, N), dtype=torch.float16, device=device)
     C = torch.empty((M, N), dtype=torch.float16, device=device)
-    bias = torch.randn((N,), dtype=torch.float16, device=device)
+    bias = torch.randn((N, ), dtype=torch.float16, device=device)
     alpha = beta = scalar
     addmm_kernel_aiu[(triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N), 1, 1)](
         bias,

@@ -7,28 +7,30 @@
 namespace proton {
 
 void HggcRuntime::launchKernel(void *kernel, unsigned int gridDimX,
-                             unsigned int gridDimY, unsigned int gridDimZ,
-                             unsigned int blockDimX, unsigned int blockDimY,
-                             unsigned int blockDimZ,
-                             unsigned int sharedMemBytes, void *stream,
-                             void **kernelParams, void **extra) {
-  hggc::launchKernel<true>(reinterpret_cast<HGfunction>(kernel), gridDimX, gridDimY,
-                         gridDimZ, blockDimX, blockDimY, blockDimZ,
-                         sharedMemBytes, reinterpret_cast<HGstream>(stream),
-                         kernelParams, extra);
+                               unsigned int gridDimY, unsigned int gridDimZ,
+                               unsigned int blockDimX, unsigned int blockDimY,
+                               unsigned int blockDimZ,
+                               unsigned int sharedMemBytes, void *stream,
+                               void **kernelParams, void **extra) {
+  hggc::launchKernel<true>(reinterpret_cast<HGfunction>(kernel), gridDimX,
+                           gridDimY, gridDimZ, blockDimX, blockDimY, blockDimZ,
+                           sharedMemBytes, reinterpret_cast<HGstream>(stream),
+                           kernelParams, extra);
 }
 
 void HggcRuntime::memset(void *devicePtr, uint32_t value, size_t size,
-                       void *stream) {
+                         void *stream) {
   hggc::memsetD32Async<true>(reinterpret_cast<HGdeviceptr>(devicePtr), value,
-                          size / sizeof(uint32_t),
-                          reinterpret_cast<HGstream>(stream));
+                             size / sizeof(uint32_t),
+                             reinterpret_cast<HGstream>(stream));
 }
 
-void HggcRuntime::allocateHostBuffer(uint8_t **buffer, size_t size, bool mapped) {
+void HggcRuntime::allocateHostBuffer(uint8_t **buffer, size_t size,
+                                     bool mapped) {
   if (mapped) {
     hggc::memHostAlloc<true>(reinterpret_cast<void **>(buffer), size,
-                           HG_MEMHOSTALLOC_DEVICEMAP | HG_MEMHOSTALLOC_PORTABLE);
+                             HG_MEMHOSTALLOC_DEVICEMAP |
+                                 HG_MEMHOSTALLOC_PORTABLE);
   } else {
     hggc::memAllocHost<true>(reinterpret_cast<void **>(buffer), size);
   }
@@ -56,9 +58,9 @@ void HggcRuntime::freeDeviceBuffer(uint8_t *buffer) {
 }
 
 void HggcRuntime::copyDeviceToHostAsync(void *dst, const void *src, size_t size,
-                                     void *stream) {
+                                        void *stream) {
   hggc::memcpyDToHAsync<true>(dst, reinterpret_cast<HGdeviceptr>(src), size,
-                           reinterpret_cast<HGstream>(stream));
+                              reinterpret_cast<HGstream>(stream));
 }
 
 void *HggcRuntime::getDevice() {
@@ -72,7 +74,7 @@ void *HggcRuntime::getPriorityStream() {
   int lowestPriority, highestPriority;
   hggc::ctxGetStreamPriorityRange<true>(&lowestPriority, &highestPriority);
   hggc::streamCreateWithPriority<true>(&stream, HG_STREAM_NON_BLOCKING,
-                                     highestPriority);
+                                       highestPriority);
   return reinterpret_cast<void *>(stream);
 }
 
@@ -100,8 +102,8 @@ void HggcRuntime::processHostBuffer(
   int64_t sizeLeftOnDevice = deviceBufferSize;
   while (chunkSize > 0) {
     hggc::memcpyDToHAsync<true>(reinterpret_cast<void *>(hostBuffer),
-                             reinterpret_cast<HGdeviceptr>(deviceBuffer),
-                             chunkSize, reinterpret_cast<HGstream>(stream));
+                                reinterpret_cast<HGdeviceptr>(deviceBuffer),
+                                chunkSize, reinterpret_cast<HGstream>(stream));
     hggc::streamSynchronize<true>(reinterpret_cast<HGstream>(stream));
     callback(hostBuffer, chunkSize);
     hostBuffer += chunkSize;

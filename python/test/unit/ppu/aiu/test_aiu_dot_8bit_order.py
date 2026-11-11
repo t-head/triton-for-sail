@@ -5,17 +5,10 @@ import triton.language as tl
 
 
 @triton.jit
-def matmul_kernel_aiu_8bit_order(a_ptr, b_ptr, c_ptr,
-                                stride_am, stride_ak,
-                                stride_bk, stride_bn,
-                                stride_cm, stride_cn,
-                                M, N, K,
-                                BLOCK_SIZE_M: tl.constexpr,
-                                BLOCK_SIZE_N: tl.constexpr,
-                                BLOCK_SIZE_K: tl.constexpr,
-                                DTYPE: tl.constexpr,
-                                ACC_DTYPE: tl.constexpr,
-                                OUT_DTYPE: tl.constexpr):
+def matmul_kernel_aiu_8bit_order(a_ptr, b_ptr, c_ptr, stride_am, stride_ak, stride_bk, stride_bn, stride_cm, stride_cn,
+                                 M, N, K, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr,
+                                 BLOCK_SIZE_K: tl.constexpr, DTYPE: tl.constexpr, ACC_DTYPE: tl.constexpr,
+                                 OUT_DTYPE: tl.constexpr):
 
     pid = tl.program_id(axis=0)
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
@@ -49,13 +42,14 @@ dtypes = {
     torch.int8: (tl.int8, tl.int32, torch.int32),
 }
 
+
 @pytest.mark.parametrize("num_stages", [2, 3, 4, 5])
 @pytest.mark.parametrize("num_warps", [2, 4, 8])
 @pytest.mark.parametrize("M, N, K", [(512, 512, 512)])
 @pytest.mark.parametrize(
     "BLOCK_M, BLOCK_N, BLOCK_K",
-    [(32, 32, 32), (32, 64, 256), (64, 256, 32), (256, 32, 128), (128, 32, 64), (32, 256, 64),
-     (64, 128, 256), (256, 128, 32), (128, 64, 32), (32, 128, 128), (64, 32, 64)],
+    [(32, 32, 32), (32, 64, 256), (64, 256, 32), (256, 32, 128), (128, 32, 64), (32, 256, 64), (64, 128, 256),
+     (256, 128, 32), (128, 64, 32), (32, 128, 128), (64, 32, 64)],
 )
 @pytest.mark.parametrize("dtype", list(dtypes.keys()), ids=["fp8e5", "int8"])
 def test_aiu_matmul_8bit_with_order(num_stages, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, num_warps, dtype):
@@ -79,18 +73,11 @@ def test_aiu_matmul_8bit_with_order(num_stages, M, N, K, BLOCK_M, BLOCK_N, BLOCK
     # (max |K * 127 * 128| ~ 8.3M < 2^24), so one reference serves both dtypes.
     C_ref = torch.matmul(A.to(torch.float32), B.T.to(torch.float32)).to(out_torch_dtype)
 
-    matmul_kernel_aiu_8bit_order[
-        (triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N), 1, 1)
-    ](
-        A, B, C_tri,
-        A.stride(0), A.stride(1),
-        B.stride(0), B.stride(1),
-        C_tri.stride(0), C_tri.stride(1),
-        M, N, K, BLOCK_M, BLOCK_N, BLOCK_K,
-        num_warps=num_warps,
-        num_stages=num_stages,
-        DTYPE=tl_dtype, ACC_DTYPE=acc_tl_dtype, OUT_DTYPE=acc_tl_dtype
-    )
+    matmul_kernel_aiu_8bit_order[(triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N), 1,
+                                  1)](A, B, C_tri, A.stride(0), A.stride(1), B.stride(0), B.stride(1), C_tri.stride(0),
+                                      C_tri.stride(1), M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, num_warps=num_warps,
+                                      num_stages=num_stages, DTYPE=tl_dtype, ACC_DTYPE=acc_tl_dtype,
+                                      OUT_DTYPE=acc_tl_dtype)
 
     if dtype == torch.int8:
         # int8 matmul with int32 accumulation is exact.

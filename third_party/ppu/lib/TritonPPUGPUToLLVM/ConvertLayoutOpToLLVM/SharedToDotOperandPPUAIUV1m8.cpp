@@ -133,9 +133,11 @@ loadX4(ConversionPatternRewriter &rewriter, Location loc, Value smemBase,
 
   auto ldmatrix = builder.create(ldstring)->o("shared.b16");
 
-  // will be lowering to 2 x aiu_tsm_ld_swzl_b32x2_b32 and trans, compiler will do this.
-  if(elemBits == 32 && needTrans)
-    ldmatrix = builder.create("ppu.ldmatrix.swzl.sync.aligned.m8n16.x1.trans")->o("shared.b32");
+  // will be lowering to 2 x aiu_tsm_ld_swzl_b32x2_b32 and trans, compiler will
+  // do this.
+  if (elemBits == 32 && needTrans)
+    ldmatrix = builder.create("ppu.ldmatrix.swzl.sync.aligned.m8n16.x1.trans")
+                   ->o("shared.b32");
 
   ldmatrix(resArgs, sbase, Args);
 
@@ -211,7 +213,8 @@ std::function<void(int, int, int)> getLoadMatrixFnM8(
     SmallVector<int> instrShape, SmallVector<int> matShape,
     SmallVector<Value> multiDimWarpId, Value lane, ValueTable &vals, bool isA,
     const LLVMTypeConverter *typeConverter, ConversionPatternRewriter &rewriter,
-    Location loc, Value sliceKOffset, ArrayRef<unsigned> aiuLoad, bool shape_m8) {
+    Location loc, Value sliceKOffset, ArrayRef<unsigned> aiuLoad,
+    bool shape_m8) {
   auto shapePerCTA = getShapePerCTA(descTy);
   Type eltTy = descTy.getElementType();
   auto sharedLayout =
@@ -356,7 +359,7 @@ std::function<void(int, int, int)> getLoadMatrixFnM8(
       vals[{batch, a, b}] = ha0;
       vals[{batch, a, b + 1}] = ha1;
 
-      if(!shape_m8) {
+      if (!shape_m8) {
         int xoffset = shapePerWarpM * warpM;
         Value start_coord_x_new =
             builder.add(start_coord_x, builder.i32_val(xoffset));
@@ -395,17 +398,17 @@ std::function<void(int, int, int)> getLoadMatrixFnM8(
           Value shMemOffsetAIUWarpC =
               builder.mul(aiuWarpCopyIdxC, builder.i32_val(cubeElems));
           Value shMemOffset =
-              builder.add(shMemOffsetCopy,
-                          builder.add(shMemOffsetAIUWarpW, shMemOffsetAIUWarpC));
+              builder.add(shMemOffsetCopy, builder.add(shMemOffsetAIUWarpW,
+                                                       shMemOffsetAIUWarpC));
           smemBase = smemObj.getBase();
           smemBase =
-              builder.gep(smemObj.getBase().getType(), smemObj.getBaseElemType(),
-                          smemBase, shMemOffset);
+              builder.gep(smemObj.getBase().getType(),
+                          smemObj.getBaseElemType(), smemBase, shMemOffset);
         }
 
         auto [ha2, ha3] =
             loadX2(rewriter, loc, smemBase, start_coord_y, start_coord_x_new,
-                  cube_h, cube_w, cube_n, channel_offset, matTy, needTrans);
+                   cube_h, cube_w, cube_n, channel_offset, matTy, needTrans);
 
         vals[{batch, a + 1, b}] = ha2;
         vals[{batch, a + 1, b + 1}] = ha3;
@@ -443,7 +446,7 @@ std::function<void(int, int, int)> getLoadMatrixFnM8(
       vals[{batch, a, b + 1}] =
           arith::SelectOp::create(rewriter, loc, isEven, ha01, ha03);
 
-      if(!shape_m8) {
+      if (!shape_m8) {
         // channel offset update, different slice
         int coffset = shapePerWarpM * warpM;
         Value tileCOff = builder.add(builder.i32_val(replicaMNOff), warpOff);
@@ -455,8 +458,8 @@ std::function<void(int, int, int)> getLoadMatrixFnM8(
             builder.i32_val(elemBytes));
 
         auto [ha10, ha11, ha12, ha13] =
-            loadX4(rewriter, loc, smemBase, start_coord_y, start_coord_x, cube_h,
-                   cube_w, cube_n, channel_offset, matTy, needTrans);
+            loadX4(rewriter, loc, smemBase, start_coord_y, start_coord_x,
+                   cube_h, cube_w, cube_n, channel_offset, matTy, needTrans);
 
         vals[{batch, a + 1, b}] =
             arith::SelectOp::create(rewriter, loc, isEven, ha10, ha12);
@@ -494,7 +497,8 @@ std::function<void(int, int, int)> getLoadMatrixFn(
     Value warpMOff = builder.mul(warpIdxM, builder.i32_val(shapePerWarpM));
     Value warpNOff = builder.mul(warpIdxN, builder.i32_val(shapePerWarpN));
     Value warpOff = warpMOff;
-    if(!isA) warpOff = warpNOff;
+    if (!isA)
+      warpOff = warpNOff;
 
     unsigned cubeC = aiuLoad[0];
     unsigned cubeW = aiuLoad[1];

@@ -21,6 +21,7 @@ import triton.language as tl
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
+
 def is_hip():
     return triton.runtime.driver.active.get_current_target().backend == "hip"
 
@@ -315,6 +316,7 @@ configs_bwd = [
     for s in [2, 3, 4, 7]
     for w in [4, 8]
 ]
+
 
 @triton.autotune(list(configs_bwd), key=["N_CTX", "HEAD_DIM"])
 @triton.jit(ppu_hint='bwd')

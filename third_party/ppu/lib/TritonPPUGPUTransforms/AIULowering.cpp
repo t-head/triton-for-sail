@@ -22,8 +22,8 @@
  */
 
 #include "Dialect/TritonPPUGPU/IR/Dialect.h"
-#include "TritonPPUGPUTransforms/Passes.h"
 #include "TritonPPUGPUToLLVM/AIUUtility.h"
+#include "TritonPPUGPUTransforms/Passes.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -83,9 +83,8 @@ public:
                          encoding, sharedMemorySpace, /*mutableMemory=*/true);
     Value alloc = LocalAllocOp::create(rewriter, loc, memDescType, Value());
 
-    Operation *copy =
-        triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp::create(
-            rewriter, loc, op.getSrcPtr(), op.getIndices(), op.getShape(), alloc);
+    Operation *copy = triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp::create(
+        rewriter, loc, op.getSrcPtr(), op.getIndices(), op.getShape(), alloc);
 
     Value Zero = arith::ConstantIntOp::create(rewriter, loc, 0, 0);
 
@@ -120,8 +119,8 @@ public:
 
     bool encounteredInvalidLoad = false;
     mlir::RewritePatternSet patterns(context);
-    patterns.add<mlir::triton::gpu::AIULoadLowering>(
-        context, &encounteredInvalidLoad);
+    patterns.add<mlir::triton::gpu::AIULoadLowering>(context,
+                                                     &encounteredInvalidLoad);
     if (applyPatternsGreedily(m, std::move(patterns)).failed() ||
         encounteredInvalidLoad)
       signalPassFailure();

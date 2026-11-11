@@ -1922,12 +1922,11 @@ class _block_ptr:
                 non_contiguous_extent = _unwrap_if_constexpr(self.block_shape[non_contiguous_dim])
                 contiguous_shape = original_shape[contiguous_dim]
                 non_contiguous_stride = original_strides[non_contiguous_dim]
-                promote_use_aiu = (
-                    isinstance(contiguous_stride, int) and contiguous_stride == 1 and elem_size == 2
-                    and contiguous_extent * elem_size >= 32 and non_contiguous_extent % 16 == 0
-                    and isinstance(contiguous_shape, int) and isinstance(non_contiguous_stride, int)
-                    and contiguous_shape == non_contiguous_stride and not _unwrap_if_constexpr(_base_ptr_changed)
-                )
+                promote_use_aiu = (isinstance(contiguous_stride, int) and contiguous_stride == 1 and elem_size == 2
+                                   and contiguous_extent * elem_size >= 32 and non_contiguous_extent % 16 == 0
+                                   and isinstance(contiguous_shape, int) and isinstance(non_contiguous_stride, int)
+                                   and contiguous_shape == non_contiguous_stride
+                                   and not _unwrap_if_constexpr(_base_ptr_changed))
             if os.getenv("PPU_DISABLE_AIU_PROMOTION", "").upper() in {"ON", "1", "YES", "TRUE", "Y"}:
                 promote_use_aiu = False
         else:
@@ -1979,8 +1978,8 @@ class _block_ptr:
         checked_dims = _canonicalize_block_ptr_boundary_check(boundary_check, len(self.block_shape))
         if self._is_aiu.value and not checked_dims and padding_option == "" and not volatile:
             result_type = block_type(self.base.type.element_ty, self._tile_shape())
-            return _semantic.aiu_load(self.base, self.offsets, self.shape, self.order, cache_modifier,
-                                      eviction_policy, result_type)
+            return _semantic.aiu_load(self.base, self.offsets, self.shape, self.order, cache_modifier, eviction_policy,
+                                      result_type)
         ptrs, mask = self._materialize(boundary_check, _semantic=_semantic)
 
         if padding_option == "":
@@ -2596,8 +2595,8 @@ def _normalize_cache_policy(cache_policy, cache_modifier, eviction_policy):
 
 
 @builtin
-def load(pointer, mask=None, other=None, *, boundary_check=(), padding_option="", cache_modifier="",
-         eviction_policy="", volatile=False, _semantic=None):
+def load(pointer, mask=None, other=None, *, boundary_check=(), padding_option="", cache_modifier="", eviction_policy="",
+         volatile=False, _semantic=None):
     """
     Return a tensor of data whose values are loaded from memory at location defined by `pointer`:
 

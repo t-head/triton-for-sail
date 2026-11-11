@@ -538,14 +538,15 @@ void init_gluon_ir(py::module_ &m) {
                                         py::cast(shapeVec));
              return pyObj;
            })
-      .def("get_dot_operand_layout",
-           [](GluonOpBuilder &self, unsigned opIdx, Attribute parent,
-              unsigned kWidth, bool isChained) -> Attribute {
-             return self.getChecked<ttg::DotOperandEncodingAttr>(
-                 self.getContext(), opIdx, parent, kWidth, isChained);
-           },
-           py::arg("opIdx"), py::arg("parent"), py::arg("kWidth"),
-           py::arg("isChained") = false)
+      .def(
+          "get_dot_operand_layout",
+          [](GluonOpBuilder &self, unsigned opIdx, Attribute parent,
+             unsigned kWidth, bool isChained) -> Attribute {
+            return self.getChecked<ttg::DotOperandEncodingAttr>(
+                self.getContext(), opIdx, parent, kWidth, isChained);
+          },
+          py::arg("opIdx"), py::arg("parent"), py::arg("kWidth"),
+          py::arg("isChained") = false)
       .def("get_mma_layout",
            [](GluonOpBuilder &self, std::vector<unsigned> &version,
               std::vector<unsigned> &warpsPerCta,

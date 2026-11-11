@@ -911,11 +911,9 @@ class JITFunction(JITCallable, KernelInterface[T]):
             cache_dir = os.path.join(cache_root, dir_name)
             if not os.path.exists(cache_dir):
                 constexpr_str = ", ".join(f"{k}={v!r}" for k, v in constexprs.items())
-                print(
-                    f"[TRITON JIT] kernel={self.__qualname__}"
-                    f" | constexprs={constexpr_str}"
-                    f" | cache={cache_dir}"
-                )
+                print(f"[TRITON JIT] kernel={self.__qualname__}"
+                      f" | constexprs={constexpr_str}"
+                      f" | cache={cache_dir}")
 
         if async_mode is not None:
             # move to upwards

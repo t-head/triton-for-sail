@@ -68,7 +68,8 @@ struct ConvertLibdeviceFuncToPPU
         return;
       std::string newName =
           (kNewPrefix + name.drop_front(kOldPrefix.size())).str();
-      cvtMap[name] = StringAttr::get(ctx, newName); // collect functions to convert
+      cvtMap[name] =
+          StringAttr::get(ctx, newName); // collect functions to convert
       if (existingNames.count(newName)) {
         duplicates.push_back(funcOp); // __ppu_ counterpart already exists
       } else {

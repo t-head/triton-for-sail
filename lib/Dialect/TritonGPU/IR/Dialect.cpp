@@ -1676,8 +1676,8 @@ Attribute PPUMmaEncodingAttr::parse(AsmParser &parser, Type type) {
 void PPUMmaEncodingAttr::print(AsmPrinter &printer) const {
   printer << "<{"
           << "versionMajor = " << getVersionMajor()
-          << ", versionMinor = " << getVersionMinor()
-          << ", warpsPerCTA = [" << ArrayRef(getWarpsPerCTA()) << "]";
+          << ", versionMinor = " << getVersionMinor() << ", warpsPerCTA = ["
+          << ArrayRef(getWarpsPerCTA()) << "]";
 
   maybePrintCGALayout(printer, getCGALayout());
 
@@ -3117,7 +3117,7 @@ PPUMmaEncodingAttr::getRepOrderForOperand(int opIdx) const {
 
 SmallVector<int64_t>
 PPUMmaEncodingAttr::getRepForOperand(ArrayRef<int64_t> shape, int bitwidth,
-                                        int kWidth, int opIdx) const {
+                                     int kWidth, int opIdx) const {
   assert(kWidth >= std::max(32 / bitwidth, 1) &&
          "kWidth must be >= max(32 / bitwidth, 1) for this function to be "
          "well-defined");

@@ -110,8 +110,7 @@ Attribute getExpandedEncoding(Attribute encoding) {
     auto expandedInstrShape = insertValue<unsigned>(instrShape, 0, 1);
     auto expandedMmaEncoding = PPUMmaEncodingAttr::get(
         ctx, mmaEncoding.getVersionMajor(), mmaEncoding.getVersionMinor(),
-        expandedWarpsPerCTA, mmaEncoding.getCGALayout(), expandedInstrShape,
-        2);
+        expandedWarpsPerCTA, mmaEncoding.getCGALayout(), expandedInstrShape, 2);
     return expandedMmaEncoding;
   } else if (auto dotOperandEncoding =
                  mlir::dyn_cast<DotOperandEncodingAttr>(encoding)) {
@@ -264,10 +263,9 @@ DenseMap<unsigned, Value> getPPUAIUV1SwizzledSharedPtrs(
     Value rowSwizzleID = b.udiv(idxRowInnerCube, b.i32_val(4));
     // new linear slice index inside slice, slice shape is (cubeW/4,
     // 4*sliceElems)
-    Value idxColSlicelinear =
-        b.urem(b.add(b.mul(idxRowInnerCube, b.i32_val(sliceElems)),
-                     idxColInnerSlice),
-               b.i32_val(4 * sliceElems));
+    Value idxColSlicelinear = b.urem(
+        b.add(b.mul(idxRowInnerCube, b.i32_val(sliceElems)), idxColInnerSlice),
+        b.i32_val(4 * sliceElems));
     // new column slice ID, vec=outVec
     Value colSliceID = b.udiv(idxColSlicelinear, b.i32_val(outVec));
 
@@ -435,8 +433,8 @@ DenseMap<unsigned, Value> getAIUSwizzledSharedPtrs(
   } else {
     assert(resSharedLayout.isPPU0015());
     return getPPUAIUV2SwizzledSharedPtrs(loc, target, inVec, srcTy, memTy,
-                                      resSharedLayout, resElemTy, smemObj,
-                                      rewriter, offsetVals);
+                                         resSharedLayout, resElemTy, smemObj,
+                                         rewriter, offsetVals);
   }
 }
 

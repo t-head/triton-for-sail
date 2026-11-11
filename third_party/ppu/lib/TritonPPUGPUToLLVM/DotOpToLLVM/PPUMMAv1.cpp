@@ -61,9 +61,8 @@ Value loadC(Value tensor, Value llTensor,
   // rebuild has to use; the MLIR element type is not necessarily the same.
   auto llElemTy =
       cast<LLVM::LLVMStructType>(llTensor.getType()).getBody().front();
-  bool expanded = fcSize != cast<LLVM::LLVMStructType>(llTensor.getType())
-                                .getBody()
-                                .size();
+  bool expanded =
+      fcSize != cast<LLVM::LLVMStructType>(llTensor.getType()).getBody().size();
 
   auto numMmaRets = cElemTy.getIntOrFloatBitWidth() / 4;
   assert(numMmaRets == 8 || numMmaRets == 4);
@@ -408,12 +407,12 @@ inline static const std::map<TensorCoreType, std::string> mmaInstrTix = {
 };
 
 static void callMmaV1(mlir::triton::ppu::TIXBuilder &builder, int b, int m,
-                         int n, int k, mlir::triton::ppu::TIXInstr &mma,
-                         unsigned numMmaRets, unsigned colsPerThread,
-                         int numCPackedElem, unsigned batchOffset,
-                         ValueTableV2 &ha, ValueTableV2 &hb,
-                         const SmallVector<Value> &fc, bool isAccF16,
-                         bool isIntMMA) {
+                      int n, int k, mlir::triton::ppu::TIXInstr &mma,
+                      unsigned numMmaRets, unsigned colsPerThread,
+                      int numCPackedElem, unsigned batchOffset,
+                      ValueTableV2 &ha, ValueTableV2 &hb,
+                      const SmallVector<Value> &fc, bool isAccF16,
+                      bool isIntMMA) {
   auto retArgs =
       builder.newListOperand(numMmaRets, isIntMMA || isAccF16 ? "=r" : "=f");
   auto cArgs = builder.newListOperand();
@@ -504,7 +503,7 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
     bool isAccF16 = dTensorTy.getElementType().isF16();
 
     callMmaV1(builder, b, m, n, k, mma, numMmaRets, colsPerThread,
-                 numCPackedElem, batchOffset, ha, hb, fc, isAccF16, isIntMMA);
+              numCPackedElem, batchOffset, ha, hb, fc, isAccF16, isIntMMA);
 
     Value mmaOut =
         builder.launch(rewriter, loc, getMmaRetType(mmaType, op.getContext()));
@@ -573,9 +572,8 @@ LogicalResult convertMMA(triton::DotOp op, triton::DotOp::Adaptor adaptor,
 } // namespace
 
 // Convert to mma.m16n16k16
-LogicalResult convertPPUMmaV1(triton::DotOp op,
-                                  triton::DotOp::Adaptor adaptor,
-                                  const LLVMTypeConverter *typeConverter,
-                                  ConversionPatternRewriter &rewriter) {
+LogicalResult convertPPUMmaV1(triton::DotOp op, triton::DotOp::Adaptor adaptor,
+                              const LLVMTypeConverter *typeConverter,
+                              ConversionPatternRewriter &rewriter) {
   return convertMMA(op, adaptor, typeConverter, rewriter);
 }

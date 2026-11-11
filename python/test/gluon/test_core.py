@@ -5026,8 +5026,7 @@ def test_shared_atomic_scatter_rmw(op, init_value, use_mask, torch_dtype, gluon_
     ],
 )
 def test_shared_atomic_scatter_rmw_extended_types(op, init_value, torch_dtype, gluon_dtype):
-    test_shared_atomic_scatter_rmw(
-        op, init_value, False, torch_dtype, gluon_dtype, False, 16, 32, 1, (16, 2))
+    test_shared_atomic_scatter_rmw(op, init_value, False, torch_dtype, gluon_dtype, False, 16, 32, 1, (16, 2))
 
 
 @gluon.jit
@@ -5115,14 +5114,14 @@ def test_shared_atomic_scatter_rmw_unused_result_codegen():
     shared_layout = ttgl.SwizzledSharedLayout(vec=1, per_phase=1, max_phase=1, order=[0])
     values = torch.arange(1, 33, dtype=torch.int32, device="cuda")
     indices = torch.arange(32, dtype=torch.int32, device="cuda")
-    out = torch.empty((64,), dtype=torch.int32, device="cuda")
-    add = shared_atomic_unused_result_kernel[(1, )](
-        values, indices, out, op="add", layout=layout, shared_layout=shared_layout, num_warps=1)
+    out = torch.empty((64, ), dtype=torch.int32, device="cuda")
+    add = shared_atomic_unused_result_kernel[(1, )](values, indices, out, op="add", layout=layout,
+                                                    shared_layout=shared_layout, num_warps=1)
     torch.testing.assert_close(out[32:], values, atol=0, rtol=0)
     if is_ppu():
         assert "ppu.red.shared.cta.relaxed.add.u32" in add.asm["llir"]
-    xchg = shared_atomic_unused_result_kernel[(1, )](
-        values, indices, out, op="xchg", layout=layout, shared_layout=shared_layout, num_warps=1)
+    xchg = shared_atomic_unused_result_kernel[(1, )](values, indices, out, op="xchg", layout=layout,
+                                                     shared_layout=shared_layout, num_warps=1)
     if is_ppu():
         assert "ppu.atom.shared.cta.relaxed.exch.b32" in xchg.asm["llir"]
 

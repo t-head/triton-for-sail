@@ -21,10 +21,10 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "TritonPPUGPUToLLVM/AIUUtility.h"
 #include "Dialect/PPUGPU/IR/Dialect.h"
 #include "PatternTritonGPUOpToLLVM.h"
 #include "TargetInfo.h"
+#include "TritonPPUGPUToLLVM/AIUUtility.h"
 #include "Utility.h"
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
@@ -141,8 +141,10 @@ LogicalResult lowerPPULdMatrix(
     if (mmaEncoding && (mmaEncoding.isPPU0010() || mmaEncoding.isPPU0015())) {
       isPPU0010 = mmaEncoding.isPPU0010();
       isPPU0015 = mmaEncoding.isPPU0015();
-      useM8MMA = mmaEncoding.getInstrShape().size() >= 2 &&
-                  mmaEncoding.getInstrShape()[mmaEncoding.getInstrShape().size() - 2] == 8;
+      useM8MMA =
+          mmaEncoding.getInstrShape().size() >= 2 &&
+          mmaEncoding.getInstrShape()[mmaEncoding.getInstrShape().size() - 2] ==
+              8;
     }
   }
   if (!isPPU0010 && !isPPU0015)
@@ -196,8 +198,8 @@ LogicalResult lowerPPULdMatrix(
       (transpose && bitwidth != 16 && bitwidth != 8))
     return failure();
 
-  bool Opb8bLdmatrix =
-      isPPU0010 && !useM8MMA && bitwidth == 8 && dotEnc.getOpIdx() == 1 && transpose;
+  bool Opb8bLdmatrix = isPPU0010 && !useM8MMA && bitwidth == 8 &&
+                       dotEnc.getOpIdx() == 1 && transpose;
   if (bitwidth == 8 && transpose && !Opb8bLdmatrix)
     return failure();
 
@@ -533,7 +535,8 @@ public:
     if (auto sharedEnc = cast<PPUAIUSharedEncodingAttr>(srcTy.getEncoding())) {
       auto aiuLoad = sharedEnc.getAIUStrategy();
       auto instrShape = mmaEncoding.getInstrShape();
-      bool isM8MMA = instrShape.size() >= 2 && instrShape[instrShape.size() - 2] == 8;
+      bool isM8MMA =
+          instrShape.size() >= 2 && instrShape[instrShape.size() - 2] == 8;
       if (mmaEncoding.isPPU0010() && !isM8MMA) {
         res = SharedToDotOperandPPUAIUV1::convertLayout(
             dotEnc.getOpIdx(), rewriter, loc, src, dotEnc, smemObj,
@@ -767,8 +770,7 @@ static FailureOr<Value> emitSharedAtomicRMW(ConversionPatternRewriter &rewriter,
     auto &red = *tixBuilder.create("ppu.red");
     red.shared().o("cta").o(semStr).o(opStr).o(tyStr);
     red(ptrOpr, valOpr).maybePredicate(pred);
-    return tixBuilder.launch(rewriter, loc,
-                             void_ty(rewriter.getContext()));
+    return tixBuilder.launch(rewriter, loc, void_ty(rewriter.getContext()));
   }
 
   // The output operand must be created before the inputs: inline asm requires
@@ -789,7 +791,7 @@ struct LocalAtomicScatterRMWOpConversion
                                     const ppu::TargetInfo &targetInfo,
                                     PatternBenefit benefit = 1)
       : ConvertOpToLLVMPattern<triton::gpu::LocalAtomicScatterRMWOp>(converter,
-                                                                    benefit),
+                                                                     benefit),
         targetInfo(targetInfo) {}
 
   LogicalResult

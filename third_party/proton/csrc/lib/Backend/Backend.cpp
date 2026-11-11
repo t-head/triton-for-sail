@@ -1,15 +1,15 @@
 #include "Backend/Backend.h"
 #include "Driver/GPU/CudaApi.h"
-#include "Driver/GPU/HipApi.h"
 #include "Driver/GPU/HggcApi.h"
+#include "Driver/GPU/HipApi.h"
 #include "Profiler/Cupti/CuptiProfiler.h"
+#include "Profiler/Hgpti/HgptiProfiler.h"
 #include "Profiler/Instrumentation/InstrumentationProfiler.h"
 #include "Profiler/RocprofSDK/RocprofSDKProfiler.h"
 #include "Profiler/Roctracer/RoctracerProfiler.h"
-#include "Profiler/Hgpti/HgptiProfiler.h"
 #include "Runtime/CudaRuntime.h"
-#include "Runtime/HipRuntime.h"
 #include "Runtime/HggcRuntime.h"
+#include "Runtime/HipRuntime.h"
 #include <vector>
 
 namespace proton {

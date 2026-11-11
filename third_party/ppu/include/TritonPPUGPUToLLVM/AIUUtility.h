@@ -106,8 +106,7 @@ AIULoadStrategy(unsigned numWarps, unsigned xElems, unsigned channelElems,
     if (cubeW > maxCubeW)
       return failure();
     unsigned cubeC = numSlice * sliceByte / elemBytes;
-    return llvm::SmallVector<unsigned>{cubeC, cubeW, warpC, warpW,
-                                       numSlice};
+    return llvm::SmallVector<unsigned>{cubeC, cubeW, warpC, warpW, numSlice};
   }
 
   if (version == 2) {
@@ -117,9 +116,8 @@ AIULoadStrategy(unsigned numWarps, unsigned xElems, unsigned channelElems,
 
     unsigned swizzledBytes = channelElems * elemBytes <= 64 ? 64 : 128;
     unsigned channelBytes = elemBytes * channelElems;
-    unsigned cubeC = channelBytes < swizzledBytes
-                         ? channelElems
-                         : swizzledBytes / elemBytes;
+    unsigned cubeC =
+        channelBytes < swizzledBytes ? channelElems : swizzledBytes / elemBytes;
     unsigned warpCMax = (channelElems + cubeC - 1) / cubeC;
     unsigned warpC = std::min<unsigned>(numWarps, warpCMax);
     unsigned warpWMax = xElems / minXElems;

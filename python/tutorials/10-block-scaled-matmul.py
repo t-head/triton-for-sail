@@ -141,11 +141,8 @@ def is_hip_cdna4():
 
 
 def supports_block_scaling():
-    return (
-        (is_cuda() and torch.cuda.get_device_capability()[0] in [10, 11])
-        or is_hip_cdna4()
-        or (is_ppu() and torch.cuda.get_device_capability() == (8, 9))
-    )
+    return ((is_cuda() and torch.cuda.get_device_capability()[0] in [10, 11]) or is_hip_cdna4()
+            or (is_ppu() and torch.cuda.get_device_capability() == (8, 9)))
 
 
 def is_rubin():

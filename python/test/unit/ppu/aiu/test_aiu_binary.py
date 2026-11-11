@@ -88,9 +88,8 @@ def test_aiu_binary(op, num_stages, M, K, BLOCK_M, BLOCK_K, num_warps, mixed_loa
 
     C_ref = eval(f"A_ref {op} B_ref")
 
-    kernel[(triton.cdiv(M, BLOCK_M) * triton.cdiv(K, BLOCK_K), 1, 1)](
-        A, B, C, M, K, BLOCK_M, BLOCK_K, num_warps=num_warps, num_stages=num_stages
-    )
+    kernel[(triton.cdiv(M, BLOCK_M) * triton.cdiv(K, BLOCK_K), 1, 1)](A, B, C, M, K, BLOCK_M, BLOCK_K,
+                                                                      num_warps=num_warps, num_stages=num_stages)
 
     torch.testing.assert_close(C, C_ref, rtol=1e-3, atol=1e-3)
 

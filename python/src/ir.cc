@@ -1632,9 +1632,8 @@ void init_triton_ir(py::module_ &m) {
              self.create<DescriptorScatterOp>(desc, x_indices, y_index, value);
            })
       .def("create_aiu_load",
-           [](TritonOpBuilder &self, Value &ptr,
-              std::vector<Value> &indices, std::vector<Value> &shape,
-              std::vector<int32_t> &order, Type type,
+           [](TritonOpBuilder &self, Value &ptr, std::vector<Value> &indices,
+              std::vector<Value> &shape, std::vector<int32_t> &order, Type type,
               CacheModifier cacheModifier,
               EvictionPolicy evictionPolicy) -> Value {
              return self.create<AIULoadOp>(type, ptr, indices, shape, order,
