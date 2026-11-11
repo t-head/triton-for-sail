@@ -1,7 +1,7 @@
 import ctypes
 import matplotlib.pyplot as plt
 import triton
-from triton._C.libtriton import nvidia, amd
+from triton._C.libtriton import nvidia, amd, ppu
 import torch
 import csv
 from dataclasses import dataclass
@@ -136,11 +136,16 @@ def get_memset_tbps():
 
 def get_blas_tflops(dtype, workspace_size=32 * 1024 * 1024, device="cuda"):
     workspace = torch.empty(workspace_size, device=device, dtype=torch.uint8)
-    if is_cuda() or is_ppu():
+    if is_cuda():
         dtype = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp8": torch.float8_e4m3fn}[dtype]
         c_dtype = dtype
         cublas = nvidia.cublas.CublasLt(workspace)
         bench_fn = cublas.matmul
+    elif is_ppu():
+        dtype = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp8": torch.float8_e4m3fn}[dtype]
+        c_dtype = dtype
+        acblas = ppu.acblas.AcblasLt(workspace)
+        bench_fn = acblas.matmul
     elif is_hip():
         cdna_version = get_cdna_version()
         if cdna_version == 4:
