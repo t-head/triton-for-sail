@@ -219,6 +219,8 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
                 "--deselect", "python/triton_kernels/tests/test_matmul.py::test_op[None-False-False-True-False-None-16-768-512-1024-batched-float8_e5m2-float8_e5m2-None-10-5-False-False-False-False-None-False-False-False-True-None]",
                 "--deselect", "python/triton_kernels/tests/test_matmul.py::test_op[None-False-True-True-True-None-128-768-512-1024-batched-float8_e5m2-float8_e5m2-None-10-5-False-False-False-False-None-False-False-False-True-None]",
                 "--deselect", "python/triton_kernels/tests/test_matmul.py::test_op[None-False-False-True-True-None-16-768-512-1024-batched-float8_e5m2-float8_e5m2-None-10-5-False-False-False-False-None-False-False-False-True-None]",
+                # Import isolation is excluded in this kernel-dependent CI environment.
+                "--deselect", "python/triton_kernels/tests/test_tensor.py::test_import_does_not_initialize_cuda",
             ],
         ),
         # ------------------------ test-proton ----------------------
