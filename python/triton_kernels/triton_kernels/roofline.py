@@ -89,10 +89,17 @@ def get_memset_tbps():
     buf = torch.empty(n_bytes, device="cuda", dtype=torch.uint8)
     stream0 = ctypes.c_void_p(0)
 
-    if is_cuda() or is_ppu():
+    if is_cuda():
         libname = "libcuda.so"
         init_name = "cuInit"
         memset_name = "cuMemsetD8Async"
+        memset_argtypes = [ctypes.c_uint64, ctypes.c_ubyte, ctypes.c_size_t, ctypes.c_void_p]
+        dptr = ctypes.c_uint64(buf.data_ptr())
+        value = ctypes.c_ubyte(0)
+    elif is_ppu():
+        libname = "libhggc.so"
+        init_name = "hgInit"
+        memset_name = "hgMemsetD8Async"
         memset_argtypes = [ctypes.c_uint64, ctypes.c_ubyte, ctypes.c_size_t, ctypes.c_void_p]
         dptr = ctypes.c_uint64(buf.data_ptr())
         value = ctypes.c_ubyte(0)
