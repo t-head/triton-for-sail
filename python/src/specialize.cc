@@ -649,8 +649,9 @@ bool visit_make_tensordesc_args(PyObject *arg, PyObject *sig,
     return false;
   }
   if (!PyDict_Check(relevant_paths)) {
-    PyErr_SetString(PyExc_TypeError,
-                    "make_tensordesc_args expected relevant_paths to be a dict");
+    PyErr_SetString(
+        PyExc_TypeError,
+        "make_tensordesc_args expected relevant_paths to be a dict");
     return false;
   }
 
@@ -740,10 +741,10 @@ bool visit_make_tensordesc_args(PyObject *arg, PyObject *sig,
     auto inner_res = from_new_ref(PyList_New(0));
     if (!inner_res)
       return false;
-    if (!visit_make_tensordesc_args(
-            a, s, inner_relevant_paths.ptr(), tensordesc_meta,
-            has_tensordesc_meta, base_args, make_tensordesc_arg,
-            tensordesc_idx, inner_res.ptr()))
+    if (!visit_make_tensordesc_args(a, s, inner_relevant_paths.ptr(),
+                                    tensordesc_meta, has_tensordesc_meta,
+                                    base_args, make_tensordesc_arg,
+                                    tensordesc_idx, inner_res.ptr()))
       return false;
 
     auto inner_tuple = from_new_ref(PyList_AsTuple(inner_res.ptr()));

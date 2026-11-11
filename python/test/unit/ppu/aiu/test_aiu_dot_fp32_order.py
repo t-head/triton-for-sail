@@ -9,11 +9,18 @@ from triton._internal_testing import to_numpy, is_ppu
 
 @triton.jit
 def matmul_kernel(
-    A_ptr, B_ptr, C_ptr,
-    M, N, K,
-    stride_am, stride_ak,
-    stride_bk, stride_bn,
-    stride_cm, stride_cn,
+    A_ptr,
+    B_ptr,
+    C_ptr,
+    M,
+    N,
+    K,
+    stride_am,
+    stride_ak,
+    stride_bk,
+    stride_bn,
+    stride_cm,
+    stride_cn,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
@@ -41,14 +48,8 @@ def matmul_kernel(
 
 
 @triton.jit
-def matmul_kernel_aiu_fp32_order(A_ptr, B_ptr, C_ptr,
-                                M, N, K,
-                                stride_am, stride_ak,
-                                stride_bk, stride_bn,
-                                stride_cm, stride_cn,
-                                BLOCK_M: tl.constexpr,
-                                BLOCK_N: tl.constexpr,
-                                BLOCK_K: tl.constexpr):
+def matmul_kernel_aiu_fp32_order(A_ptr, B_ptr, C_ptr, M, N, K, stride_am, stride_ak, stride_bk, stride_bn, stride_cm,
+                                 stride_cn, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr):
 
     pid = tl.program_id(axis=0)
     num_pid_m = tl.cdiv(M, BLOCK_M)
@@ -63,7 +64,7 @@ def matmul_kernel_aiu_fp32_order(A_ptr, B_ptr, C_ptr,
 
     for k in range(0, tl.cdiv(K, BLOCK_K)):
         # A: row-major (1, 0)
-        a = tl.aiu_load(A_ptr, (offs_am, offs_k), (BLOCK_M, BLOCK_K), (M, K), tl.float32,(1, 0))
+        a = tl.aiu_load(A_ptr, (offs_am, offs_k), (BLOCK_M, BLOCK_K), (M, K), tl.float32, (1, 0))
         # B: column-major (0, 1)
         b = tl.aiu_load(B_ptr, (offs_k, offs_bn), (BLOCK_K, BLOCK_N), (K, N), tl.float32, (0, 1))
         accumulator = tl.dot(a, b, acc=accumulator)
@@ -75,13 +76,14 @@ def matmul_kernel_aiu_fp32_order(A_ptr, B_ptr, C_ptr,
     c_mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
     tl.store(c_ptrs, accumulator, mask=c_mask)
 
+
 @pytest.mark.parametrize("num_stages", [2, 3, 4, 5])
 @pytest.mark.parametrize("num_warps", [2, 4, 8])
 @pytest.mark.parametrize("M, N, K", [(512, 512, 512)])
 @pytest.mark.parametrize(
     "BLOCK_M, BLOCK_N, BLOCK_K",
-    [(32, 32, 32), (32, 64, 256), (64, 256, 32), (256, 32, 128), (128, 32, 64), (32, 256, 64),
-     (64, 128, 256), (256, 128, 32), (128, 64, 32), (32, 128, 128), (64, 32, 64)],
+    [(32, 32, 32), (32, 64, 256), (64, 256, 32), (256, 32, 128), (128, 32, 64), (32, 256, 64), (64, 128, 256),
+     (256, 128, 32), (128, 64, 32), (32, 128, 128), (64, 32, 64)],
 )
 @pytest.mark.parametrize("m8_mma", [0, 1])
 def test_aiu_matmul_fp32_with_order(monkeypatch, num_stages, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, num_warps, m8_mma):
@@ -104,18 +106,9 @@ def test_aiu_matmul_fp32_with_order(monkeypatch, num_stages, M, N, K, BLOCK_M, B
     C_ref = torch.matmul(A, B.T)
 
     grid = (triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N), 1, 1)
-    matmul_kernel_aiu_fp32_order[grid](
-        A, B, C_tri,
-        M, N, K,
-        A.stride(0), A.stride(1),
-        B.stride(0), B.stride(1),
-        C_tri.stride(0), C_tri.stride(1),
-        BLOCK_M=BLOCK_M,
-        BLOCK_N=BLOCK_N,
-        BLOCK_K=BLOCK_K,
-        num_warps=num_warps,
-        num_stages=num_stages
-    )
+    matmul_kernel_aiu_fp32_order[grid](A, B, C_tri, M, N, K, A.stride(0), A.stride(1), B.stride(0), B.stride(1),
+                                       C_tri.stride(0), C_tri.stride(1), BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N,
+                                       BLOCK_K=BLOCK_K, num_warps=num_warps, num_stages=num_stages)
 
     max_diff = (C_tri - C_ref).abs().max().item()
     torch.set_printoptions(sci_mode=False, precision=6)

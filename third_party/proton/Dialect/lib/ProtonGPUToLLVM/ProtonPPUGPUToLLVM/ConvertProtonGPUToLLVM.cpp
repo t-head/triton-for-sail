@@ -62,7 +62,7 @@ struct ConvertProtonPPUGPUToLLVM
     TritonGPUToLLVMTypeConverter typeConverter(context, option,
                                                tritonTargetInfo);
     mlir::triton::proton::gpu::populateTypeConversions(typeConverter,
-                                                        protonTargetInfo);
+                                                       protonTargetInfo);
     mlir::triton::proton::gpu::populateProtonGPUOpPatterns(
         typeConverter, patterns, protonTargetInfo, 1);
     mlir::triton::proton::gpu::PPU::populateProtonGPUOpPPUPatterns(

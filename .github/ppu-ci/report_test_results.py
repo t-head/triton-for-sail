@@ -35,10 +35,10 @@ import xml.etree.ElementTree as ET
 # room for the warning footer and any UTF-8 expansion.
 _MAX_SUMMARY_BYTES = 900 * 1024
 
-
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
+
 
 def _parse_xml(xml_path):
     """Parse a JUnit XML and return (testcases_list, stats_dict) or None."""
@@ -92,16 +92,14 @@ def _parse_xml(xml_path):
             status = "skip"
         else:
             status = "pass"
-        testcases.append(
-            {
-                "name": tc.get("name", "unknown"),
-                "classname": tc.get("classname", ""),
-                "time": tc.get("time", "?"),
-                "status": status,
-                "message": msg,
-                "full_message": full_msg,
-            }
-        )
+        testcases.append({
+            "name": tc.get("name", "unknown"),
+            "classname": tc.get("classname", ""),
+            "time": tc.get("time", "?"),
+            "status": status,
+            "message": msg,
+            "full_message": full_msg,
+        })
     return testcases, stats
 
 
@@ -179,7 +177,9 @@ def _print_file_summary_table(testcases):
     print("|------|---------|---------|---------|-------|------|")
     for file_key, stats in aggregated:
         fail_cell = f"**{stats['fail']}**" if stats["fail"] > 0 else str(stats["fail"])
-        print(f"| `{file_key}` | {stats['pass']} | {fail_cell} | {stats['skip']} | {stats['total']} | {stats['time']:.1f}s |")
+        print(
+            f"| `{file_key}` | {stats['pass']} | {fail_cell} | {stats['skip']} | {stats['total']} | {stats['time']:.1f}s |"
+        )
     print()
     print("</details>")
     print()
@@ -188,6 +188,7 @@ def _print_file_summary_table(testcases):
 # ---------------------------------------------------------------------------
 # Mode A — single-board report  (--xml)
 # ---------------------------------------------------------------------------
+
 
 def _report_single_board(args):
     """Generate Markdown report from a single JUnit XML.  Returns 0/1."""
@@ -293,6 +294,7 @@ def _report_single_board(args):
 # Mode B — combined multi-board report  (--result-root)
 # ---------------------------------------------------------------------------
 
+
 def _parse_boards_arg(raw):
     """Parse --boards value: JSON array string or comma-separated list."""
     if not raw or not raw.strip():
@@ -328,11 +330,7 @@ def _report_combined(args):
     # Discover boards from filesystem
     discovered = []
     if os.path.isdir(root_dir):
-        discovered = sorted(
-            d
-            for d in os.listdir(root_dir)
-            if os.path.isdir(os.path.join(root_dir, d))
-        )
+        discovered = sorted(d for d in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, d)))
 
     # Build union: expected (order preserved) + any discovered-but-unexpected
     if expected_boards:
@@ -347,7 +345,9 @@ def _report_combined(args):
 
     # Edge case: nothing at all
     if not boards:
-        print(f"> ⚠️ No board results found under `{root_dir}` — all jobs may have failed during setup. Check the per-board job logs.")
+        print(
+            f"> ⚠️ No board results found under `{root_dir}` — all jobs may have failed during setup. Check the per-board job logs."
+        )
         return 0
 
     # Pre-parse all boards
@@ -360,7 +360,9 @@ def _report_combined(args):
     boards_with_results = sum(1 for b in boards if board_data[b] is not None)
     total_boards = len(boards)
     if boards_with_results == 0:
-        print("> \U0001f534 **No test results were produced by any board — all jobs likely failed during environment setup.**")
+        print(
+            "> \U0001f534 **No test results were produced by any board — all jobs likely failed during environment setup.**"
+        )
         print()
     elif boards_with_results < total_boards:
         print(f"> ⚠️ **Partial results: {boards_with_results} of {total_boards} boards produced test results.**")
@@ -377,10 +379,8 @@ def _report_combined(args):
             print(f"| {board} | ⚠️ No results (setup failed?) | | | | |")
         else:
             _, stats = parsed
-            print(
-                f"| {board} | {stats['total']} | {stats['passed']} "
-                f"| {stats['failed']} | {stats['skipped']} | {stats['time']}s |"
-            )
+            print(f"| {board} | {stats['total']} | {stats['passed']} "
+                  f"| {stats['failed']} | {stats['skipped']} | {stats['time']}s |")
     print()
 
     # Per-board detail sections
@@ -405,7 +405,9 @@ def _report_combined(args):
 
         parsed = board_data[board]
         if parsed is None:
-            print("> ⚠️ No test results were produced for this board. The job likely failed during environment setup (before tests ran). Check the pod logs in the per-board job output above.")
+            print(
+                "> ⚠️ No test results were produced for this board. The job likely failed during environment setup (before tests ran). Check the pod logs in the per-board job output above."
+            )
             print()
             continue
 
@@ -417,10 +419,8 @@ def _report_combined(args):
             print("| Test | Time | Error |")
             print("|------|------|-------|")
             for tc in failures:
-                print(
-                    f"| {tc['name']} | {tc['time']}s "
-                    f"| {_escape(tc['message'])} |"
-                )
+                print(f"| {tc['name']} | {tc['time']}s "
+                      f"| {_escape(tc['message'])} |")
             print()
             for tc in failures:
                 full = tc.get("full_message", "")
@@ -452,10 +452,10 @@ def _report_combined(args):
 # CLI entry point
 # ---------------------------------------------------------------------------
 
+
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Generate test result summary for GitHub Actions (single-board or combined)"
-    )
+        description="Generate test result summary for GitHub Actions (single-board or combined)")
     # Mode A args
     parser.add_argument("--xml", default=None, help="[Mode A] Path to JUnit XML result file")
     parser.add_argument("--job-status", default="", help="[Mode A] Job status from ppu-scheduler-action")
@@ -464,7 +464,8 @@ def parse_args():
     parser.add_argument("--docker-image", default="", help="[Mode A] Docker image used")
     parser.add_argument("--env-info", default="", help="[Mode A] Path to env info JSON file")
     # Mode B args
-    parser.add_argument("--result-root", default=None, help="[Mode B] NAS directory containing per-board subdirectories")
+    parser.add_argument("--result-root", default=None,
+                        help="[Mode B] NAS directory containing per-board subdirectories")
     parser.add_argument("--boards", default="", help="[Mode B] Expected board list: JSON array or comma-separated")
     # Shared args
     parser.add_argument("--title", default="Triton PPU Test Results", help="Report title")
@@ -487,9 +488,7 @@ def _truncate_if_needed(text):
     if cut < 0:
         cut = _MAX_SUMMARY_BYTES
     truncated = encoded[:cut].decode("utf-8", errors="ignore")
-    truncated += (
-        "\n\n> ⚠️ Report truncated to fit GitHub Step Summary size limit (1024KB).\n"
-    )
+    truncated += ("\n\n> ⚠️ Report truncated to fit GitHub Step Summary size limit (1024KB).\n")
     return truncated
 
 

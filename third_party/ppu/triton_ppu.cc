@@ -39,20 +39,19 @@ namespace py = nanobind;
 
 void init_triton_ppu_passes_ttgpuir(py::module_ &m) {
   using namespace mlir::triton;
-  m.def("add_allocate_shared_memory_ppu",
-        [](mlir::PassManager &pm, int32_t capability) {
-          pm.addPass(mlir::triton::createAllocateSharedMemoryPPUPass(
-              capability));
-        });
-  m.def("add_to_llvmir",
-        [](mlir::PassManager &pm, int32_t capability) {
-          pm.addPass(mlir::triton::createConvertTritonGPUToLLVMPPUPass(
-              capability));
-        });
-  ADD_PASS_WRAPPER_0("add_accelerate_matmul", mlir::createTritonPPUGPUAccelerateMatmul);
+  m.def("add_allocate_shared_memory_ppu", [](mlir::PassManager &pm,
+                                             int32_t capability) {
+    pm.addPass(mlir::triton::createAllocateSharedMemoryPPUPass(capability));
+  });
+  m.def("add_to_llvmir", [](mlir::PassManager &pm, int32_t capability) {
+    pm.addPass(mlir::triton::createConvertTritonGPUToLLVMPPUPass(capability));
+  });
+  ADD_PASS_WRAPPER_0("add_accelerate_matmul",
+                     mlir::createTritonPPUGPUAccelerateMatmul);
   ADD_PASS_WRAPPER_0("add_convert_libdevice_func_to_ppu",
                      mlir::triton::createConvertLibdeviceFuncToPPUPass);
-  ADD_PASS_WRAPPER_0("add_ppu_reorder_instructions", mlir::createTritonPPUGPUReorderInstructions);
+  ADD_PASS_WRAPPER_0("add_ppu_reorder_instructions",
+                     mlir::createTritonPPUGPUReorderInstructions);
 }
 
 void init_triton_ppu_passes_ttppugpuir(py::module_ &m) {

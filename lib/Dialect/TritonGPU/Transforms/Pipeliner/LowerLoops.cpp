@@ -528,8 +528,8 @@ lowerLoads(scf::ForOp forOp, CoarseSchedule &schedule,
           }
         } else {
           sharedEncoding = getSharedEncoding(&op);
-          // Do not create async loads for small loads (cp.async requires at least
-          // 4 bytes)
+          // Do not create async loads for small loads (cp.async requires at
+          // least 4 bytes)
           canUseAsyncCp =
               isa<tt::LoadOp>(op) &&
               canBeConvertedToAsyncLoad(cast<tt::LoadOp>(op), axisInfoAnalysis);
@@ -543,7 +543,7 @@ lowerLoads(scf::ForOp forOp, CoarseSchedule &schedule,
             unsigned vec = axisInfoAnalysis.getContiguity(ptr);
             if (auto mask = loadOp.getMask())
               vec = std::min<unsigned>(vec,
-                                      axisInfoAnalysis.getMaskAlignment(mask));
+                                       axisInfoAnalysis.getMaskAlignment(mask));
             contiguity = vec;
           }
         }
@@ -672,7 +672,7 @@ lowerLoads(scf::ForOp forOp, CoarseSchedule &schedule,
       hasAsyncLoads = true;
     } else if (auto loadOp = dyn_cast<tt::AIULoadOp>(op)) {
       createAIUAsyncCopy(forOp, loadOp, asyncLoad.alloc, insertIdx, extractIdx,
-                      schedule);
+                         schedule);
       hasAsyncLoads = true;
     } else if (auto loadOp = dyn_cast<tt::DescriptorLoadOp>(op)) {
       createTMAAsyncLoad(forOp, loadOp, asyncLoad.alloc, insertIdx, extractIdx,
@@ -1133,8 +1133,7 @@ LogicalResult lowerLoop(scf::ForOp forOp,
   auto loweredForOp = lowerLoads(newForOp, schedule, axisInfoAnalysis);
   if (failed(loweredForOp))
     return failure();
-  newForOp =
-      cast<scf::ForOp>(lowerTMADescriptors(*loweredForOp, schedule));
+  newForOp = cast<scf::ForOp>(lowerTMADescriptors(*loweredForOp, schedule));
   schedule.serialize(newForOp);
   return success();
 }

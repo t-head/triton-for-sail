@@ -21,7 +21,6 @@
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 
-
 #define DEBUG_TYPE "tritonppu-reorder-instructions"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
@@ -46,12 +45,12 @@ static bool willIncreaseRegisterPressure(Operation *op) {
 // Return true if it has side effects that are either unknown or writes.
 static bool hasWriteSideEffect(Operation *op) {
   auto effects = getEffectsRecursively(op);
-    if (!effects)
-      return false;
-    return llvm::any_of(*effects, [](MemoryEffects::EffectInstance effect) {
-      return !isa<MemoryEffects::Read, MemoryEffects::Allocate,
-                  MemoryEffects::Free>(effect.getEffect());
-    });
+  if (!effects)
+    return false;
+  return llvm::any_of(*effects, [](MemoryEffects::EffectInstance effect) {
+    return !isa<MemoryEffects::Read, MemoryEffects::Allocate,
+                MemoryEffects::Free>(effect.getEffect());
+  });
 }
 
 // Return true if there is a write side effect on any path between start and end
@@ -82,13 +81,13 @@ public:
   Operation *getFirstUse(Operation *op) {
     std::vector<Operation *> users;
     for (auto user : op->getUsers()) {
-    if (Operation *ancestor = op->getBlock()->findAncestorOpInBlock(*user))
-      users.push_back(ancestor);
+      if (Operation *ancestor = op->getBlock()->findAncestorOpInBlock(*user))
+        users.push_back(ancestor);
     }
     auto minOpIt =
-      llvm::min_element(users, [](mlir::Operation *a, mlir::Operation *b) {
-        return a->isBeforeInBlock(b);
-      });
+        llvm::min_element(users, [](mlir::Operation *a, mlir::Operation *b) {
+          return a->isBeforeInBlock(b);
+        });
     return minOpIt != users.end() ? *minOpIt : nullptr;
   }
 
@@ -97,7 +96,7 @@ public:
   }
 
   static bool collectOpsToMoveAfter(Operation *op, Operation *anchorOp,
-                                      SmallVector<Operation *> &opsToMove) {
+                                    SmallVector<Operation *> &opsToMove) {
     // Rule 1: op and anchorOp must be in the same ForOp.
     auto forOp = op->getParentOfType<scf::ForOp>();
     if (!forOp) {
@@ -156,7 +155,8 @@ public:
         if (!defOp)
           continue;
 
-        // Safely skip dependencies that are not in the ForOp body or before the anchorOp.
+        // Safely skip dependencies that are not in the ForOp body or before the
+        // anchorOp.
         if (defOp->getBlock() != forOp.getBody() ||
             !anchorOp->isBeforeInBlock(defOp)) {
           LDBG("dep is before anchorOp or outside ForOp body, safe to skip: ");
@@ -316,13 +316,17 @@ public:
         auto dotOp = dotOps[i];
         Operation *anchorOp = dotOps[i - 1].getOperation();
 
-        auto AOp = dotOp.getOperand(0).getDefiningOp<triton::gpu::LocalLoadOp>();
-        auto BOp = dotOp.getOperand(1).getDefiningOp<triton::gpu::LocalLoadOp>();
+        auto AOp =
+            dotOp.getOperand(0).getDefiningOp<triton::gpu::LocalLoadOp>();
+        auto BOp =
+            dotOp.getOperand(1).getDefiningOp<triton::gpu::LocalLoadOp>();
 
         if (BOp && BOp->hasOneUse()) {
           mlir::triton::gpu::MemDescType memDescType = BOp.getSrc().getType();
           Attribute srcLayout = memDescType.getEncoding();
-          if (auto sharedEnc = dyn_cast<mlir::triton::gpu::PPUAIUSharedEncodingAttr>(srcLayout)) {
+          if (auto sharedEnc =
+                  dyn_cast<mlir::triton::gpu::PPUAIUSharedEncodingAttr>(
+                      srcLayout)) {
             if (!tryMoveAfterWithDeps(BOp, anchorOp)) {
               LDBG("Skipping BOp: not safe to move");
             }
@@ -331,7 +335,9 @@ public:
         if (AOp && AOp->hasOneUse()) {
           mlir::triton::gpu::MemDescType memDescType = AOp.getSrc().getType();
           Attribute srcLayout = memDescType.getEncoding();
-          if (auto sharedEnc = dyn_cast<mlir::triton::gpu::PPUAIUSharedEncodingAttr>(srcLayout)) {
+          if (auto sharedEnc =
+                  dyn_cast<mlir::triton::gpu::PPUAIUSharedEncodingAttr>(
+                      srcLayout)) {
             if (!tryMoveAfterWithDeps(AOp, anchorOp)) {
               LDBG("Skipping AOp: not safe to move");
             }

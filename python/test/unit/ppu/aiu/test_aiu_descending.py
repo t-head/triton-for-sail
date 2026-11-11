@@ -15,8 +15,15 @@ import triton.language as tl
 
 @triton.jit
 def _matmul_descend(
-    a_ptr, b_ptr, c_ptr, M, N: tl.constexpr, K: tl.constexpr,
-    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
+    a_ptr,
+    b_ptr,
+    c_ptr,
+    M,
+    N: tl.constexpr,
+    K: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
 ):
     pid = tl.program_id(0)
     pid_m = pid % tl.cdiv(M, BLOCK_M)
@@ -26,20 +33,18 @@ def _matmul_descend(
     for k_idx in range(0, num_k):
         # Descending: iterate K from high to low
         offs_k = (num_k - 1 - k_idx) * BLOCK_K
-        a_ptrs = tl.make_block_ptr(base=a_ptr, shape=(M, K), strides=(K, 1),
-                                  offsets=(pid_m * BLOCK_M, offs_k),
-                                  block_shape=(BLOCK_M, BLOCK_K), order=(1, 0))
-        b_ptrs = tl.make_block_ptr(base=b_ptr, shape=(K, N), strides=(N, 1),
-                                  offsets=(offs_k, pid_n * BLOCK_N),
-                                  block_shape=(BLOCK_K, BLOCK_N), order=(1, 0))
+        a_ptrs = tl.make_block_ptr(base=a_ptr, shape=(M, K), strides=(K, 1), offsets=(pid_m * BLOCK_M, offs_k),
+                                   block_shape=(BLOCK_M, BLOCK_K), order=(1, 0))
+        b_ptrs = tl.make_block_ptr(base=b_ptr, shape=(K, N), strides=(N, 1), offsets=(offs_k, pid_n * BLOCK_N),
+                                   block_shape=(BLOCK_K, BLOCK_N), order=(1, 0))
         # Full tiles allow AIU promotion without boundary checks.
         a = tl.load(a_ptrs)
         b = tl.load(b_ptrs)
         acc = tl.dot(a, b, acc=acc)
     offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
     offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
-    tl.store(c_ptr + offs_m[:, None] * N + offs_n[None, :],
-             acc.to(tl.bfloat16), mask=(offs_m[:, None] < M) & (offs_n[None, :] < N))
+    tl.store(c_ptr + offs_m[:, None] * N + offs_n[None, :], acc.to(tl.bfloat16),
+             mask=(offs_m[:, None] < M) & (offs_n[None, :] < N))
 
 
 @pytest.mark.parametrize("num_stages", [1, 2, 3])
@@ -52,21 +57,18 @@ def test_descriptor_descend(num_stages, num_warps, M, K, N):
     A = torch.randn((M, K), dtype=torch.bfloat16, device="cuda")
     B = torch.randn((K, N), dtype=torch.bfloat16, device="cuda")
     C = torch.empty((M, N), dtype=torch.bfloat16, device="cuda")
-    grid = (triton.cdiv(M, BM) * triton.cdiv(N, BN),)
-    kernel = _matmul_descend[grid](A, B, C, M, N, K, BLOCK_M=BM, BLOCK_N=BN, BLOCK_K=BK,
-                          num_stages=num_stages, num_warps=num_warps)
+    grid = (triton.cdiv(M, BM) * triton.cdiv(N, BN), )
+    kernel = _matmul_descend[grid](A, B, C, M, N, K, BLOCK_M=BM, BLOCK_N=BN, BLOCK_K=BK, num_stages=num_stages,
+                                   num_warps=num_warps)
     assert kernel.asm["ttir"].count("tt.aiu_load") == 2
     assert "cp.async.aiu" in kernel.asm["llir"]
     ref = A.float() @ B.float()
     torch.testing.assert_close(C.float(), ref, atol=1.0, rtol=1e-2)
 
 
-
 @triton.jit
-def matmul_desc_kernel(a_ptr, b_ptr, c_ptr, M, N, K,
-                       stride_cm, stride_cn,
-                       BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr,
-                       BLOCK_SIZE_K: tl.constexpr, GROUP_SIZE_M: tl.constexpr):
+def matmul_desc_kernel(a_ptr, b_ptr, c_ptr, M, N, K, stride_cm, stride_cn, BLOCK_SIZE_M: tl.constexpr,
+                       BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr, GROUP_SIZE_M: tl.constexpr):
     pid = tl.program_id(0)
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
@@ -105,14 +107,25 @@ def test_desc_k_negative_prefetch(num_stages):
     a = a_cpu.to(device="cuda", dtype=torch.float16)
     b = b_cpu.to(device="cuda", dtype=torch.float16)
     c = torch.empty((M, N), dtype=torch.float16, device="cuda")
-    kernel = matmul_desc_kernel[(1,)](
-        a, b, c, M, N, K, *c.stride(),
-        BLOCK_SIZE_M=64, BLOCK_SIZE_N=64, BLOCK_SIZE_K=64, GROUP_SIZE_M=8,
-        num_warps=4, num_stages=num_stages,
+    kernel = matmul_desc_kernel[(1, )](
+        a,
+        b,
+        c,
+        M,
+        N,
+        K,
+        *c.stride(),
+        BLOCK_SIZE_M=64,
+        BLOCK_SIZE_N=64,
+        BLOCK_SIZE_K=64,
+        GROUP_SIZE_M=8,
+        num_warps=4,
+        num_stages=num_stages,
     )
     assert kernel.asm["ttir"].count("tt.aiu_load") == 2
     assert "cp.async.aiu" in kernel.asm["llir"]
     torch.testing.assert_close(c.cpu().view(torch.int16), ref.view(torch.int16), rtol=0, atol=0)
+
 
 @triton.jit
 def _auto_promoted_block_ptr_load(
@@ -148,7 +161,7 @@ def test_auto_promoted_block_ptr_load():
     input = torch.randn((rows, cols), dtype=torch.bfloat16, device="cuda")
     output = torch.empty_like(input)
     grid = (triton.cdiv(rows, block_rows) * triton.cdiv(cols, block_cols), )
-    kernel = _auto_promoted_block_ptr_load[grid](input, output, ROWS=rows, COLS=cols,
-                                                 BLOCK_ROWS=block_rows, BLOCK_COLS=block_cols)
+    kernel = _auto_promoted_block_ptr_load[grid](input, output, ROWS=rows, COLS=cols, BLOCK_ROWS=block_rows,
+                                                 BLOCK_COLS=block_cols)
     torch.testing.assert_close(output, input, atol=0, rtol=0)
     assert "tt.aiu_load" in kernel.asm["ttir"]

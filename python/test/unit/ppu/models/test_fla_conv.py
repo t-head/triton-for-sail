@@ -7,7 +7,6 @@ import triton.language as tl
 from einops import rearrange
 from typing import Optional
 
-
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 _is_amd = torch.cuda.is_available() and torch.version.hip is not None
@@ -21,11 +20,9 @@ def get_multiprocessor_count(device_index=0):
 def assert_close(name, ref, tri, ratio):
     abs_err = (ref.float() - tri.float()).abs().max().item()
     threshold = ratio * ref.float().abs().max().item() + 1e-6
-    assert abs_err < threshold, (
-        f"[{name}] abs_err={abs_err:.6f} threshold={threshold:.6f}\n"
-        f"  ref : max={ref.float().abs().max():.4f} mean={ref.float().abs().mean():.4f}\n"
-        f"  tri : max={tri.float().abs().max():.4f} mean={tri.float().abs().mean():.4f}"
-    )
+    assert abs_err < threshold, (f"[{name}] abs_err={abs_err:.6f} threshold={threshold:.6f}\n"
+                                 f"  ref : max={ref.float().abs().max():.4f} mean={ref.float().abs().mean():.4f}\n"
+                                 f"  tri : max={tri.float().abs().max():.4f} mean={tri.float().abs().mean():.4f}")
 
 
 def prepare_chunk_indices(cu_seqlens: torch.Tensor, chunk_size: int) -> torch.Tensor:
@@ -78,9 +75,7 @@ def causal_conv1d_ref_torch(
 })
 @triton.autotune(
     configs=[
-        triton.Config({'BD': BD}, num_warps=num_warps)
-        for BD in [16, 32, 64, 128]
-        for num_warps in NUM_WARPS_AUTOTUNE
+        triton.Config({'BD': BD}, num_warps=num_warps) for BD in [16, 32, 64, 128] for num_warps in NUM_WARPS_AUTOTUNE
     ],
     key=['D', 'W', 'NB'],
 )
@@ -135,9 +130,7 @@ def causal_conv1d_fwd_kernel(
 
     if not USE_INITIAL_STATE:
         for i_w in tl.static_range(-W + 1, 1):
-            p_yi = tl.make_block_ptr(
-                x + bos * D, (T, D), (D, 1), (i_t * BT + i_w, i_d * BD), (BT, BD), (1, 0)
-            )
+            p_yi = tl.make_block_ptr(x + bos * D, (T, D), (D, 1), (i_t * BT + i_w, i_d * BD), (BT, BD), (1, 0))
             b_yi = tl.load(p_yi, boundary_check=(0, 1)).to(tl.float32)
             if HAS_WEIGHT:
                 b_yi *= tl.sum(b_w * (o_w == (i_w + W - 1)), 1)
@@ -145,9 +138,7 @@ def causal_conv1d_fwd_kernel(
 
     elif i_t * BT >= W:
         for i_w in tl.static_range(-W + 1, 1):
-            p_yi = tl.make_block_ptr(
-                x + bos * D, (T, D), (D, 1), (i_t * BT + i_w, i_d * BD), (BT, BD), (1, 0)
-            )
+            p_yi = tl.make_block_ptr(x + bos * D, (T, D), (D, 1), (i_t * BT + i_w, i_d * BD), (BT, BD), (1, 0))
             b_yi = tl.load(p_yi, boundary_check=(0, 1)).to(tl.float32)
             if HAS_WEIGHT:
                 b_yi *= tl.sum(b_w * (o_w == (i_w + W - 1)), 1)
@@ -160,15 +151,10 @@ def causal_conv1d_fwd_kernel(
             m_x = ((o_x >= 0) & (o_x < T))[:, None] & m_d
             m_c = ((o_x + W >= 0) & (o_x < 0))[:, None] & m_d
 
-            b_yi = tl.load(
-                x + bos * D + o_x[:, None] * D + o_d,
-                mask=m_x, other=0
-            ).to(tl.float32)
+            b_yi = tl.load(x + bos * D + o_x[:, None] * D + o_d, mask=m_x, other=0).to(tl.float32)
 
-            b_yi += tl.load(
-                initial_state + i_n * D * W + o_d * W + (o_x + W)[:, None],
-                mask=m_c, other=0
-            ).to(tl.float32)
+            b_yi += tl.load(initial_state + i_n * D * W + o_d * W + (o_x + W)[:, None], mask=m_c,
+                            other=0).to(tl.float32)
 
             if HAS_WEIGHT:
                 b_yi *= tl.sum(b_w * (o_w == (i_w + W - 1)), 1)
@@ -181,20 +167,12 @@ def causal_conv1d_fwd_kernel(
         b_y = b_y * tl.sigmoid(b_y)
 
     if HAS_RESIDUAL:
-        p_residual = tl.make_block_ptr(
-            residual + bos * D, (T, D), (D, 1), (i_t * BT, i_d * BD), (BT, BD), (1, 0)
-        )
+        p_residual = tl.make_block_ptr(residual + bos * D, (T, D), (D, 1), (i_t * BT, i_d * BD), (BT, BD), (1, 0))
         b_residual = tl.load(p_residual, boundary_check=(0, 1))
         b_y += b_residual
 
-    p_y = tl.make_block_ptr(
-        y + bos * D, (T, D), (D, 1), (i_t * BT, i_d * BD), (BT, BD), (1, 0)
-    )
-    tl.store(
-        p_y,
-        tl.cast(b_y, dtype=p_y.dtype.element_ty, fp_downcast_rounding='rtne'),
-        boundary_check=(0, 1)
-    )
+    p_y = tl.make_block_ptr(y + bos * D, (T, D), (D, 1), (i_t * BT, i_d * BD), (BT, BD), (1, 0))
+    tl.store(p_y, tl.cast(b_y, dtype=p_y.dtype.element_ty, fp_downcast_rounding='rtne'), boundary_check=(0, 1))
 
 
 def causal_conv1d_fwd(
@@ -208,12 +186,7 @@ def causal_conv1d_fwd(
 ) -> torch.Tensor:
     B, T, D = x.shape
     W = weight.shape[1]
-    BT = min(
-        64,
-        triton.next_power_of_2(
-            triton.cdiv(max(16, B * T), get_multiprocessor_count(x.device.index))
-        )
-    )
+    BT = min(64, triton.next_power_of_2(triton.cdiv(max(16, B * T), get_multiprocessor_count(x.device.index))))
     BW = triton.next_power_of_2(W)
     NB = triton.cdiv(B * T, 1024)
 
@@ -250,33 +223,22 @@ def causal_conv1d_fwd(
     return y
 
 
-@pytest.mark.parametrize(
-    ('N', 'T', 'D', 'W', 'activation', 'has_bias', 'has_residual', 'dtype'),
-    [
-        pytest.param(*test, id="N{0}_T{1}_D{2}_W{3}_activation{4}_has_bias{5}_has_residual{6}_{7}".format(*test))
-        for test in [
-            (4, 500, 128, 3, "swish", True, True, torch.float32),
-            (4, 1024, 200, 4, "swish", False, True, torch.float32),
-            (4, 500, 128, 3, None, True, False, torch.float16),
-            (4, 1024, 1024, 4, None, False, False, torch.float16),
-        ]
+@pytest.mark.parametrize(('N', 'T', 'D', 'W', 'activation', 'has_bias', 'has_residual', 'dtype'), [
+    pytest.param(*test, id="N{0}_T{1}_D{2}_W{3}_activation{4}_has_bias{5}_has_residual{6}_{7}".format(*test))
+    for test in [
+        (4, 500, 128, 3, "swish", True, True, torch.float32),
+        (4, 1024, 200, 4, "swish", False, True, torch.float32),
+        (4, 500, 128, 3, None, True, False, torch.float16),
+        (4, 1024, 1024, 4, None, False, False, torch.float16),
     ]
-)
+])
 @torch.no_grad()
-def test_conv_varlen(
-    N: int,
-    T: int,
-    D: int,
-    W: int,
-    activation: str,
-    has_bias: bool,
-    has_residual: bool,
-    dtype: torch.dtype
-):
+def test_conv_varlen(N: int, T: int, D: int, W: int, activation: str, has_bias: bool, has_residual: bool,
+                     dtype: torch.dtype):
     torch.manual_seed(42)
     cu_seqlens = torch.cat([
         torch.tensor([0], dtype=torch.long),
-        torch.arange(16, T)[torch.randperm(T - 16)[:N-1]],
+        torch.arange(16, T)[torch.randperm(T - 16)[:N - 1]],
         torch.tensor([T], dtype=torch.long)
     ], 0).to(device).sort()[0]
 
@@ -293,9 +255,7 @@ def test_conv_varlen(
                 weight=weight,
                 bias=bias,
                 activation=activation,
-            ),
-            "b d t -> b t d"
-        ) + (residual[:, bos:eos] if has_residual else torch.zeros_like(x[:, bos:eos]))
+            ), "b d t -> b t d") + (residual[:, bos:eos] if has_residual else torch.zeros_like(x[:, bos:eos]))
         for bos, eos in zip(cu_seqlens[:-1], cu_seqlens[1:])
     ], dim=1)
 

@@ -91,8 +91,7 @@ def matmul_kernel(A, B, C, M, N, K,  #
                           for o in out_dtypes] + [(16, 8, 16, 8, 16, 16, "int8", "float32", "float32"),
                                                   (16, 8, 16, 8, 16, 16, "float32", "int8", "float32")])
 @pytest.mark.parametrize("m8_mma", [0, 1])
-def test_cast_matmul(monkeypatch, M, K, N, BLOCK_K, BLOCK_M, BLOCK_N, w_dtype, x_dtype, out_dtype,
-                     m8_mma, device):
+def test_cast_matmul(monkeypatch, M, K, N, BLOCK_K, BLOCK_M, BLOCK_N, w_dtype, x_dtype, out_dtype, m8_mma, device):
     monkeypatch.setenv("FORCE_USE_M8MMA", str(m8_mma))
     matmul_kernel.device_caches.clear()
     capability = torch.cuda.get_device_capability()

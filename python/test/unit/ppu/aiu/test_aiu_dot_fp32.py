@@ -9,11 +9,18 @@ from triton._internal_testing import to_numpy, is_ppu
 
 @triton.jit
 def matmul_kernel_fp32(
-    A_ptr, B_ptr, C_ptr,
-    M, N, K,
-    stride_am, stride_ak,
-    stride_bk, stride_bn,
-    stride_cm, stride_cn,
+    A_ptr,
+    B_ptr,
+    C_ptr,
+    M,
+    N,
+    K,
+    stride_am,
+    stride_ak,
+    stride_bk,
+    stride_bn,
+    stride_cm,
+    stride_cn,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
@@ -43,14 +50,8 @@ def matmul_kernel_fp32(
 
 
 @triton.jit
-def matmul_kernel_aiu_fp32(A_ptr, B_ptr, C_ptr,
-                                M, N, K,
-                                stride_am, stride_ak,
-                                stride_bk, stride_bn,
-                                stride_cm, stride_cn,
-                                BLOCK_M: tl.constexpr,
-                                BLOCK_N: tl.constexpr,
-                                BLOCK_K: tl.constexpr):
+def matmul_kernel_aiu_fp32(A_ptr, B_ptr, C_ptr, M, N, K, stride_am, stride_ak, stride_bk, stride_bn, stride_cm,
+                           stride_cn, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr):
     pid = tl.program_id(axis=0)
     num_pid_m = tl.cdiv(M, BLOCK_M)
     pid_m = pid % num_pid_m
@@ -80,8 +81,8 @@ def matmul_kernel_aiu_fp32(A_ptr, B_ptr, C_ptr,
 @pytest.mark.parametrize("M, N, K", [(512, 512, 512)])
 @pytest.mark.parametrize(
     "BLOCK_M, BLOCK_N, BLOCK_K",
-    [(32, 32, 32), (32, 64, 256), (64, 256, 32), (256, 32, 128), (128, 32, 64), (32, 256, 64),
-     (64, 128, 256), (256, 128, 32), (128, 64, 32), (32, 128, 128), (64, 32, 64)],
+    [(32, 32, 32), (32, 64, 256), (64, 256, 32), (256, 32, 128), (128, 32, 64), (32, 256, 64), (64, 128, 256),
+     (256, 128, 32), (128, 64, 32), (32, 128, 128), (64, 32, 64)],
 )
 @pytest.mark.parametrize("m8_mma", [0, 1])
 def test_aiu_matmul_fp32(monkeypatch, num_stages, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, num_warps, m8_mma):
@@ -106,31 +107,13 @@ def test_aiu_matmul_fp32(monkeypatch, num_stages, M, N, K, BLOCK_M, BLOCK_N, BLO
     C_ref = torch.matmul(A, B)
 
     grid = (triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N), 1, 1)
-    matmul_kernel_aiu_fp32[grid](
-        A, B, C_tri_aiu,
-        M, N, K,
-        A.stride(0), A.stride(1),
-        B.stride(0), B.stride(1),
-        C_tri_aiu.stride(0), C_tri_aiu.stride(1),
-        BLOCK_M=BLOCK_M,
-        BLOCK_N=BLOCK_N,
-        BLOCK_K=BLOCK_K,
-        num_warps=num_warps,
-        num_stages=num_stages
-    )
+    matmul_kernel_aiu_fp32[grid](A, B, C_tri_aiu, M, N, K, A.stride(0), A.stride(1), B.stride(0), B.stride(1),
+                                 C_tri_aiu.stride(0), C_tri_aiu.stride(1), BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N,
+                                 BLOCK_K=BLOCK_K, num_warps=num_warps, num_stages=num_stages)
 
-    matmul_kernel_fp32[grid](
-        A, B, C_tri,
-        M, N, K,
-        A.stride(0), A.stride(1),
-        B.stride(0), B.stride(1),
-        C_tri.stride(0), C_tri.stride(1),
-        BLOCK_M=BLOCK_M,
-        BLOCK_N=BLOCK_N,
-        BLOCK_K=BLOCK_K,
-        num_warps=num_warps,
-        num_stages=num_stages
-    )
+    matmul_kernel_fp32[grid](A, B, C_tri, M, N, K, A.stride(0), A.stride(1), B.stride(0), B.stride(1), C_tri.stride(0),
+                             C_tri.stride(1), BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K, num_warps=num_warps,
+                             num_stages=num_stages)
 
     max_diff = (C_tri_aiu - C_tri).abs().max().item()
     torch.set_printoptions(sci_mode=False, precision=6)
@@ -142,5 +125,6 @@ def test_aiu_matmul_fp32(monkeypatch, num_stages, M, N, K, BLOCK_M, BLOCK_N, BLO
     np.testing.assert_allclose(to_numpy(C_tri), to_numpy(C_ref), atol=1e-1, rtol=1e-1)
     np.testing.assert_allclose(to_numpy(C_tri_aiu), to_numpy(C_ref), atol=1e-1, rtol=1e-1)
     np.testing.assert_allclose(to_numpy(C_tri), to_numpy(C_tri_aiu), atol=1e-3, rtol=1e-3)
+
 
 # test_aiu_matmul_fp32(1, 512, 512, 512, 32, 32, 32, 1)

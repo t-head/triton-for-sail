@@ -31,7 +31,7 @@ def test_scalar_int64_to_bfloat16():
     input_val = -42
     inp = torch.tensor(input_val, dtype=torch.int64, device="cuda:0")
     out = torch.empty((), dtype=torch.bfloat16, device="cuda:0")
-    grid = (1,)
+    grid = (1, )
     triton_poi_fused__to_copy_0[grid](inp, out, 1, 1)
 
     expected = torch.tensor(float(input_val), dtype=torch.bfloat16, device="cuda:0")
@@ -42,7 +42,7 @@ def test_negative_value():
     input_val = 42
     inp = torch.tensor(input_val, dtype=torch.int64, device="cuda:0")
     out = torch.empty((), dtype=torch.bfloat16, device="cuda:0")
-    grid = (1,)
+    grid = (1, )
     triton_poi_fused__to_copy_0[grid](inp, out, 1, 1)
 
     expected = torch.tensor(float(input_val), dtype=torch.bfloat16, device="cuda:0")
@@ -53,7 +53,7 @@ def test_zero():
     input_val = 0
     inp = torch.tensor(input_val, dtype=torch.int64, device="cuda:0")
     out = torch.empty((), dtype=torch.bfloat16, device="cuda:0")
-    grid = (1,)
+    grid = (1, )
     triton_poi_fused__to_copy_0[grid](inp, out, 1, 1)
     expected = torch.tensor(0.0, dtype=torch.bfloat16, device="cuda:0")
     assert torch.equal(out, expected)

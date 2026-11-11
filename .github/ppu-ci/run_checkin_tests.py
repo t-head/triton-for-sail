@@ -17,19 +17,19 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-
 # ---------------------------------------------------------------------------
 # 数据结构
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class TestConfig:
     """单个测试的配置信息"""
-    file_path: str                       # 测试文件路径
-    test_filter: Optional[str] = None    # pytest -k 过滤或 ::node_id
+    file_path: str  # 测试文件路径
+    test_filter: Optional[str] = None  # pytest -k 过滤或 ::node_id
     extra_args: List[str] = field(default_factory=list)  # 额外 pytest 参数
     skip_boards: List[str] = field(default_factory=list)  # 在指定板卡上跳过 (e.g. ["OAM-810E"])
-    env: Dict[str, str] = field(default_factory=dict)     # 注入给 pytest 子进程的环境变量
+    env: Dict[str, str] = field(default_factory=dict)  # 注入给 pytest 子进程的环境变量
 
     @property
     def display_name(self) -> str:
@@ -63,6 +63,7 @@ class TestResult:
 # 默认测试配置
 # ---------------------------------------------------------------------------
 
+
 def _plugin_lib_path(test_dir: str, rel_path: str) -> str:
     # 定位 pass 插件 .so 的绝对路径。
     src_path = os.path.join(test_dir, "python", "triton", rel_path)
@@ -94,7 +95,8 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
     for rel in main_ignored:
         main_args.append(f"--ignore={os.path.join(unit, rel)}")
     main_args += [
-        "--deselect", "python/test/unit/ppu/models/test_fla_dplr.py::test_chunk",
+        "--deselect",
+        "python/test/unit/ppu/models/test_fla_dplr.py::test_chunk",
     ]
 
     # 1.2) test_debug — static deselect for overflow-sanitizer params that
@@ -106,18 +108,28 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
     #       All other params (debug=False, should_overflow=False) are retained.
     _test_debug_deselects = [
         # --- test_sanitize_int_add_overflow (5) ---
-        "--deselect", "python/test/unit/test_debug.py::test_sanitize_int_add_overflow[-2147483648--1-int32-int32-True-True]",
-        "--deselect", "python/test/unit/test_debug.py::test_sanitize_int_add_overflow[2147483647-1-int32-int32-True-True]",
-        "--deselect", "python/test/unit/test_debug.py::test_sanitize_int_add_overflow[2147483647-100-int32-int32-True-True]",
-        "--deselect", "python/test/unit/test_debug.py::test_sanitize_int_add_overflow[-32768--1-int16-int16-True-True]",
-        "--deselect", "python/test/unit/test_debug.py::test_sanitize_int_add_overflow[32767-1-int16-int16-True-True]",
+        "--deselect",
+        "python/test/unit/test_debug.py::test_sanitize_int_add_overflow[-2147483648--1-int32-int32-True-True]",
+        "--deselect",
+        "python/test/unit/test_debug.py::test_sanitize_int_add_overflow[2147483647-1-int32-int32-True-True]",
+        "--deselect",
+        "python/test/unit/test_debug.py::test_sanitize_int_add_overflow[2147483647-100-int32-int32-True-True]",
+        "--deselect",
+        "python/test/unit/test_debug.py::test_sanitize_int_add_overflow[-32768--1-int16-int16-True-True]",
+        "--deselect",
+        "python/test/unit/test_debug.py::test_sanitize_int_add_overflow[32767-1-int16-int16-True-True]",
         # --- test_sanitize_int_mul_overflow (3) ---
-        "--deselect", "python/test/unit/test_debug.py::test_sanitize_int_mul_overflow[1073741824-4-int32-int32-True-True]",
-        "--deselect", "python/test/unit/test_debug.py::test_sanitize_int_mul_overflow[1073741824-2-int32-int32-True-True]",
-        "--deselect", "python/test/unit/test_debug.py::test_sanitize_int_mul_overflow[-1073741824--4-int32-int32-True-True]",
+        "--deselect",
+        "python/test/unit/test_debug.py::test_sanitize_int_mul_overflow[1073741824-4-int32-int32-True-True]",
+        "--deselect",
+        "python/test/unit/test_debug.py::test_sanitize_int_mul_overflow[1073741824-2-int32-int32-True-True]",
+        "--deselect",
+        "python/test/unit/test_debug.py::test_sanitize_int_mul_overflow[-1073741824--4-int32-int32-True-True]",
         # --- test_sanitize_int_sub_overflow (2) ---
-        "--deselect", "python/test/unit/test_debug.py::test_sanitize_int_sub_overflow[-2147483648-1-int32-int32-True-True]",
-        "--deselect", "python/test/unit/test_debug.py::test_sanitize_int_sub_overflow[2147483647--1-int32-int32-True-True]",
+        "--deselect",
+        "python/test/unit/test_debug.py::test_sanitize_int_sub_overflow[-2147483648-1-int32-int32-True-True]",
+        "--deselect",
+        "python/test/unit/test_debug.py::test_sanitize_int_sub_overflow[2147483647--1-int32-int32-True-True]",
     ]
     _test_debug_args = ["--tb=short", "-n", "2"] + _test_debug_deselects
 
@@ -154,8 +166,8 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
             file_path=os.path.join(unit, "plugins", "test_plugin.py"),
             extra_args=["-vvv"],
             env={
-                "TRITON_PASS_PLUGIN_PATH": _plugin_lib_path(
-                    test_dir, os.path.join("plugins", "libTritonPluginsTestLib.so")),
+                "TRITON_PASS_PLUGIN_PATH":
+                _plugin_lib_path(test_dir, os.path.join("plugins", "libTritonPluginsTestLib.so")),
             },
         ),
         # 1.5) MLIR dialect 插件测试，同Makefile保持一致
@@ -163,16 +175,19 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
             file_path=os.path.join(unit, "plugins", "test_dialect_plugin.py"),
             extra_args=["-s", "-vvv"],
             env={
-                "TRITON_PASS_PLUGIN_PATH": _plugin_lib_path(
-                    test_dir, os.path.join("plugins", "libMLIRDialectPlugin.so")),
+                "TRITON_PASS_PLUGIN_PATH": _plugin_lib_path(test_dir, os.path.join("plugins",
+                                                                                   "libMLIRDialectPlugin.so")),
             },
         ),
         # 1.6) test_matmul 精选用例: 只跑 scaled/mxfp 相关
         TestConfig(
             file_path=os.path.join(unit, "language", "test_matmul.py"),
             extra_args=[
-                "--tb=short", "-n", "2",
-                "-k", "test_block_scale_fp4 or test_mxfp8_mxfp4_matmul or test_simple_persistent_matmul or test_mxfp or test_blocked_scale_mxfp",
+                "--tb=short",
+                "-n",
+                "2",
+                "-k",
+                "test_block_scale_fp4 or test_mxfp8_mxfp4_matmul or test_simple_persistent_matmul or test_mxfp or test_blocked_scale_mxfp",
             ],
         ),
         # ------------------------ test-interpret ----------------------
@@ -244,6 +259,7 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
 # 测试执行
 # ---------------------------------------------------------------------------
 
+
 def run_single_test(
     config: TestConfig,
     index: int,
@@ -269,7 +285,10 @@ def run_single_test(
         target = f"{target}::{config.test_filter}"
 
     cmd: List[str] = [
-        "pytest", "--tb=short", "--no-header", "--timeout=300",
+        "pytest",
+        "--tb=short",
+        "--no-header",
+        "--timeout=300",
         target,
         f"--junitxml={temp_xml}",
     ]
@@ -294,8 +313,8 @@ def run_single_test(
     try:
         proc = subprocess.run(
             cmd,
-            stdout=None,              # 始终流式输出到 CI log
-            stderr=subprocess.PIPE,   # 捕获 stderr 用于失败诊断
+            stdout=None,  # 始终流式输出到 CI log
+            stderr=subprocess.PIPE,  # 捕获 stderr 用于失败诊断
             text=True,
             env=run_env,
         )
@@ -335,6 +354,7 @@ def run_single_test(
 # ---------------------------------------------------------------------------
 # JUnit XML 合并
 # ---------------------------------------------------------------------------
+
 
 def merge_junit_xml(
     xml_files: List[str],
@@ -453,6 +473,7 @@ def merge_junit_xml(
 # 清理临时文件
 # ---------------------------------------------------------------------------
 
+
 def cleanup_temp_files(xml_files: List[str], verbose: bool = False) -> None:
     """
     清理临时生成的 XML 文件。
@@ -482,6 +503,7 @@ def cleanup_temp_files(xml_files: List[str], verbose: bool = False) -> None:
 # 失败测试的合成 XML
 # ---------------------------------------------------------------------------
 
+
 def _create_synthetic_failure_xml(result: TestResult, output_path: str) -> None:
     """Create a minimal JUnit XML for a test that failed without producing XML.
 
@@ -500,24 +522,24 @@ def _create_synthetic_failure_xml(result: TestResult, output_path: str) -> None:
     )
     test_name = result.config.test_filter or os.path.basename(result.config.file_path)
     tc = ET.SubElement(
-        root, "testcase",
+        root,
+        "testcase",
         classname=result.config.file_path,
         name=test_name,
         time=f"{result.duration:.3f}",
     )
     fail_elem = ET.SubElement(
-        tc, "failure",
+        tc,
+        "failure",
         message=f"pytest exited with code {result.returncode} (no XML produced)",
     )
     details = result.stderr or result.stdout or ""
     if details:
         fail_elem.text = details[-2000:]
     else:
-        fail_elem.text = (
-            f"Test process exited with return code {result.returncode} "
-            f"but did not produce JUnit XML output. "
-            f"This usually means pytest crashed during collection or early setup."
-        )
+        fail_elem.text = (f"Test process exited with return code {result.returncode} "
+                          f"but did not produce JUnit XML output. "
+                          f"This usually means pytest crashed during collection or early setup.")
     tree = ET.ElementTree(root)
     tree.write(output_path, encoding="utf-8", xml_declaration=True)
 
@@ -525,6 +547,7 @@ def _create_synthetic_failure_xml(result: TestResult, output_path: str) -> None:
 # ---------------------------------------------------------------------------
 # 摘要报告
 # ---------------------------------------------------------------------------
+
 
 def print_summary(results: List[TestResult], output_xml: str) -> None:
     """
@@ -578,6 +601,7 @@ def print_summary(results: List[TestResult], output_xml: str) -> None:
 # ---------------------------------------------------------------------------
 # 环境信息收集
 # ---------------------------------------------------------------------------
+
 
 def collect_env_info() -> dict:
     """
@@ -651,6 +675,7 @@ def collect_env_info() -> dict:
 # 主流程
 # ---------------------------------------------------------------------------
 
+
 def main(argv: Optional[List[str]] = None) -> int:
     """
     主入口：解析命令行参数，运行测试，合并结果，输出摘要。
@@ -664,15 +689,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="通用 pytest 测试运行与 JUnit XML 合并框架",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "示例用法:\n"
-            "  python run_checkin_tests.py\n"
-            "  python run_checkin_tests.py -o result.xml --test-dir /path/to/repo\n"
-            "  python run_checkin_tests.py --keep-temp -v\n"
-        ),
+        epilog=("示例用法:\n"
+                "  python run_checkin_tests.py\n"
+                "  python run_checkin_tests.py -o result.xml --test-dir /path/to/repo\n"
+                "  python run_checkin_tests.py --keep-temp -v\n"),
     )
     parser.add_argument(
-        "--output", "-o",
+        "--output",
+        "-o",
         default="test-results.xml",
         help="合并后的 XML 输出文件路径 (默认: test-results.xml)",
     )
@@ -687,7 +711,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="保留临时 XML 文件，不在合并后删除",
     )
     parser.add_argument(
-        "--verbose", "-v",
+        "--verbose",
+        "-v",
         action="store_true",
         help="输出详细信息",
     )
@@ -733,9 +758,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"  ⚠️ Created synthetic failure XML for: {r.config.display_name}")
 
     # ---- 收集所有生成的 XML 文件 ----
-    xml_files: List[str] = [
-        r.xml_path for r in results if r.xml_path is not None
-    ]
+    xml_files: List[str] = [r.xml_path for r in results if r.xml_path is not None]
 
     # ---- 合并 XML ----
     print(f"\n{'─'*70}")

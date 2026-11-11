@@ -29,7 +29,8 @@ struct HgbinData {
 
     bool operator<(const LineInfoKey &other) const {
       return functionIndex < other.functionIndex ||
-             (functionIndex == other.functionIndex && pcOffset < other.pcOffset);
+             (functionIndex == other.functionIndex &&
+              pcOffset < other.pcOffset);
     }
   };
 
@@ -135,6 +136,6 @@ private:
   std::mutex contextMutex{};
 };
 
-}
+} // namespace proton
 
 #endif

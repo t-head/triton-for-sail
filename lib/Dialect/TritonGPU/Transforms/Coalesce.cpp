@@ -127,7 +127,7 @@ struct CoalescePass : public impl::TritonGPUCoalesceBase<CoalescePass> {
       if (!ptr)
         return;
       int numWarps = lookupNumWarps(curr);
-      if(auto aiuLoad = dyn_cast<triton::AIULoadOp>(curr)) {
+      if (auto aiuLoad = dyn_cast<triton::AIULoadOp>(curr)) {
         coalesceAIULoad(curr, numWarps, threadsPerWarp);
         return;
       }

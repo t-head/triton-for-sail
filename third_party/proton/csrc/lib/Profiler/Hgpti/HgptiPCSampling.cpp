@@ -36,7 +36,7 @@ size_t getNumStallReasons(HGcontext context) {
 
 std::optional<HgbinData::LineInfoValue>
 getSassToSourceCorrelation(const char *functionName, uint64_t pcOffset,
-                          const char *hgbin, size_t hgbinSize) {
+                           const char *hgbin, size_t hgbinSize) {
   HGpti_GetSassToSourceCorrelationParams params{};
   params.size = HGpti_GetSassToSourceCorrelationParamsSize;
   params.hgbin = hgbin;
@@ -75,7 +75,8 @@ getStallReasonNamesAndIndices(HGcontext context, size_t numStallReasons) {
 }
 
 size_t matchStallReasonsToIndices(
-    size_t numStallReasons, char **stallReasonNames, uint32_t *stallReasonIndices,
+    size_t numStallReasons, char **stallReasonNames,
+    uint32_t *stallReasonIndices,
     std::map<size_t, size_t> &stallReasonIndexToMetricIndex,
     std::set<size_t> &notIssuedStallReasonIndices) {
   std::vector<bool> validIndex(numStallReasons, false);
@@ -116,7 +117,7 @@ size_t matchStallReasonsToIndices(
 }
 
 HGpti_PCSamplingData allocPCSamplingData(size_t collectNumPCs,
-                                        size_t numValidStallReasons) {
+                                         size_t numValidStallReasons) {
   HGpti_PCSamplingData pcSamplingData{};
   pcSamplingData.size = sizeof(HGpti_PCSamplingData);
   pcSamplingData.collectNumPcs = collectNumPCs;
@@ -178,10 +179,9 @@ void setConfigurationAttribute(
   hgpti::pcSamplingSetConfigurationAttribute<true>(&infoParams);
 }
 
-}
+} // namespace
 
-HGpti_PCSamplingConfigurationInfo
-HgptiConfigureData::configureStallReasons() {
+HGpti_PCSamplingConfigurationInfo HgptiConfigureData::configureStallReasons() {
   numStallReasons = getNumStallReasons(context);
   std::tie(this->stallReasonNames, this->stallReasonIndices) =
       getStallReasonNamesAndIndices(context, numStallReasons);
@@ -220,8 +220,7 @@ HgptiConfigureData::configureSamplingBuffer() {
   return samplingBufferInfo;
 }
 
-HGpti_PCSamplingConfigurationInfo
-HgptiConfigureData::configureScratchBuffer() {
+HGpti_PCSamplingConfigurationInfo HgptiConfigureData::configureScratchBuffer() {
   HGpti_PCSamplingConfigurationInfo scratchBufferInfo{};
   scratchBufferInfo.attributeType =
       HGPTI_PC_SAMPLING_CONFIGURATION_ATTR_TYPE_SCRATCH_BUFFER_SIZE;
@@ -287,30 +286,30 @@ HgbinData *HgptiPCSampling::getHgbinData(uint64_t hgbinCrc) {
 void HgptiPCSampling::initialize(HGcontext context) {
   uint32_t contextId = 0;
   hgpti::getContextId<true>(context, &contextId);
-  doubleCheckedLock(
-      [&]() { return !contextInitialized.contains(contextId); }, contextMutex,
-      [&]() {
-        enablePCSampling(context);
-        getConfigureData(contextId)->initialize(context);
-        contextInitialized.insert(contextId);
-      });
+  doubleCheckedLock([&]() { return !contextInitialized.contains(contextId); },
+                    contextMutex,
+                    [&]() {
+                      enablePCSampling(context);
+                      getConfigureData(contextId)->initialize(context);
+                      contextInitialized.insert(contextId);
+                    });
 }
 
 void HgptiPCSampling::start(HGcontext context) {
   uint32_t contextId = 0;
   hgpti::getContextId<true>(context, &contextId);
-  doubleCheckedLock(
-      [&]() -> bool { return !pcSamplingStarted; }, pcSamplingMutex,
-      [&]() {
-        initialize(context);
-        hggc::ctxSynchronize<true>();
-        startPCSampling(context);
-        pcSamplingStarted = true;
-      });
+  doubleCheckedLock([&]() -> bool { return !pcSamplingStarted; },
+                    pcSamplingMutex,
+                    [&]() {
+                      initialize(context);
+                      hggc::ctxSynchronize<true>();
+                      startPCSampling(context);
+                      pcSamplingStarted = true;
+                    });
 }
 
 void HgptiPCSampling::processPCSamplingData(HgptiConfigureData *configureData,
-                                          const DataToEntryMap &dataToEntry) {
+                                            const DataToEntryMap &dataToEntry) {
   auto *pcSamplingData = &configureData->pcSamplingData;
 
   bool firstRound = true;
@@ -343,11 +342,11 @@ void HgptiPCSampling::processPCSamplingData(HgptiConfigureData *configureData,
         for (const auto &[data, baseEntry] : dataToEntry) {
           auto entry = baseEntry;
           if (lineInfo)
-            entry = data->addOp(
-                entry.phase, entry.id,
-                {formatFileLineFunction(
-                    lineInfo->dirName + "/" + lineInfo->fileName,
-                    lineInfo->lineNumber, lineInfo->functionName)});
+            entry =
+                data->addOp(entry.phase, entry.id,
+                            {formatFileLineFunction(
+                                lineInfo->dirName + "/" + lineInfo->fileName,
+                                lineInfo->lineNumber, lineInfo->functionName)});
           auto metricKind = static_cast<PCSamplingMetric::PCSamplingMetricKind>(
               configureData->stallReasonIndexToMetricIndex
                   [stallReason->pcSamplingStallReasonIndex]);
@@ -376,15 +375,15 @@ void HgptiPCSampling::stop(HGcontext context,
                            const DataToEntryMap &dataToEntry) {
   uint32_t contextId = 0;
   hgpti::getContextId<true>(context, &contextId);
-  doubleCheckedLock(
-      [&]() -> bool { return pcSamplingStarted; }, pcSamplingMutex,
-      [&]() {
-        hggc::ctxSynchronize<true>();
-        auto *configureData = getConfigureData(contextId);
-        stopPCSampling(context);
-        pcSamplingStarted = false;
-        processPCSamplingData(configureData, dataToEntry);
-      });
+  doubleCheckedLock([&]() -> bool { return pcSamplingStarted; },
+                    pcSamplingMutex,
+                    [&]() {
+                      hggc::ctxSynchronize<true>();
+                      auto *configureData = getConfigureData(contextId);
+                      stopPCSampling(context);
+                      pcSamplingStarted = false;
+                      processPCSamplingData(configureData, dataToEntry);
+                    });
 }
 
 void HgptiPCSampling::finalize(HGcontext context) {
@@ -397,7 +396,8 @@ void HgptiPCSampling::finalize(HGcontext context) {
   disablePCSampling(context);
   contextIdToConfigureData.erase(contextId);
   contextInitialized.erase(contextId);
-  // Loaded modules survive profiling sessions and remain needed for source correlation.
+  // Loaded modules survive profiling sessions and remain needed for source
+  // correlation.
 }
 
 void HgptiPCSampling::loadModule(const char *hgbin, size_t hgbinSize) {
@@ -430,4 +430,4 @@ void HgptiPCSampling::unloadModule(const char *hgbin, size_t hgbinSize) {
     hgbinCrcToHgbinData.erase(hgbinCrc);
 }
 
-}
+} // namespace proton

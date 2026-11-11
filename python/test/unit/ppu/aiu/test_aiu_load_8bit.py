@@ -25,9 +25,8 @@ def load_kernel_aiu_8bit(a_ptr, c_ptr, M, K, BLOCK_SIZE_M: tl.constexpr, BLOCK_S
 
 
 @triton.jit
-def pipelined_load_kernel_aiu_8bit(a_ptr, c_ptr, M, K, BLOCK_SIZE_M: tl.constexpr,
-                                   BLOCK_SIZE_K: tl.constexpr, DTYPE: tl.constexpr,
-                                   OUT_DTYPE: tl.constexpr):
+def pipelined_load_kernel_aiu_8bit(a_ptr, c_ptr, M, K, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
+                                   DTYPE: tl.constexpr, OUT_DTYPE: tl.constexpr):
     offs_m = tl.program_id(axis=0) * BLOCK_SIZE_M
     offs_k = 0
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_K), OUT_DTYPE)
@@ -53,8 +52,8 @@ dtypes = {
 @pytest.mark.parametrize("M, K", [(1024, 1024)])
 @pytest.mark.parametrize(
     "BLOCK_M, BLOCK_K",
-    [(16, 32), (32, 32), (32, 64), (64, 32), (64, 64), (64, 128), (64, 256),
-     (128, 64), (128, 128), (128, 256), (256, 128), (256, 256), (512, 512)],
+    [(16, 32), (32, 32), (32, 64), (64, 32), (64, 64), (64, 128), (64, 256), (128, 64), (128, 128), (128, 256),
+     (256, 128), (256, 256), (512, 512)],
 )
 @pytest.mark.parametrize("m8_mma", [0, 1])
 @pytest.mark.parametrize("dtype", list(dtypes.keys()), ids=["fp8e5", "int8"])
@@ -75,10 +74,9 @@ def test_aiu_load_8bit(monkeypatch, num_stages, M, K, BLOCK_M, BLOCK_K, num_warp
     tl_dtype, out_tl_dtype, out_torch_dtype = dtypes[dtype]
     C = torch.empty((M, K), dtype=out_torch_dtype, device=device)
 
-    load_kernel_aiu_8bit[(triton.cdiv(M, BLOCK_M) * triton.cdiv(K, BLOCK_K), 1, 1)](
-        A, C, M, K, BLOCK_M, BLOCK_K, num_warps=num_warps, num_stages=num_stages,
-        DTYPE=tl_dtype, OUT_DTYPE=out_tl_dtype
-    )
+    load_kernel_aiu_8bit[(triton.cdiv(M, BLOCK_M) * triton.cdiv(K, BLOCK_K), 1,
+                          1)](A, C, M, K, BLOCK_M, BLOCK_K, num_warps=num_warps, num_stages=num_stages, DTYPE=tl_dtype,
+                              OUT_DTYPE=out_tl_dtype)
     # fp8/int8 -> wider type is lossless, so the load/store roundtrip should match exactly.
     torch.testing.assert_close(A.to(out_torch_dtype), C, rtol=1e-3, atol=1e-3)
 
@@ -96,11 +94,17 @@ def test_aiu_load_8bit_rejects_narrow_ppu10_channel(capfd, pipelined):
 
     with pytest.raises(RuntimeError, match="PassManager::run failed"):
         kernel.warmup(
-            A, C, M, K, BLOCK_M, BLOCK_K, DTYPE=tl.int8,
-            OUT_DTYPE=tl.int16, grid=(1, ), num_warps=2,
+            A,
+            C,
+            M,
+            K,
+            BLOCK_M,
+            BLOCK_K,
+            DTYPE=tl.int8,
+            OUT_DTYPE=tl.int16,
+            grid=(1, ),
+            num_warps=2,
             num_stages=2 if pipelined else 1,
         )
     captured = capfd.readouterr()
-    assert "unsupported AIU load tile for PPU AIU version 1: channel width is 16 bytes" in (
-        captured.out + captured.err
-    )
+    assert "unsupported AIU load tile for PPU AIU version 1: channel width is 16 bytes" in (captured.out + captured.err)

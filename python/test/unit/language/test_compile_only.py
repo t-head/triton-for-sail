@@ -45,6 +45,7 @@ def test_topk_valid_k(k):
     src = ASTSource(fn=topk_kernel, signature={"K": "constexpr"}, constexprs={"K": k})
     triton.compile(src, target=GPUTarget("cuda", 90, 32))
 
+
 @pytest.mark.skipif(is_ppu(), reason="Explicit CUDA targets are unsupported on PPU")
 def test_compile_only_sort_keeps_comparisons_boolean() -> None:
 

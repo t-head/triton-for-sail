@@ -37,10 +37,12 @@ DEFINE_DISPATCH(ExternLibHgpti, activityEnableContext,
 DEFINE_DISPATCH(ExternLibHgpti, activityDisableContext,
                 hgptiActivityDisableContext, HGcontext, HGpti_ActivityKind)
 
-DEFINE_DISPATCH(ExternLibHgpti, activityFlushAll, hgptiActivityFlushAll, uint32_t)
+DEFINE_DISPATCH(ExternLibHgpti, activityFlushAll, hgptiActivityFlushAll,
+                uint32_t)
 
 DEFINE_DISPATCH(ExternLibHgpti, activityGetNextRecord,
-                hgptiActivityGetNextRecord, uint8_t *, size_t, HGpti_Activity **)
+                hgptiActivityGetNextRecord, uint8_t *, size_t,
+                HGpti_Activity **)
 
 DEFINE_DISPATCH(ExternLibHgpti, activityPushExternalCorrelationId,
                 hgptiActivityPushExternalCorrelationId,
@@ -58,13 +60,14 @@ DEFINE_DISPATCH(ExternLibHgpti, unsubscribe, hgptiUnsubscribe,
 
 DEFINE_DISPATCH(ExternLibHgpti, finalize, hgptiFinalize)
 
-DEFINE_DISPATCH(ExternLibHgpti, getGraphExecId, hgptiGetGraphExecId, HGgraphExec,
+DEFINE_DISPATCH(ExternLibHgpti, getGraphExecId, hgptiGetGraphExecId,
+                HGgraphExec, uint32_t *)
+
+DEFINE_DISPATCH(ExternLibHgpti, getGraphId, hgptiGetGraphId, HGgraph,
                 uint32_t *)
 
-DEFINE_DISPATCH(ExternLibHgpti, getGraphId, hgptiGetGraphId, HGgraph, uint32_t *)
-
-DEFINE_DISPATCH(ExternLibHgpti, getGraphNodeId, hgptiGetGraphNodeId, HGgraphNode,
-                uint64_t *)
+DEFINE_DISPATCH(ExternLibHgpti, getGraphNodeId, hgptiGetGraphNodeId,
+                HGgraphNode, uint64_t *)
 
 DEFINE_DISPATCH(ExternLibHgpti, getHgbinCrc, hgptiGetHgbinCrc,
                 HGpti_GetHgbinCrcParams *)

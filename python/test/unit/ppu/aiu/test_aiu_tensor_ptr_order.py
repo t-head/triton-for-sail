@@ -34,12 +34,10 @@ def matmul_kernel(
     offs_k = 0
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 
-    a_tensor_ptr = tl.make_block_ptr(
-        a_ptr, (M, K), (stride_ak, stride_am), (offs_am, offs_k), (BLOCK_SIZE_M, BLOCK_SIZE_K), (0, 1)
-    )
-    b_tensor_ptr = tl.make_block_ptr(
-        b_ptr, (K, N), (stride_bn, stride_bk), (offs_k, offs_bn), (BLOCK_SIZE_K, BLOCK_SIZE_N), (0, 1)
-    )
+    a_tensor_ptr = tl.make_block_ptr(a_ptr, (M, K), (stride_ak, stride_am), (offs_am, offs_k),
+                                     (BLOCK_SIZE_M, BLOCK_SIZE_K), (0, 1))
+    b_tensor_ptr = tl.make_block_ptr(b_ptr, (K, N), (stride_bn, stride_bk), (offs_k, offs_bn),
+                                     (BLOCK_SIZE_K, BLOCK_SIZE_N), (0, 1))
 
     for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
         a = tl.load(a_tensor_ptr)
@@ -54,9 +52,8 @@ def matmul_kernel(
     # Write back the block of the output matrix C with masks.
     offs_cm = pid_m * BLOCK_SIZE_M
     offs_cn = pid_n * BLOCK_SIZE_N
-    c_tensor_ptr = tl.make_block_ptr(
-        c_ptr, (M, N), (stride_cm, stride_cn), (offs_cm, offs_cn), (BLOCK_SIZE_M, BLOCK_SIZE_N), (1, 0)
-    )
+    c_tensor_ptr = tl.make_block_ptr(c_ptr, (M, N), (stride_cm, stride_cn), (offs_cm, offs_cn),
+                                     (BLOCK_SIZE_M, BLOCK_SIZE_N), (1, 0))
     tl.store(c_tensor_ptr, c)
 
 
@@ -88,12 +85,10 @@ def matmul_kernel_aiu(
     offs_k = 0
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 
-    a_tensor_ptr = tl.make_block_ptr(
-        a_ptr, (M, K), (stride_ak, stride_am), (offs_am, offs_k), (BLOCK_SIZE_M, BLOCK_SIZE_K), (0, 1)
-    )
-    b_tensor_ptr = tl.make_block_ptr(
-        b_ptr, (K, N), (stride_bn, stride_bk), (offs_k, offs_bn), (BLOCK_SIZE_K, BLOCK_SIZE_N), (0, 1)
-    )
+    a_tensor_ptr = tl.make_block_ptr(a_ptr, (M, K), (stride_ak, stride_am), (offs_am, offs_k),
+                                     (BLOCK_SIZE_M, BLOCK_SIZE_K), (0, 1))
+    b_tensor_ptr = tl.make_block_ptr(b_ptr, (K, N), (stride_bn, stride_bk), (offs_k, offs_bn),
+                                     (BLOCK_SIZE_K, BLOCK_SIZE_N), (0, 1))
 
     for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
         a = tl.aiu_load(a_tensor_ptr)
@@ -108,9 +103,8 @@ def matmul_kernel_aiu(
     # Write back the block of the output matrix C with masks.
     offs_cm = pid_m * BLOCK_SIZE_M
     offs_cn = pid_n * BLOCK_SIZE_N
-    c_tensor_ptr = tl.make_block_ptr(
-        c_ptr, (M, N), (stride_cm, stride_cn), (offs_cm, offs_cn), (BLOCK_SIZE_M, BLOCK_SIZE_N), (1, 0)
-    )
+    c_tensor_ptr = tl.make_block_ptr(c_ptr, (M, N), (stride_cm, stride_cn), (offs_cm, offs_cn),
+                                     (BLOCK_SIZE_M, BLOCK_SIZE_N), (1, 0))
     tl.store(c_tensor_ptr, c)
 
 

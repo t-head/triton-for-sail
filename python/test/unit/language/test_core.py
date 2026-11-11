@@ -4060,7 +4060,8 @@ def test_generic_reduction(device):
 @pytest.mark.parametrize("num_ctas", num_ctas_list)
 def test_permute(dtype_str, shape, perm, num_ctas, device):
     check_type_supported(dtype_str, device)  # bfloat16 on cc < 80 will not be tested
-    if dtype_str == "float8e4b15" and (is_hip() or ((is_cuda() or is_ppu()) and torch.cuda.get_device_capability() >= (9, 0))):
+    if dtype_str == "float8e4b15" and (is_hip() or
+                                       ((is_cuda() or is_ppu()) and torch.cuda.get_device_capability() >= (9, 0))):
         pytest.skip("float8e4b15 not supported on ROCm or CUDA >= 9.0")
 
     # triton kernel
@@ -4894,8 +4895,7 @@ def test_scaled_dot(M, N, K, col_a, col_b, rhs_scale, mxfp_type, normal_type, nu
     # to zero. Detailed info is at:
     # https://pytorch.org/docs/stable/notes/numerical_accuracy.html#reduced-precision-fp16-and-bf16-gemms-and-convolutions-on-amd-instinct-mi200-devices
     large_tolerance = is_hip_cdna2()
-    if (is_ppu() and torch.cuda.get_device_capability() < (9, 0) and mxfp_type == "e4m3"
-            and normal_type == "e4m3"):
+    if (is_ppu() and torch.cuda.get_device_capability() < (9, 0) and mxfp_type == "e4m3" and normal_type == "e4m3"):
         large_tolerance = True
     # For e4m3, RDNA3 can slightly exceed the default tolerances in isolated cases
     if is_hip_rdna3() and mxfp_type == "e4m3" and normal_type == "fp16":

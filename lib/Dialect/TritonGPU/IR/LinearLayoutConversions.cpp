@@ -738,7 +738,7 @@ LinearLayout chooseDotLdMatrixLayoutPPUMmaV2(DotOperandEncodingAttr dot,
   //   row8  reg[2-3]   reg[6-7]
   if (needTrans) {
     assert(elemBitWidth <= 16 && "Only elements smaller than 16 bits are "
-                                  "supported in the transposed mode");
+                                 "supported in the transposed mode");
     if (opIdx == 0) {
       basesLane[3] = {0, 8 * 16 / elemBitWidth};
       basesLane[4] = {8, 0};
@@ -902,11 +902,11 @@ LinearLayout choosePPULdMatrixLayout(Attribute enc, ArrayRef<int64_t> shape,
   auto mmaEnc = cast<PPUMmaEncodingAttr>(dot.getParent());
   if (mmaEnc.getVersionMajor() == 1) {
     auto instrShape = mmaEnc.getInstrShape();
-    bool useM8MMA = instrShape.size() >= 2 &&
-                    instrShape[instrShape.size() - 2] == 8;
+    bool useM8MMA =
+        instrShape.size() >= 2 && instrShape[instrShape.size() - 2] == 8;
     if (useM8MMA) {
-      return chooseDotLdMatrixLayoutPPUMmaV1m8(dot, shape, needTrans, elemBitWidth,
-                                               Opb8bLdmatrix);
+      return chooseDotLdMatrixLayoutPPUMmaV1m8(dot, shape, needTrans,
+                                               elemBitWidth, Opb8bLdmatrix);
     }
     return chooseDotLdMatrixLayoutPPUMmaV1(dot, shape, needTrans, elemBitWidth,
                                            Opb8bLdmatrix);
@@ -1376,8 +1376,7 @@ LinearLayout PPUMmaV2Tile(MLIRContext *ctx, ArrayRef<unsigned> tileShape,
   return ctaLayout;
 }
 
-LinearLayout
-PPUMmaEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
+LinearLayout PPUMmaEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
   auto ctx = getContext();
   int rank = shape.size();
   assert(rank == getRank());
@@ -1394,7 +1393,8 @@ PPUMmaEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
   LinearLayout ctaLayout = LinearLayout::empty();
   if (getVersionMajor() == 1) {
     auto vecSize = getVecSize();
-    ctaLayout = PPUMmaV1Tile(ctx, tileShape, kWidth, vecSize, order, getRepOrder());
+    ctaLayout =
+        PPUMmaV1Tile(ctx, tileShape, kWidth, vecSize, order, getRepOrder());
   } else {
     ctaLayout = PPUMmaV2Tile(ctx, tileShape, kWidth, order, getRepOrder());
   }
@@ -1457,8 +1457,9 @@ PPUMmaEncodingAttr::dotOperandToLinearLayout(Attribute dotOp,
   auto order = getOrderForDotOperand(dot.getOpIdx(), rank, /*kContig*/ true);
 
   LinearLayout ctaLayout = LinearLayout::empty();
-  if(mma.getVersionMajor() == 1) {
-    ctaLayout = PPUMmaV1Tile(ctx, tileShape, kWidth, 2, order, dot.getRepOrder());
+  if (mma.getVersionMajor() == 1) {
+    ctaLayout =
+        PPUMmaV1Tile(ctx, tileShape, kWidth, 2, order, dot.getRepOrder());
   } else {
     ctaLayout = PPUMmaV2Tile(ctx, tileShape, kWidth, order, dot.getRepOrder());
   }

@@ -38,9 +38,8 @@ Value loadC(Value tensor, Value llTensor,
   // rebuild has to use; the MLIR element type is not necessarily the same.
   auto llElemTy =
       cast<LLVM::LLVMStructType>(llTensor.getType()).getBody().front();
-  bool expanded = fcSize != cast<LLVM::LLVMStructType>(llTensor.getType())
-                                .getBody()
-                                .size();
+  bool expanded =
+      fcSize != cast<LLVM::LLVMStructType>(llTensor.getType()).getBody().size();
 
   auto numMmaRets = cElemTy.getIntOrFloatBitWidth() / 8;
   assert(numMmaRets == 2 || numMmaRets == 4);
@@ -128,12 +127,12 @@ ValueTableV2 getValuesFromDotOperandLayoutStruct(
             for (size_t mmaKWidth = 0; mmaKWidth < mmaWidth; ++mmaKWidth)
               for (size_t mTile = 0; mTile < 1; ++mTile)
                 for (size_t kTile = 0; kTile < 2; ++kTile)
-                    for (size_t e = 0; e < numElemsPerVec; ++e) {
-                        si.push_back(rep * kWidth + tile * elemsPerTile +
-                                     mmaKWidth * 2 * numElemsPerVec +
-                                     mTile * kWidth * 2 +
-                                     kTile * numElemsPerVec + e);
-                    }
+                  for (size_t e = 0; e < numElemsPerVec; ++e) {
+                    si.push_back(rep * kWidth + tile * elemsPerTile +
+                                 mmaKWidth * 2 * numElemsPerVec +
+                                 mTile * kWidth * 2 + kTile * numElemsPerVec +
+                                 e);
+                  }
       }
     } else {
       if (kIters <= repK) {
@@ -156,8 +155,8 @@ ValueTableV2 getValuesFromDotOperandLayoutStruct(
                   for (size_t e = 0; e < numElemsPerVec; ++e) {
                     si.push_back(rep * kWidth + tile * elemsPerTile +
                                  mmaKWidth * 2 * numElemsPerVec +
-                                 nTile * kWidth * 2 +
-                                 kTile * numElemsPerVec + e);
+                                 nTile * kWidth * 2 + kTile * numElemsPerVec +
+                                 e);
                   }
       }
     }
@@ -405,7 +404,7 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
     bool isAccF16 = dTensorTy.getElementType().isF16();
 
     callMmaPPUv1m8(builder, b, m, n, k, mma, numMmaRets, colsPerThread,
-                 numCPackedElem, batchOffset, ha, hb, fc, isAccF16, isIntMMA);
+                   numCPackedElem, batchOffset, ha, hb, fc, isAccF16, isIntMMA);
 
     Value mmaOut =
         builder.launch(rewriter, loc, getMmaRetType(mmaType, op.getContext()));
@@ -457,12 +456,12 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
   return success();
 }
 
-}
+} // namespace
 
 LogicalResult convertPPUMmaV1m8(triton::DotOp op,
-                                 triton::DotOp::Adaptor adaptor,
-                                 const LLVMTypeConverter *typeConverter,
-                                 ConversionPatternRewriter &rewriter) {
+                                triton::DotOp::Adaptor adaptor,
+                                const LLVMTypeConverter *typeConverter,
+                                ConversionPatternRewriter &rewriter) {
   assert(mlir::isa<DotOperandEncodingAttr>(op.getA().getType().getEncoding()) &&
          mlir::isa<DotOperandEncodingAttr>(op.getB().getType().getEncoding()) &&
          "Both $a and %b should be DotOperand layout.");
