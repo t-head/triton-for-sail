@@ -2,6 +2,7 @@
   "llvm_hash": "5f07f818b51b786b0a87b4e514882600ecba112f",
   "build_number": 1,
   "sha256sum": {
+    "alios7u2-x64": "1e68da17fae18b38e65530e8f5d6db823b6243cd5b60c43ce4c5e2ec0bc4648d",
     "almalinux-arm64": "b2cdbddafbd4f2d0d4872b4cace67ae87010d2baa4ee79996d9e5092965b9c84",
     "almalinux-x64": "3336d34f74de830eb1cdb7db82df23266a1601d6c55a4cc7447d6d2a2a58005e",
     "macos-arm64": "a6733249e86c6b1d1fd13cbc5b212635e7a136090666c4762c513010175e863b",
