@@ -90,7 +90,7 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
         "ppu/aiu/test_aiu_load_padding.py",
         "ppu/aiu/test_aiu_descending.py",
     ]
-    main_args = ["--tb=short", "-n", "2"]
+    main_args = ["--tb=short", "-n", "6"]
     for rel in main_ignored:
         main_args.append(f"--ignore={os.path.join(unit, rel)}")
     main_args += [
@@ -107,17 +107,17 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
         # 1.1) subprocess 测试会 spawn 子进程, 单独跑
         TestConfig(
             file_path=os.path.join(unit, "language", "test_subprocess.py"),
-            extra_args=["--tb=short", "-n", "2"],
+            extra_args=["--tb=short", "-n", "4"],
         ),
         # 1.2) test_debug
         TestConfig(
             file_path=os.path.join(unit, "test_debug.py"),
-            extra_args=["--tb=short", "-n", "2"] ,
+            extra_args=["--tb=short", "-n", "4"] ,
         ),
         # 1.3) line info 测试，需要显式启用 line info
         TestConfig(
             file_path=os.path.join(unit, "language", "test_line_info.py"),
-            extra_args=["--tb=short"],
+            extra_args=["--tb=short", "-n", "6"],
             env={"TRITON_DISABLE_LINE_INFO": "0"},
         ),
         # 1.4) Triton pass 插件测试，同Makefile保持一致
@@ -142,7 +142,7 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
         TestConfig(
             file_path=os.path.join(unit, "language", "test_matmul.py"),
             extra_args=[
-                "--tb=short", "-n", "2",
+                "--tb=short", "-n", "6",
                 "-k", "test_block_scale_fp4 or test_mxfp8_mxfp4_matmul or test_simple_persistent_matmul or test_mxfp or test_blocked_scale_mxfp",
             ],
         ),
@@ -170,7 +170,7 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
         # 3) regression 回归测试
         TestConfig(
             file_path=os.path.join(test_dir, "python", "test", "regression"),
-            extra_args=["--tb=short", "-n", "2"],
+            extra_args=["--tb=short", "-n", "6"],
         ),
         # ------------------------ test-gsan ----------------------
         # 4) gsan 测试套件 (triton-for-sail 暂无 python/test/gsan 目录, 先注释)
@@ -194,7 +194,7 @@ def get_default_test_configs(test_dir: str) -> List[TestConfig]:
         # 6) gluon 前端测试套件
         TestConfig(
             file_path=os.path.join(test_dir, "python", "test", "gluon"),
-            extra_args=["--tb=short", "-n", "1"],
+            extra_args=["--tb=short", "-n", "6"],
         ),
         # ------------------------ test-triton-kernels ----------------------
         # 7) triton_kernels 套件 — 暂时跳过（PPU 未构建 triton._C.libproton）
