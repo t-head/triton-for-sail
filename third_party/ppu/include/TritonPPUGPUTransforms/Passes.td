@@ -62,4 +62,17 @@ def TritonPPUGPUReorderInstructions: Pass<"tritonppugpu-reorder-instructions", "
                            "mlir::triton::TritonDialect"];
 }
 
+def TritonPPUGPUOptimizeNativeFp8DotB : Pass<"tritonppugpu-optimize-native-fp8-dot-b", "mlir::ModuleOp"> {
+  let summary = "Use native FP8 shared-K layout for loop-hoisted PPU0015 dot B operands";
+
+  let description = [{
+    Repack loop-invariant native FP8 B operands of PPU MMA v2 dots into a
+    K-major swizzled shared layout so the dot operand can be loaded with
+    native 8-bit ldmatrix instead of a transposed layout conversion.
+  }];
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::TritonDialect"];
+}
+
 #endif
