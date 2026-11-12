@@ -157,6 +157,7 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
 
   // TritonPPUGPUTransforms passes
   mlir::registerTritonPPUGPUAccelerateMatmul();
+  mlir::registerTritonPPUGPUOptimizeNativeFp8DotB();
   mlir::registerTritonPPUGPUReorderInstructions();
 
   // Proton passes
