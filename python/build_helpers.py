@@ -294,11 +294,24 @@ class Package:
     sha256sum: Optional[str] = None
 
 
+def get_dependency_url(source_url, mirror_path):
+    base = os.environ.get("TRITON_DEPENDENCY_BASE_URL", "")
+    if not base:
+        return source_url
+    parsed = urllib.parse.urlsplit(base)
+    parsed.port
+    if (parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username is not None
+            or parsed.password is not None or parsed.query or parsed.fragment):
+        raise ValueError("TRITON_DEPENDENCY_BASE_URL must be an HTTP(S) URL without credentials, query or fragment")
+    return f"{base.rstrip('/')}/{mirror_path}"
+
+
 def get_json_package_info():
     json_version_path = os.path.join(get_base_dir(), "cmake", "json-version.txt")
     with open(json_version_path, "r") as json_version_file:
         version = json_version_file.read().strip()
-    url = f"https://github.com/nlohmann/json/releases/download/{version}/include.zip"
+    url = get_dependency_url(f"https://github.com/nlohmann/json/releases/download/{version}/include.zip",
+                             f"oaiartifacts/wheels/triton_wheel/json/json-{version}-include.zip")
     return Package("json", "", url, "JSON_INCLUDE_DIR", "", "JSON_SYSPATH")
 
 
@@ -325,6 +338,8 @@ def get_llvm_package_info(helper_args: BuildHelperArgs):
             system_suffix = "almalinux-arm64"
         elif arch == "arm64":
             system_suffix = "ubuntu-arm64"
+        elif arch == "x64" and is_linux_os("alios"):
+            system_suffix = "alios7u2-x64"
         elif arch == "x64":
             vglibc = tuple(map(int, platform.libc_ver()[1].split(".")))
             vglibc = vglibc[0] * 100 + vglibc[1]
@@ -355,7 +370,8 @@ def get_llvm_package_info(helper_args: BuildHelperArgs):
     name = f"llvm-{rev}-{system_suffix}-{build_number}"
     # Create a stable symlink that doesn't include revision
     sym_name = f"llvm-{system_suffix}"
-    url = f"https://oaitriton.blob.core.windows.net/public/llvm-builds/{name}.tar.gz"
+    url = get_dependency_url(f"https://oaitriton.blob.core.windows.net/public/llvm-builds/{name}.tar.gz",
+                             f"triton-llvm/{name}.tar.gz")
     sha256sum = llvm_info["sha256sum"][system_suffix]
     return Package(
         "llvm",
@@ -458,6 +474,8 @@ def download_and_copy(name, src_func, dst_path, override_path, version, url_func
     arch = {"arm64": "sbsa", "aarch64": "sbsa"}.get(arch, arch)
     supported = {"Linux": "linux", "Darwin": "linux"}
     url = url_func(supported[system], arch, version)
+    url = get_dependency_url(
+        url, "nvidia-cuda-redist/" + url.removeprefix("https://developer.download.nvidia.com/compute/cuda/redist/"))
     src_path = src_func(supported[system], arch, version)
     tmp_path = os.path.join(cache_path, "nvidia", name)  # path to cache the download
     dst_path = os.path.join(base_dir, "third_party", "nvidia", "backend", dst_path)  # final binary path
