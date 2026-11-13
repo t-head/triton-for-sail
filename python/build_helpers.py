@@ -416,6 +416,8 @@ def get_llvm_system_suffix(helper_args: BuildHelperArgs):
             system_suffix = "almalinux-arm64"
         elif arch == "arm64":
             system_suffix = "ubuntu-arm64"
+        elif arch == "x64" and is_linux_os("alios"):
+            system_suffix = "alios7u2-x64"
         elif arch == "x64":
             vglibc = tuple(map(int, platform.libc_ver()[1].split(".")))
             vglibc = vglibc[0] * 100 + vglibc[1]
@@ -651,6 +653,9 @@ def build_amd_codegen(amd_llvm_info: dict, helper_args: BuildHelperArgs):
 
 def download_and_copy_amd_codegen(helper_args: BuildHelperArgs):
     if helper_args.amd_codegen_path is not None:
+        return
+    if get_llvm_system_suffix(helper_args) == "alios7u2-x64":
+        print("Skipping AMD code generation: alios7u2-x64 targets PPU only")
         return
 
     library = amd_codegen_library_name()
