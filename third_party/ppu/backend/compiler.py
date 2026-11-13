@@ -329,6 +329,7 @@ class PPUBackend(BaseBackend):
         passes.ttgpuir.add_coalesce_async_copy(pm)
         ppu.passes.ttppugpuir.add_aiu_lowering(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm)
+        ppu.passes.ttgpuir.add_optimize_native_fp8_dot_b(pm)
         passes.ttgpuir.add_reduce_data_duplication(pm)
         ppu.passes.ttgpuir.add_ppu_reorder_instructions(pm)
         passes.ttir.add_loop_aware_cse(pm)

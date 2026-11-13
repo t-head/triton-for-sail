@@ -53,6 +53,7 @@ void init_triton_ppu_passes_ttgpuir(py::module &&m) {
   ADD_PASS_WRAPPER_0("add_convert_libdevice_func_to_ppu",
                      mlir::triton::createConvertLibdeviceFuncToPPUPass);
   ADD_PASS_WRAPPER_0("add_ppu_reorder_instructions", mlir::createTritonPPUGPUReorderInstructions);
+  ADD_PASS_WRAPPER_0("add_optimize_native_fp8_dot_b", mlir::createTritonPPUGPUOptimizeNativeFp8DotB);
 }
 
 void init_triton_ppu_passes_ttppugpuir(py::module &&m) {
