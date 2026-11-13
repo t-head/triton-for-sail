@@ -22,10 +22,13 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // CHECK: %[[REPACK:.*]] = ttg.convert_layout %arg1 : tensor<32x32xf8E4M3FN, #blocked> -> tensor<32x32xf8E4M3FN, #blocked1>
 // CHECK: %[[ALLOC:.*]] = ttg.local_alloc %[[REPACK]] : (tensor<32x32xf8E4M3FN, #blocked1>) -> !ttg.memdesc<32x32xf8E4M3FN, #shared, #smem>
 // CHECK: %[[LOAD:.*]] = ttg.local_load %[[ALLOC]] : !ttg.memdesc<32x32xf8E4M3FN, #shared, #smem> -> tensor<32x32xf8E4M3FN, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 4}>>
-// CHECK: tt.dot %arg0, %[[LOAD]],
 // CHECK-NOT: ttg.convert_layout %arg1 : tensor<32x32xf8E4M3FN, #blocked> -> tensor<32x32xf8E4M3FN, #ttg.dot_op
+// CHECK: tt.dot %arg0, %[[LOAD]],
+// PIPELINE: #shared = #ttg.swizzled_shared<{vec = 16, perPhase = 2, maxPhase = 4, order = [0, 1]}>
 // PIPELINE-LABEL: @native_fp8_e4m3
-// PIPELINE-COUNT-1: ttg.local_alloc
+// PIPELINE: ttg.local_alloc %{{.*}} : (tensor<32x32xf8E4M3FN, #blocked1>) -> !ttg.memdesc<32x32xf8E4M3FN, #shared, #smem>
+// PIPELINE-NOT: ttg.local_alloc
+// PIPELINE: tt.return
 // PIPELINE-NOT: ttg.convert_layout %arg1 : tensor<32x32xf8E4M3FN, #blocked> -> tensor<32x32xf8E4M3FN, #ttg.dot_op
 
 // -----
@@ -52,8 +55,11 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // CHECK: %[[ALLOC2:.*]] = ttg.local_alloc %[[REPACK2]] : (tensor<32x32xf8E5M2, #blocked1>) -> !ttg.memdesc<32x32xf8E5M2, #shared, #smem>
 // CHECK: %[[LOAD2:.*]] = ttg.local_load %[[ALLOC2]] : !ttg.memdesc<32x32xf8E5M2, #shared, #smem> -> tensor<32x32xf8E5M2, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 4}>>
 // CHECK: tt.dot %arg0, %[[LOAD2]],
+// PIPELINE: #shared = #ttg.swizzled_shared<{vec = 16, perPhase = 2, maxPhase = 4, order = [0, 1]}>
 // PIPELINE-LABEL: @native_fp8_e5m2
-// PIPELINE-COUNT-1: ttg.local_alloc
+// PIPELINE: ttg.local_alloc %{{.*}} : (tensor<32x32xf8E5M2, #blocked1>) -> !ttg.memdesc<32x32xf8E5M2, #shared, #smem>
+// PIPELINE-NOT: ttg.local_alloc
+// PIPELINE: tt.return
 
 // -----
 
@@ -280,5 +286,26 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
   }
 }
 // CHECK-LABEL: @reject_f16_accumulator
+// CHECK: ttg.convert_layout
+// CHECK-NOT: ttg.local_alloc
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 1], order = [1, 0]}>
+#mma = #ttg.ppu_mma<{versionMajor = 1, versionMinor = 0, warpsPerCTA = [2, 1], instrShape = [8, 16], vecSize = 1}>
+#dotop_a = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 4}>
+#dotop_b = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 4}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "ppu:80", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func public @reject_ppu0010_v1m8(%a: tensor<32x32xf8E4M3FN, #dotop_a>, %b: tensor<32x32xf8E4M3FN, #blocked>, %lb: i32, %ub: i32, %step: i32) -> tensor<32x32xf32, #mma> {
+    %cst = arith.constant dense<0.000000e+00> : tensor<32x32xf32, #mma>
+    %b_dot = ttg.convert_layout %b : tensor<32x32xf8E4M3FN, #blocked> -> tensor<32x32xf8E4M3FN, #dotop_b>
+    %out = scf.for %iv = %lb to %ub step %step iter_args(%acc = %cst) -> (tensor<32x32xf32, #mma>) : i32 {
+      %d = tt.dot %a, %b_dot, %acc : tensor<32x32xf8E4M3FN, #dotop_a> * tensor<32x32xf8E4M3FN, #dotop_b> -> tensor<32x32xf32, #mma>
+      scf.yield %d : tensor<32x32xf32, #mma>
+    }
+    tt.return %out : tensor<32x32xf32, #mma>
+  }
+}
+// CHECK-LABEL: @reject_ppu0010_v1m8
 // CHECK: ttg.convert_layout
 // CHECK-NOT: ttg.local_alloc
