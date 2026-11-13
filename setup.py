@@ -1,3 +1,4 @@
+import hashlib
 import os
 import platform
 import re
@@ -9,9 +10,9 @@ import sys
 import sysconfig
 import tarfile
 import zipfile
+import urllib.parse
 import urllib.request
 import json
-from io import BytesIO
 from distutils.command.clean import clean
 from pathlib import Path
 from typing import Optional
@@ -177,11 +178,25 @@ class Package:
     lib_flag: str
     syspath_var_name: str
     sym_name: Optional[str] = None
+    sha256sum: Optional[str] = None
+
+
+def get_dependency_url(source_url, mirror_path):
+    base = os.environ.get("TRITON_DEPENDENCY_BASE_URL", "")
+    if not base:
+        return source_url
+    parsed = urllib.parse.urlsplit(base)
+    parsed.port
+    if (parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username is not None
+            or parsed.password is not None or parsed.query or parsed.fragment):
+        raise ValueError("TRITON_DEPENDENCY_BASE_URL must be an HTTP(S) URL without credentials, query or fragment")
+    return f"{base.rstrip('/')}/{mirror_path}"
 
 
 # json
 def get_json_package_info():
-    url = "https://github.com/nlohmann/json/releases/download/v3.11.3/include.zip"
+    source_url = "https://github.com/nlohmann/json/releases/download/v3.11.3/include.zip"
+    url = get_dependency_url(source_url, "oaiartifacts/wheels/triton_wheel/json/json-v3.11.3-include.zip")
     return Package("json", "", url, "JSON_INCLUDE_DIR", "", "JSON_SYSPATH")
 
 
@@ -209,6 +224,8 @@ def get_llvm_package_info():
             system_suffix = 'almalinux-arm64'
         elif arch == 'arm64':
             system_suffix = 'ubuntu-arm64'
+        elif arch == 'x64' and is_linux_os('alios'):
+            system_suffix = 'alios7u2-x64'
         elif arch == 'x64':
             build_platform = os.environ.get('BUILD_PLATFORM', 'ubuntu')
             if build_platform == 'ubuntu':
@@ -247,8 +264,11 @@ def get_llvm_package_info():
     name = f"llvm-{rev}-{system_suffix}-{build_number}"
     # Create a stable symlink that doesn't include revision
     sym_name = f"llvm-{system_suffix}"
-    url = f"https://oaitriton.blob.core.windows.net/public/llvm-builds/{name}.tar.gz"
-    return Package("llvm", name, url, "LLVM_INCLUDE_DIRS", "LLVM_LIBRARY_DIR", "LLVM_SYSPATH", sym_name=sym_name)
+    source_url = f"https://oaitriton.blob.core.windows.net/public/llvm-builds/{name}.tar.gz"
+    url = get_dependency_url(source_url, f"triton-llvm/{name}.tar.gz")
+    sha256sum = "7d8db4091141731063d51f1d8c85a21a8b6590cf69c5e03fbab65fcff84a5532" if system_suffix == "alios7u2-x64" else None
+    return Package("llvm", name, url, "LLVM_INCLUDE_DIRS", "LLVM_LIBRARY_DIR", "LLVM_SYSPATH", sym_name=sym_name,
+                   sha256sum=sha256sum)
 
 
 def open_url(url):
@@ -308,18 +328,30 @@ def get_thirdparty_packages(packages: list):
                 shutil.rmtree(package_root_dir)
             os.makedirs(package_root_dir, exist_ok=True)
             print(f'downloading and extracting {p.url} ...')
-            with open_url(p.url) as response:
-                if p.url.endswith(".zip"):
-                    file_bytes = BytesIO(response.read())
-                    with zipfile.ZipFile(file_bytes, "r") as file:
+            archive_path = os.path.join(package_root_dir, ".archive")
+            with open_url(p.url) as response, open(archive_path, "wb") as archive_file:
+                shutil.copyfileobj(response, archive_file)
+            if p.sha256sum is not None:
+                digest = hashlib.sha256()
+                with open(archive_path, "rb") as archive_file:
+                    while chunk := archive_file.read(8 * 1024 * 1024):
+                        digest.update(chunk)
+                actual_sha256 = digest.hexdigest()
+                if actual_sha256 != p.sha256sum:
+                    shutil.rmtree(package_root_dir)
+                    raise RuntimeError(f"Download from {p.url} failed checksum validation. "
+                                       f"Expected SHA256 {p.sha256sum}, got {actual_sha256}.")
+            if p.url.endswith(".zip"):
+                with zipfile.ZipFile(archive_path, "r") as file:
+                    file.extractall(path=package_root_dir)
+            else:
+                with tarfile.open(archive_path, mode="r:*") as file:
+                    # Use extractall without filter for Python version < 3.12 compatibility
+                    if hasattr(tarfile, 'data_filter'):
+                        file.extractall(path=package_root_dir, filter="data")
+                    else:
                         file.extractall(path=package_root_dir)
-                else:
-                    with tarfile.open(fileobj=response, mode="r|*") as file:
-                        # Use extractall without filter for Python version < 3.12 compatibility
-                        if hasattr(tarfile, 'data_filter'):
-                            file.extractall(path=package_root_dir, filter="data")
-                        else:
-                            file.extractall(path=package_root_dir)
+            os.remove(archive_path)
             # write version url to package_dir
             with open(os.path.join(package_dir, "version.txt"), "w") as f:
                 f.write(p.url)
@@ -349,6 +381,8 @@ def download_and_copy(name, src_func, dst_path, variable, version, url_func):
     arch = {"arm64": "sbsa", "aarch64": "sbsa"}.get(arch, arch)
     supported = {"Linux": "linux", "Darwin": "linux"}
     url = url_func(supported[system], arch, version)
+    url = get_dependency_url(
+        url, "nvidia-cuda-redist/" + url.removeprefix("https://developer.download.nvidia.com/compute/cuda/redist/"))
     src_path = src_func(supported[system], arch, version)
     tmp_path = os.path.join(triton_cache_path, "nvidia", name)  # path to cache the download
     dst_path = os.path.join(base_dir, "third_party", "nvidia", "backend", dst_path)  # final binary path
@@ -400,6 +434,7 @@ def copy_llvm_irformatter():
         shutil.copytree(src_path, dst_path, dirs_exist_ok=True)
     else:
         shutil.copy(src_path, dst_path)
+
 
 # ---- cmake extension ----
 
@@ -563,7 +598,7 @@ class CMakeBuild(build_ext):
         ]
         cmake_args += [f"-D{option}={os.getenv(option)}" for option in passthrough_args if option in os.environ]
 
-        if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
+        if check_env_flag("TRITON_BUILD_PROTON", "OFF"):  # Default OFF
             cmake_args += self.get_proton_cmake_args()
 
         if is_offline_build():
@@ -693,7 +728,7 @@ def get_package_dirs():
             for x in os.listdir(backend.tools_dir):
                 yield (f"triton.tools.extra.{x}", os.path.join(backend.tools_dir, x))
 
-    if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
+    if check_env_flag("TRITON_BUILD_PROTON", "OFF"):  # Default OFF
         yield ("triton.profiler", "third_party/proton/proton")
         yield ("triton.profiler.hooks", "third_party/proton/proton/hooks")
 
@@ -716,7 +751,7 @@ def get_packages():
             for x in os.listdir(backend.tools_dir):
                 yield f"triton.tools.extra.{x}"
 
-    if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
+    if check_env_flag("TRITON_BUILD_PROTON", "OFF"):  # Default OFF
         yield "triton.profiler"
 
 
@@ -755,7 +790,7 @@ def add_link_to_proton():
 
 def add_links(external_only):
     add_link_to_backends(external_only=external_only)
-    if not external_only and check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
+    if not external_only and check_env_flag("TRITON_BUILD_PROTON", "OFF"):  # Default OFF
         add_link_to_proton()
 
 
@@ -805,7 +840,7 @@ class plugin_sdist(sdist):
 
 def get_entry_points():
     entry_points = {}
-    if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
+    if check_env_flag("TRITON_BUILD_PROTON", "OFF"):  # Default OFF
         entry_points["console_scripts"] = [
             "proton-viewer = triton.profiler.viewer:main",
             "proton = triton.profiler.proton:main",
