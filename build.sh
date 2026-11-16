@@ -1,6 +1,7 @@
 #!/bin/bash
 
 set +e
+export TRITON_DEPENDENCY_BASE_URL="${TRITON_DEPENDENCY_BASE_URL-https://download.t-head.cn/artifactory/generic-tools/triton/deps}"
 DIR="$( cd "$(dirname "${BASH_SOURCE[0]}" )" && pwd)"
 #build options
 BUILD_DEVICE_PPU=1
@@ -19,6 +20,9 @@ done
 export BUILD_PLATFORM=${BUILD_PLATFORM}
 
 cd $DIR
+
+python -m pip install -r python/requirements.txt || exit 1
+
 BUILD_CMD="python setup.py bdist_wheel"
 
 echo $BUILD_CMD
