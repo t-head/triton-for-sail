@@ -26,10 +26,11 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // CHECK: tt.dot %arg0, %[[LOAD]],
 // PIPELINE: #shared = #ttg.swizzled_shared<{vec = 16, perPhase = 2, maxPhase = 4, order = [0, 1]}>
 // PIPELINE-LABEL: @native_fp8_e4m3
+// PIPELINE-NOT: ttg.convert_layout %arg1 : tensor<32x32xf8E4M3FN, #blocked> -> tensor<32x32xf8E4M3FN, #ttg.dot_op
 // PIPELINE: ttg.local_alloc %{{.*}} : (tensor<32x32xf8E4M3FN, #blocked1>) -> !ttg.memdesc<32x32xf8E4M3FN, #shared, #smem>
 // PIPELINE-NOT: ttg.local_alloc
-// PIPELINE: tt.return
 // PIPELINE-NOT: ttg.convert_layout %arg1 : tensor<32x32xf8E4M3FN, #blocked> -> tensor<32x32xf8E4M3FN, #ttg.dot_op
+// PIPELINE: tt.return
 
 // -----
 
@@ -128,8 +129,8 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 
 #blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 1], order = [1, 0]}>
 #mma = #ttg.ppu_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [2, 1], instrShape = [16, 16], vecSize = 2}>
-#dotop_a = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
-#dotop_b = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>
+#dotop_a = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 4}>
+#dotop_b = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 4}>
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "ppu:89", "ttg.threads-per-warp" = 32 : i32} {
   tt.func public @reject_f16(%a: tensor<32x32xf16, #dotop_a>, %b: tensor<32x32xf16, #blocked>, %lb: i32, %ub: i32, %step: i32) -> tensor<32x32xf32, #mma> {
     %cst = arith.constant dense<0.000000e+00> : tensor<32x32xf32, #mma>
