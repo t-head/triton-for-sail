@@ -26,6 +26,9 @@ from triton._internal_testing import (
     is_hopper,
     is_ppu,
     skip_if_unsupported_cluster_size,
+    is_ppu_0010,
+    is_ppu_0015,
+    is_ppu_0010_or_newer,
 )
 from triton.backends.compiler import GPUTarget
 from triton.compiler import max_shared_mem
@@ -53,6 +56,9 @@ from triton.experimental.gluon.language.nvidia.blackwell import (
 )
 from triton.experimental.gluon.nvidia.hopper import TensorDescriptor
 from triton._C.libtriton.gluon_ir import make_cga_layout
+from triton.experimental.gluon.language.ppu import ppu0010, ppu0015
+from triton.experimental.gluon.language.ppu import PPUMMADistributedLayout, PPUAIUSharedLayout
+from triton.tools.triton_to_gluon_translator.common_helpers import default_blocked_layout
 
 THREADS_PER_WARP = triton.runtime.driver.active.get_current_target().warp_size
 
@@ -2524,6 +2530,236 @@ def test_amd_mfma_scaled(M, N, K, a_type, b_type, cd_regclass, has_scale, device
     _check_cd_regclass_pins(compiled.asm['llir'], cd_regclass)
 
 
+def _ppu_e2m1_decode(v):
+    sign = (v >> 3) & 1
+    mag = v & 0x7
+    exp = (mag >> 1) & 0x3
+    man = mag & 0x1
+    val = torch.zeros_like(v, dtype=torch.float32)
+    sub = exp == 0
+    val[sub] = man[sub].float() * 0.5
+    norm = exp > 0
+    val[norm] = (2.0**(exp[norm].float() - 1.0)) * (1.0 + 0.5 * man[norm].float())
+    return torch.where(sign == 1, -val, val)
+
+
+def _ppu_decode_fp4(packed):
+    lo = _ppu_e2m1_decode(packed & 0xF)
+    hi = _ppu_e2m1_decode((packed >> 4) & 0xF)
+    return torch.stack([lo, hi], dim=-1).reshape(packed.shape[0], -1)
+
+
+def _ppu_scale_factor(scale, scale_dtype):
+    if scale_dtype == "e8m0":
+        return 2.0**(scale.float() - 127.0)
+    return scale.float()
+
+
+def _ppu_scaled_ref(a_dec, b_dec, a_scale, b_scale, group, scale_dtype):
+    asf = _ppu_scale_factor(a_scale, scale_dtype)
+    bsf = _ppu_scale_factor(b_scale, scale_dtype)
+    a_f = a_dec * asf.repeat_interleave(group, dim=1)
+    b_f = (b_dec * bsf.repeat_interleave(group, dim=1)).T
+    return a_f @ b_f
+
+
+@gluon.jit
+def _ppu_mma_kernel(a_ptr, b_ptr, out_ptr, M: ttgl.constexpr, N: ttgl.constexpr, K: ttgl.constexpr,
+                         a_lay: ttgl.constexpr, b_lay: ttgl.constexpr, out_lay: ttgl.constexpr,
+                         VERSION: ttgl.constexpr):
+    num_warps: ttgl.constexpr = ttgl.num_warps()
+    offs_m = ttgl.arange(0, M, layout=ttgl.SliceLayout(1, a_lay))[:, None]
+    offs_k = ttgl.arange(0, K, layout=ttgl.SliceLayout(0, a_lay))[None, :]
+    a = ttgl.load(a_ptr + offs_m * K + offs_k)
+    offs_k_b = ttgl.arange(0, K, layout=ttgl.SliceLayout(1, b_lay))[:, None]
+    offs_n = ttgl.arange(0, N, layout=ttgl.SliceLayout(0, b_lay))[None, :]
+    b = ttgl.load(b_ptr + offs_k_b * N + offs_n)
+
+    mma_layout: ttgl.constexpr = PPUMMADistributedLayout(version=[VERSION, 0], warps_per_cta=[num_warps, 1],
+                                                         instr_shape=[16, 16])
+    k_width: ttgl.constexpr = max(32 // min(a.type.element_ty.primitive_bitwidth,
+                                            b.type.element_ty.primitive_bitwidth), 1)
+    a = ttgl.convert_layout(a, ttgl.DotOperandLayout(parent=mma_layout, operand_index=0, k_width=k_width))
+    b = ttgl.convert_layout(b, ttgl.DotOperandLayout(parent=mma_layout, operand_index=1, k_width=k_width))
+    acc = ttgl.zeros([M, N], ttgl.float32, layout=mma_layout)
+    if VERSION == 1:
+        ret = ppu0010.mma_v1(a, b, acc)
+    else:
+        ret = ppu0015.mma_v2(a, b, acc)
+    ret = ttgl.convert_layout(ret, out_lay)
+    offs_m2 = ttgl.arange(0, M, layout=ttgl.SliceLayout(1, out_lay))[:, None]
+    offs_n2 = ttgl.arange(0, N, layout=ttgl.SliceLayout(0, out_lay))[None, :]
+    ttgl.store(out_ptr + offs_m2 * N + offs_n2, ret)
+
+
+@pytest.mark.skipif(not is_ppu_0015(), reason="Requires PPU0015 (cc89)")
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_ppu_mma_v2(dtype):
+    M, N, K = 64, 64, 64
+    a = (torch.randn(M, K, device="cuda") * 0.3).to(dtype)
+    b = (torch.randn(K, N, device="cuda") * 0.3).to(dtype)
+    out = torch.empty(M, N, device="cuda", dtype=torch.float32)
+    a_lay = ttgl.BlockedLayout([1, 8], [16, 2], [4, 1], [1, 0])
+    b_lay = ttgl.BlockedLayout([8, 1], [2, 16], [1, 4], [0, 1])
+    out_lay = default_blocked_layout([M, N], 4)
+    _ppu_mma_kernel[(1, )](a, b, out, M, N, K, a_lay, b_lay, out_lay, 2, num_warps=4)
+    torch.cuda.synchronize()
+    torch.testing.assert_close(out, a.float() @ b.float(), rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.skipif(not is_ppu_0010(), reason="Requires PPU0010 (cc80)")
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_ppu_mma_v1(dtype):
+    M, N, K = 64, 64, 64
+    a = (torch.randn(M, K, device="cuda") * 0.3).to(dtype)
+    b = (torch.randn(K, N, device="cuda") * 0.3).to(dtype)
+    out = torch.empty(M, N, device="cuda", dtype=torch.float32)
+    a_lay = ttgl.BlockedLayout([1, 8], [16, 2], [4, 1], [1, 0])
+    b_lay = ttgl.BlockedLayout([8, 1], [2, 16], [1, 4], [0, 1])
+    out_lay = default_blocked_layout([M, N], 4)
+    _ppu_mma_kernel[(1, )](a, b, out, M, N, K, a_lay, b_lay, out_lay, 1, num_warps=4)
+    torch.cuda.synchronize()
+    torch.testing.assert_close(out, a.float() @ b.float(), rtol=1e-2, atol=1e-2)
+
+
+@gluon.jit
+def _ppu_mma_scaled_kernel(a_ptr, b_ptr, as_ptr, bs_ptr, out_ptr, M: ttgl.constexpr, N: ttgl.constexpr,
+                                K: ttgl.constexpr, GROUP: ttgl.constexpr, KPACK: ttgl.constexpr,
+                                a_type: ttgl.constexpr, b_type: ttgl.constexpr, a_lay: ttgl.constexpr,
+                                b_lay: ttgl.constexpr, s_lay: ttgl.constexpr, out_lay: ttgl.constexpr,
+                                VERSION: ttgl.constexpr):
+    num_warps: ttgl.constexpr = ttgl.num_warps()
+    offs_m = ttgl.arange(0, M, layout=ttgl.SliceLayout(1, a_lay))[:, None]
+    offs_kp = ttgl.arange(0, KPACK, layout=ttgl.SliceLayout(0, a_lay))[None, :]
+    a = ttgl.load(a_ptr + offs_m * KPACK + offs_kp)
+    offs_kp_b = ttgl.arange(0, KPACK, layout=ttgl.SliceLayout(1, b_lay))[:, None]
+    offs_n = ttgl.arange(0, N, layout=ttgl.SliceLayout(0, b_lay))[None, :]
+    b = ttgl.load(b_ptr + offs_kp_b * N + offs_n)
+
+    offs_ms = ttgl.arange(0, M, layout=ttgl.SliceLayout(1, s_lay))[:, None]
+    offs_ks = ttgl.arange(0, K // GROUP, layout=ttgl.SliceLayout(0, s_lay))[None, :]
+    a_scale = ttgl.load(as_ptr + offs_ms * (K // GROUP) + offs_ks)
+    offs_ns = ttgl.arange(0, N, layout=ttgl.SliceLayout(1, s_lay))[:, None]
+    b_scale = ttgl.load(bs_ptr + offs_ns * (K // GROUP) + offs_ks)
+
+    mma_layout: ttgl.constexpr = PPUMMADistributedLayout(version=[VERSION, 0], warps_per_cta=[num_warps, 1],
+                                                         instr_shape=[16, 16])
+    a = ttgl.convert_layout(a, default_blocked_layout([M, KPACK], num_warps))
+    b = ttgl.convert_layout(b, default_blocked_layout([KPACK, N], num_warps))
+    a_scale = ttgl.convert_layout(a_scale, default_blocked_layout([M, K // GROUP], num_warps))
+    b_scale = ttgl.convert_layout(b_scale, default_blocked_layout([N, K // GROUP], num_warps))
+    acc = ttgl.full([M, N], 0.0, ttgl.float32, layout=mma_layout)
+    ret = ppu0015.mma_scaled(a, a_scale, a_type, b, b_scale, b_type, acc)
+    ret = ttgl.convert_layout(ret, out_lay)
+    offs_m2 = ttgl.arange(0, M, layout=ttgl.SliceLayout(1, out_lay))[:, None]
+    offs_n2 = ttgl.arange(0, N, layout=ttgl.SliceLayout(0, out_lay))[None, :]
+    ttgl.store(out_ptr + offs_m2 * N + offs_n2, ret)
+
+
+def _ppu_run_mma_scaled(M, N, K, fmt, group, scale_dtype, version):
+    torch.manual_seed(0)
+    if fmt == "e2m1":
+        kpack = K // 2
+        a = torch.randint(0, 256, (M, kpack), device="cuda", dtype=torch.uint8)
+        b = torch.randint(0, 256, (kpack, N), device="cuda", dtype=torch.uint8)
+        a_dec = _ppu_decode_fp4(a)
+        b_dec = _ppu_decode_fp4(b.T.contiguous())
+    else:
+        kpack = K
+        t = torch.float8_e4m3fn if fmt == "e4m3" else torch.float8_e5m2
+        a = (torch.randn(M, K, device="cuda") * 0.5).to(t)
+        b = (torch.randn(K, N, device="cuda") * 0.5).to(t)
+        a_dec = a.float()
+        b_dec = b.float().T
+    if scale_dtype == "e8m0":
+        a_scale = torch.randint(120, 130, (M, K // group), device="cuda", dtype=torch.uint8)
+        b_scale = torch.randint(120, 130, (N, K // group), device="cuda", dtype=torch.uint8)
+    else:
+        a_scale = (torch.rand(M, K // group, device="cuda") * 2 + 0.5).to(torch.float8_e4m3fn)
+        b_scale = (torch.rand(N, K // group, device="cuda") * 2 + 0.5).to(torch.float8_e4m3fn)
+    out = torch.empty(M, N, device="cuda", dtype=torch.float32)
+    a_lay = ttgl.BlockedLayout([1, 16], [16, 2], [4, 1], [1, 0])
+    b_lay = ttgl.BlockedLayout([16, 1], [2, 16], [1, 4], [0, 1])
+    s_lay = ttgl.BlockedLayout([1, 1], [16, 2], [4, 1], [1, 0])
+    out_lay = default_blocked_layout([M, N], 4)
+    _ppu_mma_scaled_kernel[(1, )](a, b, a_scale, b_scale, out, M, N, K, group, kpack, fmt, fmt, a_lay, b_lay,
+                                       s_lay, out_lay, version, num_warps=4)
+    torch.cuda.synchronize()
+    ref = _ppu_scaled_ref(a_dec, b_dec, a_scale, b_scale, group, scale_dtype)
+    torch.testing.assert_close(out, ref, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.skipif(not is_ppu_0015(), reason="Requires PPU0015 (cc89)")
+@pytest.mark.parametrize("group,scale_dtype", [(32, "e8m0")])
+def test_ppu_mma_scaled_v2(group, scale_dtype):
+    _ppu_run_mma_scaled(64, 64, 64, "e2m1", group, scale_dtype, version=2)
+
+
+@pytest.mark.skipif(not (is_ppu_0010() or is_ppu_0015()),
+                    reason="AIU bulk-copy requires VMEM_AIU_LD (PPU0010/PPU0015)")
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
+def test_ppu_aiu_load(dtype):
+    M, N = 64, 64
+    BM, BN = 64, 64
+    num_warps = 4
+    a = torch.randn(M, N, device="cuda", dtype=dtype)
+    out = torch.empty_like(a)
+    bw = 16 if dtype == torch.float16 else 32
+    version_major = 1 if is_ppu_0010() else 2
+    aiu_lay = PPUAIUSharedLayout.get_default_for(num_warps, [BM, BN], bw, version_major=version_major)
+    ttgl_dtype = ttgl.float16 if dtype == torch.float16 else ttgl.float32
+
+    @gluon.jit
+    def kernel(a_ptr, out_ptr, M: ttgl.constexpr, N: ttgl.constexpr, BM: ttgl.constexpr,
+               BN: ttgl.constexpr, aiu_lay: ttgl.constexpr, DT: ttgl.constexpr):
+        num_warps: ttgl.constexpr = ttgl.num_warps()
+        pid_m = ttgl.program_id(0)
+        pid_n = ttgl.program_id(1)
+        smem = ttgl.allocate_shared_memory(DT, [BM, BN], aiu_lay)
+        ppu0010.aiu.aiu_load(smem, a_ptr, [pid_m * BM, pid_n * BN], [M, N])
+        ppu0010.async_copy.commit_group()
+        ppu0010.async_copy.wait_group(0)
+        out_lay: ttgl.constexpr = default_blocked_layout([BM, BN], num_warps)
+        val = smem.load(out_lay)
+        offs_m = pid_m * BM + ttgl.arange(0, BM, layout=ttgl.SliceLayout(1, out_lay))[:, None]
+        offs_n = pid_n * BN + ttgl.arange(0, BN, layout=ttgl.SliceLayout(0, out_lay))[None, :]
+        ttgl.store(out_ptr + offs_m * N + offs_n, val)
+
+    kernel[(M // BM, N // BN)](a, out, M, N, BM, BN, aiu_lay, ttgl_dtype, num_warps=num_warps)
+    torch.cuda.synchronize()
+    torch.testing.assert_close(out, a)
+
+
+@pytest.mark.skipif(not is_ppu(), reason="Requires PPU")
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
+def test_ppu_async_copy(dtype):
+    XBLOCK, YBLOCK = 32, 32
+    xnumel = 20
+    inp = torch.randn((xnumel, YBLOCK), device="cuda", dtype=dtype)
+    out = torch.empty((XBLOCK, YBLOCK), device="cuda", dtype=dtype)
+
+    @gluon.jit
+    def kernel(out_ptr, inp_ptr, xnumel, XBLOCK: ttgl.constexpr, YBLOCK: ttgl.constexpr):
+        blocked: ttgl.constexpr = ttgl.BlockedLayout([1, 4], [1, 32], [4, 1], [1, 0])
+        shared: ttgl.constexpr = ttgl.SwizzledSharedLayout(1, 1, 1, order=[1, 0])
+        smem = ttgl.allocate_shared_memory(inp_ptr.dtype.element_ty, [XBLOCK, YBLOCK], shared)
+        xindex = ttgl.arange(0, XBLOCK, layout=ttgl.SliceLayout(1, blocked))[:, None]
+        yindex = ttgl.arange(0, YBLOCK, layout=ttgl.SliceLayout(0, blocked))[None, :]
+        mask = xindex < xnumel
+        ppu0010.async_copy.async_load(smem, inp_ptr + xindex * YBLOCK + yindex, mask)
+        ppu0010.async_copy.commit_group()
+        ppu0010.async_copy.wait_group(0)
+        val = smem.load(blocked)
+        ttgl.store(out_ptr + xindex * YBLOCK + yindex, val)
+
+    kernel[(1, )](out, inp, xnumel, XBLOCK, YBLOCK, num_warps=4)
+    torch.cuda.synchronize()
+    torch.testing.assert_close(out[:xnumel], inp)
+    torch.testing.assert_close(out[xnumel:], torch.zeros((XBLOCK - xnumel, YBLOCK), device="cuda", dtype=dtype))
+
+
+
+
 def test_math_fast_expf():
 
     @gluon.jit
@@ -3986,7 +4222,8 @@ def test_tcgen05_mma_scaled_lhs_tmem(a_format, a_torch_dtype, b_format, b_torch_
     torch.testing.assert_close(out, ref, atol=atol, rtol=rtol)
 
 
-@pytest.mark.skipif(not (is_ampere_or_newer() or is_hip()), reason="Requires Ampere or newer, or AMD")
+@pytest.mark.skipif(not (is_ampere_or_newer() or is_hip() or is_ppu_0010_or_newer()),
+                    reason="Requires Ampere or newer, AMD, or PPU")
 def test_coalesced_layout():
 
     @gluon.jit
@@ -4031,7 +4268,8 @@ def test_coalesced_layout():
     torch.testing.assert_close(output, ref)
 
 
-@pytest.mark.skipif(not (is_ampere_or_newer() or is_hip()), reason="Requires Ampere or newer, or AMD")
+@pytest.mark.skipif(not (is_ampere_or_newer() or is_hip() or is_ppu_0010_or_newer()),
+                    reason="Requires Ampere or newer, AMD, or PPU")
 def test_convert_auto_layout_to_coalesced_layout():
 
     @gluon.jit

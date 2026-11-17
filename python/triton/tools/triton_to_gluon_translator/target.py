@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from enum import Enum
 
-from triton._utils import is_ppu_device
-
 
 class TranslatorTarget(str, Enum):
     """Target architecture for the Triton-to-Gluon translator.
@@ -25,6 +23,8 @@ class TranslatorTarget(str, Enum):
     GFX1250 = "gfx1250"
     GFX942 = "gfx942"
     GFX950 = "gfx950"
+    PPU0010 = "ppu0010"
+    PPU0015 = "ppu0015"
 
     @classmethod
     def _missing_(cls, value: object) -> "TranslatorTarget | None":
@@ -56,7 +56,10 @@ class TranslatorTarget(str, Enum):
 
     @property
     def is_ppu(self) -> bool:
-        return self in (TranslatorTarget.SM80, TranslatorTarget.SM89) and is_ppu_device()
+        return self in (
+            TranslatorTarget.PPU0010,
+            TranslatorTarget.PPU0015,
+        )
 
     @property
     def tensor_descriptor_import(self) -> str:

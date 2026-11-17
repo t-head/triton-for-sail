@@ -1881,7 +1881,7 @@ _ld_st_shared_layouts = _filter_layouts([
 ])
 
 
-@pytest.mark.skipif(not is_cuda(), reason="Requires CUDA")
+@pytest.mark.skipif(not (is_cuda() or is_ppu()), reason="Requires CUDA")
 def test_local_load_transposed_nvmma_zero_swizzle(device):
     rows = 128
     cols = 16

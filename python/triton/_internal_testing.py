@@ -119,6 +119,18 @@ def is_ppu():
     return False if target is None else target.backend == "cuda" and is_ppu_device()
 
 
+def is_ppu_0010():
+    return is_ppu() and torch.cuda.get_device_capability() == (8, 0)
+
+
+def is_ppu_0015():
+    return is_ppu() and torch.cuda.get_device_capability() == (8, 9)
+
+
+def is_ppu_0010_or_newer():
+    return is_ppu()
+
+
 def is_hip():
     target = get_current_target()
     return False if target is None else target.backend == "hip"
