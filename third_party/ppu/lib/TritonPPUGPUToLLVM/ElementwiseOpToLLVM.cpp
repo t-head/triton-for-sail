@@ -577,6 +577,79 @@ private:
   int computeCapability;
 };
 
+struct FMulOpConversion
+    : ElementwiseOpConversionBase<arith::MulFOp, FMulOpConversion> {
+  using Base =
+      ElementwiseOpConversionBase<arith::MulFOp, FMulOpConversion>;
+  using Base::Base;
+  using OpAdaptor = typename Base::OpAdaptor;
+
+  SmallVector<Value> createDestOps(arith::MulFOp op, OpAdaptor adaptor,
+                                   ConversionPatternRewriter &rewriter,
+                                   Type elemTy, MultipleOperandsRange operands,
+                                   Location loc) const {
+    // Use scalar multiplication when packed BF16 lowering does not apply.
+    auto scalarMul = [&]() -> SmallVector<Value> {
+      return {LLVM::FMulOp::create(rewriter, loc, elemTy, operands[0],
+                                   adaptor.getAttributes().getValue())};
+    };
+    if (!elemTy.isBF16() || operands.size() < 2)
+      return scalarMul();
+
+    arith::TruncFOp truncOp;
+    unsigned truncOperand = 0;
+    for (unsigned i = 0; i < 2; ++i) {
+      auto candidate = op.getOperand(i).getDefiningOp<arith::TruncFOp>();
+      if (candidate && candidate.getResult().hasOneUse() &&
+          getElementTypeOrSelf(candidate.getOperand().getType()).isF32()) {
+        truncOp = candidate;
+        truncOperand = i;
+        break;
+      }
+    }
+    // Fall back if no eligible FP32 truncation is found.
+    if (!truncOp)
+      return scalarMul();
+
+    Value fp32Source = rewriter.getRemappedValue(truncOp.getOperand());
+    if (!fp32Source)
+      return scalarMul();
+    SmallVector<Value> fp32Values =
+        unpackLLElements(loc, fp32Source, rewriter);
+    if (fp32Values.size() < operands.size())
+      return scalarMul();
+    size_t offset = fp32Values.size() - operands.size();
+
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
+    Type packedBF16Ty = vec_ty(bf16_ty, 2);
+    Value other = b.undef(packedBF16Ty);
+    for (unsigned i = 0; i < 2; ++i)
+      other = b.insert_element(packedBF16Ty, other,
+                               operands[i][1 - truncOperand], b.i32_val(i));
+    other = b.bitcast(other, i32_ty);
+
+    TIXBuilder builder;
+    auto result = builder.newOperand("=r");
+    auto otherOperand = builder.newOperand(other, "r");
+    auto low = builder.newOperand(fp32Values[offset], "f");
+    auto high = builder.newOperand(fp32Values[offset + 1], "f");
+    StringRef mulAsm = truncOperand == 0
+                           ? "ppu.mul.rn.bf16x2 $0, rounded, $1; \n"
+                           : "ppu.mul.rn.bf16x2 $0, $1, rounded; \n";
+    std::string asmString =
+        "{ .reg .b32 rounded;                            \n"
+        "ppu.cvt.rn.bf16x2.f32 rounded, $3, $2;         \n" +
+        mulAsm.str() + "}";
+    auto &tixOp = *builder.create(asmString);
+    SmallVector<TIXBuilder::Operand *> asmOperands = {result, otherOperand,
+                                                      low, high};
+    tixOp(asmOperands, /*onlyAttachMLIRArgs=*/true);
+    Value packed = builder.launch(rewriter, loc, packedBF16Ty, false);
+    return {b.extract_element(bf16_ty, packed, b.i32_val(0)),
+            b.extract_element(bf16_ty, packed, b.i32_val(1))};
+  }
+};
+
 struct FDivOpConversion
     : ElementwiseOpConversionBase<arith::DivFOp, FDivOpConversion> {
   using Base = ElementwiseOpConversionBase<arith::DivFOp, FDivOpConversion>;
@@ -880,7 +953,7 @@ void mlir::triton::ppu::populateElementwiseOpToLLVMPatterns(
 
   POPULATE_OP(arith::SubFOp, LLVM::FSubOp);
   POPULATE_OP(arith::AddFOp, LLVM::FAddOp);
-  POPULATE_OP(arith::MulFOp, LLVM::FMulOp);
+  patterns.add<FMulOpConversion>(typeConverter, axisInfoAnalysis, benefit);
 
   POPULATE_OP(arith::ExtFOp, LLVM::FPExtOp);
   POPULATE_OP(arith::TruncFOp, LLVM::FPTruncOp);
