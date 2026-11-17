@@ -14,10 +14,6 @@ from torch._inductor.runtime.triton_helpers import libdevice
 
 @triton.jit
 def pow_fused_pow_kernel(in_ptr0, out_ptr0, xnumel, XBLOCK: tl.constexpr):
-    xnumel = 1
-    xoffset = tl.program_id(0) * XBLOCK
-    xindex = xoffset + tl.arange(0, XBLOCK)[:]
-    xmask = tl.full([XBLOCK], True, tl.int1)[:]
     tmp0 = tl.load(in_ptr0 + 0)
     tmp1 = tl.broadcast_to(tmp0, [XBLOCK])
     tmp2 = libdevice.exp2(tmp1)

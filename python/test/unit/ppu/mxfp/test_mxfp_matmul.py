@@ -4,7 +4,7 @@ import torch
 import triton
 import triton.language as tl
 from triton.tools.mxfp import MXFP4Tensor, MXScaleTensor
-from triton._internal_testing import is_cuda, is_ppu
+from triton._internal_testing import is_ppu
 
 
 @triton.jit
@@ -104,16 +104,14 @@ def test_blocked_scale_mxfp4(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES, USE
     VEC_SIZE = 32
     torch.manual_seed(42)
     packing_dim = 1
-    scale_type = "float8_e8m0fnu"
     a_mxfp4 = MXFP4Tensor(size=(M, K), device=device).random()
     a = a_mxfp4.to_packed_tensor(dim=packing_dim)
     b_mxfp4 = MXFP4Tensor(size=(N, K), device=device).random()
     b = b_mxfp4.to_packed_tensor(dim=packing_dim).T
-    b_ref = b_mxfp4.to(torch.float32).T
+    b_mxfp4.to(torch.float32).T
     a_size = (M, (K + VEC_SIZE - 1) // VEC_SIZE)
     b_size = (N, (K + VEC_SIZE - 1) // VEC_SIZE)
 
-    dtype_src_str = "float8e5"
     dtype_dst_str = "float32"
     ceildiv = lambda a, b: math.ceil(a / b)
     a_size = (ceildiv(M, 128), ceildiv(K, 128), 32, 4, 4)
@@ -128,10 +126,10 @@ def test_blocked_scale_mxfp4(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES, USE
     dtype_dst = getattr(torch, dtype_dst_str)
     output = torch.empty((M, N), dtype=dtype_dst, device=device)
     grid = (triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N), 1)
-    out = block_scale_mxfp_matmul[grid](a, b, output, a_scale, b_scale, M, N, K, a_scale.stride(0), a_scale.stride(1),
-                                        a_scale.stride(2), a_scale.stride(3), a.stride(0), a.stride(1), b.stride(0),
-                                        b.stride(1), output.stride(0), output.stride(1), BLOCK_M, BLOCK_N, BLOCK_K,
-                                        NUM_STAGES=NUM_STAGES, USE_2D_SCALE_LOAD=USE_2D_SCALE_LOAD)
+    block_scale_mxfp_matmul[grid](a, b, output, a_scale, b_scale, M, N, K, a_scale.stride(0), a_scale.stride(1),
+                                  a_scale.stride(2), a_scale.stride(3), a.stride(0), a.stride(1), b.stride(0),
+                                  b.stride(1), output.stride(0), output.stride(1), BLOCK_M, BLOCK_N, BLOCK_K,
+                                  NUM_STAGES=NUM_STAGES, USE_2D_SCALE_LOAD=USE_2D_SCALE_LOAD)
 
     def flatten_scale(scale):
         num_chunk_m, num_chunk_k, _, _, _ = scale.shape

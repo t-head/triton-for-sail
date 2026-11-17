@@ -1,5 +1,3 @@
-from typing import Optional
-
 import torch
 import triton
 import triton.language as tl
@@ -162,7 +160,7 @@ def test_parallel_nsa_compression_bwd_kernel_dkv():
     delta = parallel_attn_bwd_preprocess(o, do)
     chunk_indices = prepare_chunk_indices(cu_seqlens, BS)
     chunk_offsets = prepare_chunk_offsets(cu_seqlens, BS)
-    token_indices = prepare_token_indices(cu_seqlens)
+    prepare_token_indices(cu_seqlens)
     dk = torch.empty(NV, B, TC, H, K, dtype=torch.bfloat16, device=device)
     dv = torch.empty(B, TC, H, V, dtype=torch.bfloat16, device=device)
 
