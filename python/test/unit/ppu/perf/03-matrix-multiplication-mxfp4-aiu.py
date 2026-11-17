@@ -270,12 +270,9 @@ def block_scale_fp4_matmul(  #
     offs_am = (pid_m * BLOCK_M + tl.arange(0, BLOCK_M))
     offs_bn = (pid_n * BLOCK_N + tl.arange(0, BLOCK_N))
     PACKING_ALONG_M_N: tl.constexpr = 1 if PACK_ALONG_K else 2
-    offs_am_packed = (pid_m * (BLOCK_M // PACKING_ALONG_M_N) + tl.arange(0, BLOCK_M // PACKING_ALONG_M_N))
-    offs_bn_packed = (pid_n * (BLOCK_N // PACKING_ALONG_M_N) + tl.arange(0, BLOCK_N // PACKING_ALONG_M_N))
     BLOCK_K_PACKED: tl.constexpr = BLOCK_K // 2 if PACK_ALONG_K else BLOCK_K
 
     # Two e2m1 values per K
-    offs_k = tl.arange(0, BLOCK_K_PACKED)
     offs_scale_k = tl.arange(0, BLOCK_K // VEC_SIZE)
     if a_scale is not None:
         a_scale_ptr = a_scale + offs_am[:, None] * stride_scale + offs_scale_k[None, :]
@@ -348,10 +345,7 @@ def block_scale_fp4_matmul_reshape(  #
     group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
     pid_m = first_pid_m + ((pid % num_pid_in_group) % group_size_m)
     pid_n = (pid % num_pid_in_group) // group_size_m
-    offs_am = (pid_m * BLOCK_M + tl.arange(0, BLOCK_M)) % M
-    offs_bn = (pid_n * BLOCK_N + tl.arange(0, BLOCK_N)) % N
     BLOCK_K_PACKED: tl.constexpr = BLOCK_K // 2
-    offs_k = tl.arange(0, BLOCK_K_PACKED)
 
     offs_sm = (pid_m * (BLOCK_M // 128) + tl.arange(0, BLOCK_M // 128))
     offs_sn = (pid_n * (BLOCK_N // 128) + tl.arange(0, BLOCK_N // 128))
@@ -378,8 +372,6 @@ def block_scale_fp4_matmul_reshape(  #
     offs_am_aiu = (pid_m * BLOCK_M)
     offs_bn_aiu = (pid_n * BLOCK_N)
     offs_k_aiu = 0
-    offs_sm_aiu = pid_m * (BLOCK_M // 128)
-    offs_sn_aiu = pid_n * (BLOCK_N // 128)
 
     for k in tl.range(0, tl.cdiv(K, BLOCK_K), num_stages=num_stages):
         a = tl.aiu_load(a_ptr, (offs_am_aiu, offs_k_aiu), (BLOCK_M, BLOCK_K_PACKED), (M, K // 2), tl.uint8, (1, 0))
@@ -429,13 +421,13 @@ def matmul(a, b, output, M, N, K, a_scale, b_scale, VEC_SIZE, pack_along_k, acti
     grid = lambda META: (triton.cdiv(M, META['BLOCK_M']) * triton.cdiv(N, META['BLOCK_N']), )
 
     if args.reshape:
-        k = block_scale_fp4_matmul_reshape[grid](a, b, output, a_scale, b_scale, M, N, K, a_scale.stride(0),
-                                                 a_scale.stride(1), a_scale.stride(2), a_scale.stride(3), a.stride(0),
-                                                 a.stride(1), b.stride(0), b.stride(1), output.stride(0),
-                                                 output.stride(1), VEC_SIZE, PACK_ALONG_K=pack_along_k)
+        block_scale_fp4_matmul_reshape[grid](a, b, output, a_scale, b_scale, M, N, K, a_scale.stride(0),
+                                             a_scale.stride(1), a_scale.stride(2), a_scale.stride(3), a.stride(0),
+                                             a.stride(1), b.stride(0), b.stride(1), output.stride(0), output.stride(1),
+                                             VEC_SIZE, PACK_ALONG_K=pack_along_k)
     else:
         stride_scale = a_scale.stride(0)
-        k = block_scale_fp4_matmul[grid](
+        block_scale_fp4_matmul[grid](
             a,
             b,
             output,
@@ -602,7 +594,7 @@ def benchmark(M, N, K, provider):
     b_mxfp4 = MXFP4Tensor(size=(N, K), device=DEVICE).random()
     b = b_mxfp4.to_packed_tensor(dim=packing_dim).T
     # No need to pack along K since we convert each e2m1 to f32 directly for the reference matmul
-    b_ref = b_mxfp4.to(torch.float32).T
+    b_mxfp4.to(torch.float32).T
     if not args.reshape:
         a_size = (M, (K + VEC_SIZE - 1) // VEC_SIZE)
         b_size = (N, (K + VEC_SIZE - 1) // VEC_SIZE)

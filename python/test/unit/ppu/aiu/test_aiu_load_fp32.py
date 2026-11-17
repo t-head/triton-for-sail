@@ -1,11 +1,10 @@
 import numpy as np
 import pytest
 import torch
-import tempfile
 import triton
 import triton.language as tl
 
-from triton._internal_testing import to_numpy, is_ppu
+from triton._internal_testing import to_numpy
 
 torch.set_printoptions(profile="full")
 

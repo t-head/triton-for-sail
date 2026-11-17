@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Generate GitHub Step Summary from JUnit XML test results.
 
