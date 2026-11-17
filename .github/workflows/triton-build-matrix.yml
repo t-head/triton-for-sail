@@ -278,6 +278,7 @@ jobs:
             git config --global --add safe.directory '*'
             # PPU SDK is pre-installed in the docker image
             source /usr/local/PPU_SDK/envsetup.sh
+            export TRITON_DEPENDENCY_BASE_URL="${TRITON_DEPENDENCY_BASE_URL-https://download.t-head.cn/artifactory/generic-tools/triton/deps}"
             export TRITON_IR_FORMATTER_PATH=/usr/local/PPU_SDK/bin/llvm-irformatter
             echo "[INFO] PPU_SDK=$PPU_SDK"
             echo "[INFO] TRITON_IR_FORMATTER_PATH=$TRITON_IR_FORMATTER_PATH"
