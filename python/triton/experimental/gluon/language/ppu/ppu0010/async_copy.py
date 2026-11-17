@@ -1,5 +1,5 @@
 from ..._semantic import _check
-from ..._core import _unwrap_if_constexpr, builtin
+from ..._core import _normalize_cache_policy, _unwrap_if_constexpr, builtin
 from triton._C.libtriton import ir
 
 __all__ = [
@@ -25,8 +25,7 @@ def async_load(smem, pointer, mask=None, cache_modifier="", eviction_policy="", 
         volatile (bool): Whether the load is volatile. Defaults to False.
     """
     mask = _unwrap_if_constexpr(mask)
-    cache_modifier = _semantic._str_to_load_cache_modifier(cache_modifier)
-    eviction_policy = _semantic._str_to_eviction_policy(eviction_policy)
+    cache_policy = _normalize_cache_policy(None, cache_modifier, eviction_policy)._to_ir(_semantic.builder)
     volatile = _unwrap_if_constexpr(volatile)
     if mask is not None:
         pointer, mask = _semantic.broadcast_impl_value(pointer, mask)
@@ -36,7 +35,7 @@ def async_load(smem, pointer, mask=None, cache_modifier="", eviction_policy="", 
     )
     mask_handle = mask.handle if mask is not None else ir.value()
     _semantic.builder.create_async_copy_global_to_local(smem.handle, pointer.handle, mask_handle, ir.value(),
-                                                        cache_modifier, eviction_policy, volatile)
+                                                        cache_policy, volatile)
 
 
 # Backward-compatible alias

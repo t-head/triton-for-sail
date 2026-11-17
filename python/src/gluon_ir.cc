@@ -1067,7 +1067,7 @@ void init_gluon_ir(py::module_ &m) {
       .def("create_ppu_mbarrier_arrive",
            [](GluonOpBuilder &self, Value memDesc, uint32_t count,
               Value pred) {
-             self.create<ttng::ArriveBarrierOp>(memDesc, count, 0u, pred);
+             self.create<ttng::ArriveBarrierOp>(memDesc, count, pred);
            })
       .def(
           "create_tmem_alloc",
