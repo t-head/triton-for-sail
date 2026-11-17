@@ -752,12 +752,10 @@ struct ExpOpConversionApprox
     Value prod = b.fmul(f32_ty, operands[0][0], b.f32_val(log2e));
 
     Type resultTy = operands[0][0].getType();
-    TIXBuilder builder;
-    auto &ex2 = *builder.create("ppu.ex2.approx.f32");
-    auto res = builder.newOperand("=f");
-    auto operand = builder.newOperand(prod, "f");
-    ex2(res, operand);
-    return {builder.launch(rewriter, loc, resultTy, false)};
+    StringRef name = "llvm.nvvm.ex2.approx.f32";
+    auto callOp =
+        LLVM::createLLVMIntrinsicCallOp(rewriter, loc, name, resultTy, {prod});
+    return {callOp.getResult(0)};
   }
 };
 
