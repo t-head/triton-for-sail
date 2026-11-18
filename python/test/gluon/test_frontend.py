@@ -5978,10 +5978,10 @@ def test_tma_cache_policy_frontend_invalid(kind, policy, message):
 
 @gluon.jit
 def ppu_mma_layout_kernel():
-    ttgl.full([64, 64], 0, ttgl.float32,
-              layout=PPUMMADistributedLayout(version=[1, 0], warps_per_cta=[4, 1], instr_shape=[16, 16]))
-    ttgl.full([64, 64], 0, ttgl.float32,
-              layout=PPUMMADistributedLayout(version=[2, 0], warps_per_cta=[4, 1], instr_shape=[16, 16]))
+    ttgl.full([64, 64], 0, ttgl.float32, layout=PPUMMADistributedLayout(version=[1, 0], warps_per_cta=[4, 1],
+                                                                        instr_shape=[16, 16]))
+    ttgl.full([64, 64], 0, ttgl.float32, layout=PPUMMADistributedLayout(version=[2, 0], warps_per_cta=[4, 1],
+                                                                        instr_shape=[16, 16]))
 
 
 @pytest.mark.skipif(not is_ppu(), reason="PPU frontend IR requires the PPU backend")

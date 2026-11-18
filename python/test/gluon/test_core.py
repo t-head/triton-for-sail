@@ -2565,8 +2565,7 @@ def _ppu_scaled_ref(a_dec, b_dec, a_scale, b_scale, group, scale_dtype):
 
 @gluon.jit
 def _ppu_mma_kernel(a_ptr, b_ptr, out_ptr, M: ttgl.constexpr, N: ttgl.constexpr, K: ttgl.constexpr,
-                         a_lay: ttgl.constexpr, b_lay: ttgl.constexpr, out_lay: ttgl.constexpr,
-                         VERSION: ttgl.constexpr):
+                    a_lay: ttgl.constexpr, b_lay: ttgl.constexpr, out_lay: ttgl.constexpr, VERSION: ttgl.constexpr):
     num_warps: ttgl.constexpr = ttgl.num_warps()
     offs_m = ttgl.arange(0, M, layout=ttgl.SliceLayout(1, a_lay))[:, None]
     offs_k = ttgl.arange(0, K, layout=ttgl.SliceLayout(0, a_lay))[None, :]
@@ -2577,8 +2576,8 @@ def _ppu_mma_kernel(a_ptr, b_ptr, out_ptr, M: ttgl.constexpr, N: ttgl.constexpr,
 
     mma_layout: ttgl.constexpr = PPUMMADistributedLayout(version=[VERSION, 0], warps_per_cta=[num_warps, 1],
                                                          instr_shape=[16, 16])
-    k_width: ttgl.constexpr = max(32 // min(a.type.element_ty.primitive_bitwidth,
-                                            b.type.element_ty.primitive_bitwidth), 1)
+    k_width: ttgl.constexpr = max(32 // min(a.type.element_ty.primitive_bitwidth, b.type.element_ty.primitive_bitwidth),
+                                  1)
     a = ttgl.convert_layout(a, ttgl.DotOperandLayout(parent=mma_layout, operand_index=0, k_width=k_width))
     b = ttgl.convert_layout(b, ttgl.DotOperandLayout(parent=mma_layout, operand_index=1, k_width=k_width))
     acc = ttgl.zeros([M, N], ttgl.float32, layout=mma_layout)
@@ -2624,10 +2623,9 @@ def test_ppu_mma_v1(dtype):
 
 @gluon.jit
 def _ppu_mma_scaled_kernel(a_ptr, b_ptr, as_ptr, bs_ptr, out_ptr, M: ttgl.constexpr, N: ttgl.constexpr,
-                                K: ttgl.constexpr, GROUP: ttgl.constexpr, KPACK: ttgl.constexpr,
-                                a_type: ttgl.constexpr, b_type: ttgl.constexpr, a_lay: ttgl.constexpr,
-                                b_lay: ttgl.constexpr, s_lay: ttgl.constexpr, out_lay: ttgl.constexpr,
-                                VERSION: ttgl.constexpr):
+                           K: ttgl.constexpr, GROUP: ttgl.constexpr, KPACK: ttgl.constexpr, a_type: ttgl.constexpr,
+                           b_type: ttgl.constexpr, a_lay: ttgl.constexpr, b_lay: ttgl.constexpr, s_lay: ttgl.constexpr,
+                           out_lay: ttgl.constexpr, VERSION: ttgl.constexpr):
     num_warps: ttgl.constexpr = ttgl.num_warps()
     offs_m = ttgl.arange(0, M, layout=ttgl.SliceLayout(1, a_lay))[:, None]
     offs_kp = ttgl.arange(0, KPACK, layout=ttgl.SliceLayout(0, a_lay))[None, :]
@@ -2682,8 +2680,8 @@ def _ppu_run_mma_scaled(M, N, K, fmt, group, scale_dtype, version):
     b_lay = ttgl.BlockedLayout([16, 1], [2, 16], [1, 4], [0, 1])
     s_lay = ttgl.BlockedLayout([1, 1], [16, 2], [4, 1], [1, 0])
     out_lay = default_blocked_layout([M, N], 4)
-    _ppu_mma_scaled_kernel[(1, )](a, b, a_scale, b_scale, out, M, N, K, group, kpack, fmt, fmt, a_lay, b_lay,
-                                       s_lay, out_lay, version, num_warps=4)
+    _ppu_mma_scaled_kernel[(1, )](a, b, a_scale, b_scale, out, M, N, K, group, kpack, fmt, fmt, a_lay, b_lay, s_lay,
+                                  out_lay, version, num_warps=4)
     torch.cuda.synchronize()
     ref = _ppu_scaled_ref(a_dec, b_dec, a_scale, b_scale, group, scale_dtype)
     torch.testing.assert_close(out, ref, rtol=1e-2, atol=1e-2)
@@ -2695,8 +2693,7 @@ def test_ppu_mma_scaled_v2(group, scale_dtype):
     _ppu_run_mma_scaled(64, 64, 64, "e2m1", group, scale_dtype, version=2)
 
 
-@pytest.mark.skipif(not (is_ppu_0010() or is_ppu_0015()),
-                    reason="AIU bulk-copy requires VMEM_AIU_LD (PPU0010/PPU0015)")
+@pytest.mark.skipif(not (is_ppu_0010() or is_ppu_0015()), reason="AIU bulk-copy requires VMEM_AIU_LD (PPU0010/PPU0015)")
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
 def test_ppu_aiu_load(dtype):
     M, N = 64, 64
@@ -2710,8 +2707,8 @@ def test_ppu_aiu_load(dtype):
     ttgl_dtype = ttgl.float16 if dtype == torch.float16 else ttgl.float32
 
     @gluon.jit
-    def kernel(a_ptr, out_ptr, M: ttgl.constexpr, N: ttgl.constexpr, BM: ttgl.constexpr,
-               BN: ttgl.constexpr, aiu_lay: ttgl.constexpr, DT: ttgl.constexpr):
+    def kernel(a_ptr, out_ptr, M: ttgl.constexpr, N: ttgl.constexpr, BM: ttgl.constexpr, BN: ttgl.constexpr,
+               aiu_lay: ttgl.constexpr, DT: ttgl.constexpr):
         num_warps: ttgl.constexpr = ttgl.num_warps()
         pid_m = ttgl.program_id(0)
         pid_n = ttgl.program_id(1)
@@ -2756,8 +2753,6 @@ def test_ppu_async_copy(dtype):
     torch.cuda.synchronize()
     torch.testing.assert_close(out[:xnumel], inp)
     torch.testing.assert_close(out[xnumel:], torch.zeros((XBLOCK - xnumel, YBLOCK), device="cuda", dtype=dtype))
-
-
 
 
 def test_math_fast_expf():

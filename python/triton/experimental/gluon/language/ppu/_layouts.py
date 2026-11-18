@@ -83,26 +83,25 @@ class PPUAIUSharedLayout(SharedLayout):
             tile shape / element width (see ``AIUUtility.h`` for more).
         order (List[int]): Memory order, fastest-varying dim first.
         cga_layout (List[List[int]]): Bases describing CTA tiling.
-        k_offset (int): Offset along the K dimension.  
+        k_offset (int): Offset along the K dimension.
 
     Current supported versions:
 
     - 1: PPU0010
     - 2: PPU0015
-            
+
     """
     version_major: int
     aiu_strategy: List[int]
     order: List[int]
-    cga_layout: List[List[int]] = field(default_factory=list)    
+    cga_layout: List[List[int]] = field(default_factory=list)
     k_offset: int = 0
-
 
     def __post_init__(self):
         super().__setattr__("version_major", _unwrap_if_constexpr(self.version_major))
         super().__setattr__("aiu_strategy", _unwrap_if_constexpr(self.aiu_strategy))
         super().__setattr__("order", _unwrap_if_constexpr(self.order))
-        super().__setattr__("cga_layout", _unwrap_if_constexpr(self.cga_layout))        
+        super().__setattr__("cga_layout", _unwrap_if_constexpr(self.cga_layout))
         super().__setattr__("k_offset", _unwrap_if_constexpr(self.k_offset))
 
 
@@ -136,12 +135,11 @@ class PPUAIUSharedLayout(SharedLayout):
         elem_bytes = element_bitwidth // 8
         strategy = compute_aiu_load_strategy(num_warps, tile_w, tile_c, elem_bytes, version_major)
         if strategy is None:
-            raise ValueError(
-                f"unsupported AIU load tile for version {version_major}: "
-                f"contiguous width {tile_w} elems, channel width {tile_c * elem_bytes} bytes, "
-                f"num_warps {num_warps}")
-        return PPUAIUSharedLayout(version_major=version_major, aiu_strategy=strategy, order=order,
-                                  cga_layout=cga_layout or [], k_offset=k_offset)
+            raise ValueError(f"unsupported AIU load tile for version {version_major}: "
+                             f"contiguous width {tile_w} elems, channel width {tile_c * elem_bytes} bytes, "
+                             f"num_warps {num_warps}")
+        return PPUAIUSharedLayout(version_major=version_major, aiu_strategy=strategy, order=order, cga_layout=cga_layout
+                                  or [], k_offset=k_offset)
 
     def _to_ir(self, builder):
         return builder.get_ppu_aiu_shared_layout(

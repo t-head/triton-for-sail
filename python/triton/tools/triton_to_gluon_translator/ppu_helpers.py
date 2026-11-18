@@ -14,12 +14,12 @@ from triton.tools.triton_to_gluon_translator.common_helpers import (
     tl_dot_decomposed_block_scales_impl,
 )
 from triton.tools.triton_to_gluon_translator.hopper_helpers import (
-    _get_default_input_precision,
-)
+    _get_default_input_precision, )
 
 # ---- architecture detection ----
 
 _IS_PPU_DEVICE: ttgl.constexpr = is_ppu_device()
+
 
 @gluon.constexpr_function
 def _is_ppu0010(target=None):
@@ -39,8 +39,10 @@ def get_mma_layout(shape, num_warps, version):
     rank = len(shape)
     assert rank in [2, 3], "PPU MMA supports 2D or batched 3D shapes"
     if rank == 2:
-        return ttgl.ppu.PPUMMADistributedLayout(version=[version, 0], warps_per_cta=[num_warps, 1], instr_shape=[16, 16])
-    return ttgl.ppu.PPUMMADistributedLayout(version=[version, 0], warps_per_cta=[num_warps, 1, 1], instr_shape=[1, 16, 16])
+        return ttgl.ppu.PPUMMADistributedLayout(version=[version, 0], warps_per_cta=[num_warps, 1],
+                                                instr_shape=[16, 16])
+    return ttgl.ppu.PPUMMADistributedLayout(version=[version, 0], warps_per_cta=[num_warps, 1, 1],
+                                            instr_shape=[1, 16, 16])
 
 
 @gluon.constexpr_function
@@ -58,7 +60,7 @@ def tl_dot_mma(a, b, acc, input_precision, out_dtype, version: ttgl.constexpr, m
     k_width: ttgl.constexpr = get_mma_k_width(a.type, b.type)
     a_layout: ttgl.constexpr = ttgl.DotOperandLayout(parent=mma_layout, operand_index=0, k_width=k_width)
     b_layout: ttgl.constexpr = ttgl.DotOperandLayout(parent=mma_layout, operand_index=1, k_width=k_width)
-    
+
     a = ttgl.convert_layout(a, a_layout)
     b = ttgl.convert_layout(b, b_layout)
 
@@ -115,7 +117,7 @@ def tl_dot_scaled_native(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format,
     version: ttgl.constexpr = 2
     num_warps: ttgl.constexpr = ttgl.num_warps()
     mma_layout: ttgl.constexpr = ttgl.ppu.PPUMMADistributedLayout(version=[version, 0], warps_per_cta=[num_warps, 1],
-                                                        instr_shape=[16, 16])
+                                                                  instr_shape=[16, 16])
 
     # _ops._mma_scaled converts operands/scales to the required DotOperand /
     # scale layouts internally, so blocked inputs are sufficient here.

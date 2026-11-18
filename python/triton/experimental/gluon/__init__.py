@@ -5,5 +5,6 @@ from . import amd
 from . import ppu
 
 __all__ = [
-    "aggregate", "amd", "constexpr_function", "GluonASTSource", "GluonJITFunction", "jit", "must_use_result", "nvidia", "ppu"
+    "aggregate", "amd", "constexpr_function", "GluonASTSource", "GluonJITFunction", "jit", "must_use_result", "nvidia",
+    "ppu"
 ]

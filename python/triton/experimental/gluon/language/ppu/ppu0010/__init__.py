@@ -18,9 +18,8 @@ def mma_v1(a, b, acc, input_precision=None, _semantic=None):
     mma = acc.type.layout
     vec_size = 2 if acc.dtype == float16 else 1
     if isinstance(mma, PPUMMADistributedLayout) and mma.vec_size != vec_size:
-        mma = PPUMMADistributedLayout(version=mma.version, warps_per_cta=mma.warps_per_cta,
-                                      instr_shape=mma.instr_shape, cga_layout=mma.cga_layout,
-                                      vec_size=vec_size)
+        mma = PPUMMADistributedLayout(version=mma.version, warps_per_cta=mma.warps_per_cta, instr_shape=mma.instr_shape,
+                                      cga_layout=mma.cga_layout, vec_size=vec_size)
         a = _semantic.convert_layout(a, DotOperandLayout(operand_index=0, parent=mma, k_width=a.type.layout.k_width))
         b = _semantic.convert_layout(b, DotOperandLayout(operand_index=1, parent=mma, k_width=b.type.layout.k_width))
         acc = _semantic.convert_layout(acc, mma)

@@ -5,6 +5,7 @@ from triton.language.core import _unwrap_if_constexpr
 from .._layouts import DistributedLinearLayout, DotOperandLayout
 from ._layouts import PPUMMADistributedLayout
 
+
 def _verify_mma(version, a, b, acc):
     """ Validate operands for a PPU MMA """
     _check(acc is not None, lambda: "acc is required")
@@ -17,14 +18,15 @@ def _verify_mma(version, a, b, acc):
     a_layout = a.type.layout
     _check(
         isinstance(a_layout, DotOperandLayout) and isinstance(a_layout.parent, PPUMMADistributedLayout)
-        and a_layout.parent.version == version and a_layout.operand_index == 0,
-        lambda: "Expected a's layout to be a DotOperandLayout(operand_index=0) with a matching PPUMMADistributedLayout parent")
+        and a_layout.parent.version == version and a_layout.operand_index == 0, lambda:
+        "Expected a's layout to be a DotOperandLayout(operand_index=0) with a matching PPUMMADistributedLayout parent")
 
     b_layout = b.type.layout
     _check(
         isinstance(b_layout, DotOperandLayout) and isinstance(b_layout.parent, PPUMMADistributedLayout)
-        and b_layout.parent.version == version and b_layout.operand_index == 1,
-        lambda: "Expected b's layout to be a DotOperandLayout(operand_index=1) with a matching PPUMMADistributedLayout parent")
+        and b_layout.parent.version == version and b_layout.operand_index == 1, lambda:
+        "Expected b's layout to be a DotOperandLayout(operand_index=1) with a matching PPUMMADistributedLayout parent")
+
 
 def _mma(version, a, b, acc, input_precision, semantic):
     """ Shared implementation for PPU MMA operations for Gluon builtins """
@@ -32,6 +34,7 @@ def _mma(version, a, b, acc, input_precision, semantic):
     handle = semantic.dot(a, b, acc, input_precision=input_precision, max_num_imprecise_acc=None,
                           out_dtype=acc.dtype).handle
     return ttgl.tensor(handle, acc.type)
+
 
 def _dot_scaled_scale_layout_v2(mma, operand_index, operand_shape, scale_shape, semantic):
     """ Scale layout for PPU0015 MMA v2 (inline ``convertScale`` lambda in ScaledBlockedToMMAv2) """
@@ -70,14 +73,16 @@ def _dot_scaled_scale_layout_v2(mma, operand_index, operand_shape, scale_shape, 
 
     return DistributedLinearLayout(reg_bases, lane_bases, warp_bases, [], scale_shape)
 
+
 def _mma_scaled(a, a_scale, a_type, b, b_scale, b_type, acc, semantic):
     """ Shared warp-level block-scaled MMA for PPU0015 (MMA v2) """
     _check(acc is not None, lambda: "acc is required")
     _check(acc.dtype == ttgl.float32, lambda: f"Expected fp32 acc, got {acc.dtype}")
 
     mma = acc.type.layout
-    _check(isinstance(mma, PPUMMADistributedLayout) and mma.version == [2, 0],
-           lambda: f"Expected acc layout to be a PPUMMADistributedLayout with version [2, 0], got {mma}")
+    _check(
+        isinstance(mma, PPUMMADistributedLayout) and mma.version == [2, 0],
+        lambda: f"Expected acc layout to be a PPUMMADistributedLayout with version [2, 0], got {mma}")
     _check(mma.instr_shape == [16, 16],
            lambda: f"PPU warp-level scaled MMA requires instr_shape [16, 16], got {mma.instr_shape}")
 
@@ -93,12 +98,11 @@ def _mma_scaled(a, a_scale, a_type, b, b_scale, b_type, acc, semantic):
     a = semantic.convert_layout(a, DotOperandLayout(operand_index=0, parent=mma, k_width=4))
     b = semantic.convert_layout(b, DotOperandLayout(operand_index=1, parent=mma, k_width=4))
 
-    a_scale = semantic.convert_layout(
-        a_scale, _dot_scaled_scale_layout_v2(mma, 0, list(a.shape), list(a_scale.shape), semantic))
-    b_scale = semantic.convert_layout(
-        b_scale, _dot_scaled_scale_layout_v2(mma, 1, list(b.shape), list(b_scale.shape), semantic))
+    a_scale = semantic.convert_layout(a_scale,
+                                      _dot_scaled_scale_layout_v2(mma, 0, list(a.shape), list(a_scale.shape), semantic))
+    b_scale = semantic.convert_layout(b_scale,
+                                      _dot_scaled_scale_layout_v2(mma, 1, list(b.shape), list(b_scale.shape), semantic))
 
-    ret = semantic.dot_scaled(a, a_scale, a_type, b, b_scale, b_type, acc,
-                              fast_math=False, lhs_k_pack=True, rhs_k_pack=True,
-                              out_dtype=ttgl.float32)
+    ret = semantic.dot_scaled(a, a_scale, a_type, b, b_scale, b_type, acc, fast_math=False, lhs_k_pack=True,
+                              rhs_k_pack=True, out_dtype=ttgl.float32)
     return ttgl.tensor(ret.handle, acc.type)

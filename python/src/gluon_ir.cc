@@ -309,7 +309,8 @@ py::object layoutToGluon(Attribute layout, bool isRubin = false) {
   } else if (auto ppuMma = dyn_cast<ttg::PPUMmaEncodingAttr>(layout)) {
     auto cgaBases = getCgaLayoutBases(ppuMma.getCGALayout());
     return layouts.PPUMMADistributedLayout(
-        std::vector<unsigned>{ppuMma.getVersionMajor(), ppuMma.getVersionMinor()},
+        std::vector<unsigned>{ppuMma.getVersionMajor(),
+                              ppuMma.getVersionMinor()},
         toStdVector(ppuMma.getWarpsPerCTA()),
         toStdVector(ppuMma.getInstrShape()), cgaBases, ppuMma.getVecSize());
   } else if (auto ppuAiu = dyn_cast<ttg::PPUAIUSharedEncodingAttr>(layout)) {
@@ -581,18 +582,19 @@ void init_gluon_ir(py::module_ &m) {
                  ctx, version[0], version[1], warpsPerCta, cgaLayout,
                  instrShape);
            })
-      .def("get_ppu_mma_layout",
-           [](GluonOpBuilder &self, unsigned versionMajor, unsigned versionMinor,
-              std::vector<unsigned> &warpsPerCta,
-              std::vector<std::vector<int32_t>> &cgaBases,
-              std::vector<unsigned> &instrShape, unsigned vecSize) -> Attribute {
-             auto ctx = self.getContext();
-             unsigned rank = warpsPerCta.size();
-             auto cgaLayout = buildCgaLayoutAttr(ctx, cgaBases, rank);
-             return ttg::PPUMmaEncodingAttr::get(
-                 ctx, versionMajor, versionMinor, warpsPerCta, cgaLayout,
-                 instrShape, vecSize);
-           })
+      .def(
+          "get_ppu_mma_layout",
+          [](GluonOpBuilder &self, unsigned versionMajor, unsigned versionMinor,
+             std::vector<unsigned> &warpsPerCta,
+             std::vector<std::vector<int32_t>> &cgaBases,
+             std::vector<unsigned> &instrShape, unsigned vecSize) -> Attribute {
+            auto ctx = self.getContext();
+            unsigned rank = warpsPerCta.size();
+            auto cgaLayout = buildCgaLayoutAttr(ctx, cgaBases, rank);
+            return ttg::PPUMmaEncodingAttr::get(ctx, versionMajor, versionMinor,
+                                                warpsPerCta, cgaLayout,
+                                                instrShape, vecSize);
+          })
       .def("get_amd_mfma_layout",
            [](GluonOpBuilder &self, unsigned version,
               std::vector<unsigned> &warpsPerCta,
@@ -1065,8 +1067,7 @@ void init_gluon_ir(py::module_ &m) {
              self.create<ttng::WaitBarrierOp>(memDesc, phase, pred, deps);
            })
       .def("create_ppu_mbarrier_arrive",
-           [](GluonOpBuilder &self, Value memDesc, uint32_t count,
-              Value pred) {
+           [](GluonOpBuilder &self, Value memDesc, uint32_t count, Value pred) {
              self.create<ttng::ArriveBarrierOp>(memDesc, count, pred);
            })
       .def(
@@ -1630,7 +1631,7 @@ void init_gluon_ir(py::module_ &m) {
             return py::none();
           return layoutToGluon(attr);
         });
-        
+
   m.def("compute_aiu_load_strategy",
         [](unsigned numWarps, unsigned xElems, unsigned channelElems,
            unsigned elemBytes, unsigned version) -> py::object {
