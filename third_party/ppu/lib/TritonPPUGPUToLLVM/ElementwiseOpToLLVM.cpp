@@ -614,13 +614,21 @@ struct FMulOpConversion
     Value fp32Source = rewriter.getRemappedValue(truncOp.getOperand());
     if (!fp32Source)
       return scalarMul();
-    SmallVector<Value> fp32Values =
-        unpackLLElements(loc, fp32Source, rewriter);
-    if (fp32Values.size() < operands.size())
+    auto fp32StructTy = dyn_cast<LLVM::LLVMStructType>(fp32Source.getType());
+    size_t numFP32Values = fp32StructTy ? fp32StructTy.getBody().size() : 1;
+    if (numFP32Values < operands.size())
       return scalarMul();
-    size_t offset = fp32Values.size() - operands.size();
+    size_t offset = numFP32Values - operands.size();
 
     auto b = TritonLLVMOpBuilder(loc, rewriter);
+    Value lowFP32 = fp32Source;
+    Value highFP32 = fp32Source;
+    if (fp32StructTy) {
+      lowFP32 =
+          b.extract_val(fp32StructTy.getBody()[offset], fp32Source, offset);
+      highFP32 = b.extract_val(fp32StructTy.getBody()[offset + 1], fp32Source,
+                               offset + 1);
+    }
     Type packedBF16Ty = vec_ty(bf16_ty, 2);
     Value other = b.undef(packedBF16Ty);
     for (unsigned i = 0; i < 2; ++i)
@@ -631,8 +639,8 @@ struct FMulOpConversion
     TIXBuilder builder;
     auto result = builder.newOperand("=r");
     auto otherOperand = builder.newOperand(other, "r");
-    auto low = builder.newOperand(fp32Values[offset], "f");
-    auto high = builder.newOperand(fp32Values[offset + 1], "f");
+    auto low = builder.newOperand(lowFP32, "f");
+    auto high = builder.newOperand(highFP32, "f");
     StringRef mulAsm = truncOperand == 0
                            ? "ppu.mul.rn.bf16x2 $0, rounded, $1; \n"
                            : "ppu.mul.rn.bf16x2 $0, $1, rounded; \n";
