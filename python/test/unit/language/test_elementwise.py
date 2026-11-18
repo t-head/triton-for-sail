@@ -35,7 +35,7 @@ def _trunc_mul_kernel(
 
 
 def _make_inputs(device, block):
-    a = (torch.arange(block, dtype=torch.float32) - block / 2) * 0.03125
+    a = (torch.arange(block, dtype=torch.float32) - block / 2) * 0.03125 + 0.001
     halfway = torch.tensor(
         [
             1.0 + 2**-8,
@@ -45,7 +45,7 @@ def _make_inputs(device, block):
             -(1.0 + 3 * 2**-8),
             0.0,
             -0.0,
-            255.0 + 2**0,
+            255.5,
         ],
         dtype=torch.float32,
     )
@@ -102,6 +102,20 @@ def test_bf16_trunc_mul_packed_bitwise(device, fresh_triton_cache, trunc_lhs):
     assert llir.count("ppu.cvt.rn.bf16x2.f32") >= 2
     assert llir.count("ppu.mul.rn.bf16x2") >= 2
     assert "ppu.mul.rn.bf16x2" not in reference_compiled.asm["llir"]
+    _assert_bf16_bitwise_equal(actual, expected)
+    assert torch.equal(actual_reduction.view(torch.int32), expected_reduction.view(torch.int32))
+
+
+def test_bf16_trunc_mul_order_sensitive_reduction(device, fresh_triton_cache):
+    a = torch.zeros(256, dtype=torch.float32, device=device)
+    b = torch.zeros(256, dtype=torch.bfloat16, device=device)
+    a[:4] = torch.tensor([2**24, 1.0, -(2**24), 1.0], device=device)
+    b[:4] = 1.0
+
+    compiled, actual, actual_reduction = _run_trunc_mul(a, b, True, False, True)
+    _, expected, expected_reduction = _run_trunc_mul(a, b, True, True, True)
+
+    assert "ppu.mul.rn.bf16x2" in compiled.asm["llir"]
     _assert_bf16_bitwise_equal(actual, expected)
     assert torch.equal(actual_reduction.view(torch.int32), expected_reduction.view(torch.int32))
 
