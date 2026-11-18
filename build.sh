@@ -8,6 +8,8 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR"
 
 python -m pip install -r python/requirements.txt
+python3 -m pip install pre-commit
+python3 -m pre_commit install
 
 if [[ -f /etc/os-release ]] && (. /etc/os-release; [[ "$ID" == alios ]]); then
     TRITON_CACHE="${TRITON_HOME:-$HOME}/.triton"
