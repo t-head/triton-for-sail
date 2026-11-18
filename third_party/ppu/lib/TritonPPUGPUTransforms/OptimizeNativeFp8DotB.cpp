@@ -102,7 +102,8 @@ void rewriteToNativeSharedK(ConvertLayoutOp cvtOp) {
   auto sharedSource = ConvertLayoutOp::create(builder, cvtOp.getLoc(),
                                               sharedSourceType, cvtOp.getSrc());
   auto sharedEncoding = triton::gpu::SwizzledSharedEncodingAttr::get(
-      ctx, 16, 2, 4, {0, 1}, triton::gpu::getCGALayout(srcEncoding));
+      ctx, dstDotOp, dstType.getShape(), {0, 1},
+      triton::gpu::getCGALayout(srcEncoding), dstType.getElementType());
   auto sharedMemorySpace =
       triton::gpu::SharedMemorySpaceAttr::get(srcType.getContext());
   auto tmpType = triton::gpu::MemDescType::get(

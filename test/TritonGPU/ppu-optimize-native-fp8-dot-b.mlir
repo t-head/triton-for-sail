@@ -17,14 +17,14 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
   }
 }
 // CHECK: #blocked1 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
-// CHECK: #shared = #ttg.swizzled_shared<{vec = 16, perPhase = 2, maxPhase = 4, order = [0, 1]}>
+// CHECK: #shared = #ttg.swizzled_shared<{vec = 16, perPhase = 4, maxPhase = 2, order = [0, 1]}>
 // CHECK-LABEL: @native_fp8_e4m3
 // CHECK: %[[REPACK:.*]] = ttg.convert_layout %arg1 : tensor<32x32xf8E4M3FN, #blocked> -> tensor<32x32xf8E4M3FN, #blocked1>
 // CHECK: %[[ALLOC:.*]] = ttg.local_alloc %[[REPACK]] : (tensor<32x32xf8E4M3FN, #blocked1>) -> !ttg.memdesc<32x32xf8E4M3FN, #shared, #smem>
 // CHECK: %[[LOAD:.*]] = ttg.local_load %[[ALLOC]] : !ttg.memdesc<32x32xf8E4M3FN, #shared, #smem> -> tensor<32x32xf8E4M3FN, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 4}>>
 // CHECK-NOT: ttg.convert_layout %arg1 : tensor<32x32xf8E4M3FN, #blocked> -> tensor<32x32xf8E4M3FN, #ttg.dot_op
 // CHECK: tt.dot %arg0, %[[LOAD]],
-// PIPELINE: #shared = #ttg.swizzled_shared<{vec = 16, perPhase = 2, maxPhase = 4, order = [0, 1]}>
+// PIPELINE: #shared = #ttg.swizzled_shared<{vec = 16, perPhase = 4, maxPhase = 2, order = [0, 1]}>
 // PIPELINE-LABEL: @native_fp8_e4m3
 // PIPELINE-NOT: ttg.convert_layout %arg1 : tensor<32x32xf8E4M3FN, #blocked> -> tensor<32x32xf8E4M3FN, #ttg.dot_op
 // PIPELINE: ttg.local_alloc %{{.*}} : (tensor<32x32xf8E4M3FN, #blocked1>) -> !ttg.memdesc<32x32xf8E4M3FN, #shared, #smem>
@@ -50,13 +50,13 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
   }
 }
 // CHECK: #blocked1 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
-// CHECK: #shared = #ttg.swizzled_shared<{vec = 16, perPhase = 2, maxPhase = 4, order = [0, 1]}>
+// CHECK: #shared = #ttg.swizzled_shared<{vec = 16, perPhase = 4, maxPhase = 2, order = [0, 1]}>
 // CHECK-LABEL: @native_fp8_e5m2
 // CHECK: %[[REPACK2:.*]] = ttg.convert_layout %arg1 : tensor<32x32xf8E5M2, #blocked> -> tensor<32x32xf8E5M2, #blocked1>
 // CHECK: %[[ALLOC2:.*]] = ttg.local_alloc %[[REPACK2]] : (tensor<32x32xf8E5M2, #blocked1>) -> !ttg.memdesc<32x32xf8E5M2, #shared, #smem>
 // CHECK: %[[LOAD2:.*]] = ttg.local_load %[[ALLOC2]] : !ttg.memdesc<32x32xf8E5M2, #shared, #smem> -> tensor<32x32xf8E5M2, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 4}>>
 // CHECK: tt.dot %arg0, %[[LOAD2]],
-// PIPELINE: #shared = #ttg.swizzled_shared<{vec = 16, perPhase = 2, maxPhase = 4, order = [0, 1]}>
+// PIPELINE: #shared = #ttg.swizzled_shared<{vec = 16, perPhase = 4, maxPhase = 2, order = [0, 1]}>
 // PIPELINE-LABEL: @native_fp8_e5m2
 // PIPELINE: ttg.local_alloc %{{.*}} : (tensor<32x32xf8E5M2, #blocked1>) -> !ttg.memdesc<32x32xf8E5M2, #shared, #smem>
 // PIPELINE-NOT: ttg.local_alloc
