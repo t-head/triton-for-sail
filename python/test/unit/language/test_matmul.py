@@ -1208,8 +1208,8 @@ def test_block_scale_fp4(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, VEC_SIZE, with_a_sc
         c = torch.zeros(M, N, dtype=torch.float32, device=device)
         ref_out = torch.zeros(M, N, dtype=torch.float32, device=device)
 
-        success = gemm_fp4.gemm_fp4_run(a_tensor, a_scale_tensor, b_tensor, b_scale_tensor, c, ref_out, 1.0, 0.0,
-                                        M_cutlass, N_cutlass, K_cutlass)
+        gemm_fp4.gemm_fp4_run(a_tensor, a_scale_tensor, b_tensor, b_scale_tensor, c, ref_out, 1.0, 0.0, M_cutlass,
+                              N_cutlass, K_cutlass)
     else:
         ref_out = torch.matmul(a_mxfp4.to(torch.float32) * a_scale_ref, b_ref * b_scale_ref)
 

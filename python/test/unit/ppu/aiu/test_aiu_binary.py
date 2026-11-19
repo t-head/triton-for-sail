@@ -26,10 +26,10 @@ def binary_kernel_aiu(a_ptr, b_ptr, c_ptr, M, K, BLOCK_SIZE_M: tl.constexpr, BLO
     offs_m = pid_m * BLOCK_SIZE_M
     offs_k = pid_k * BLOCK_SIZE_K
 
-    a = tl.aiu_load(a_ptr, [offs_m, offs_k], [BLOCK_SIZE_M, BLOCK_SIZE_K], [M, K], tl.float16)
-    b = tl.aiu_load(b_ptr, [offs_m, offs_k], [BLOCK_SIZE_M, BLOCK_SIZE_K], [M, K], tl.float16)
+    a = tl.aiu_load(a_ptr, [offs_m, offs_k], [BLOCK_SIZE_M, BLOCK_SIZE_K], [M, K], tl.float16)  # noqa: F841
+    b = tl.aiu_load(b_ptr, [offs_m, offs_k], [BLOCK_SIZE_M, BLOCK_SIZE_K], [M, K], tl.float16)  # noqa: F841
 
-    c = GENERATE_TEST_HERE
+    c = GENERATE_TEST_HERE  # noqa: F821
 
     offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     offs_ck = pid_k * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
@@ -48,13 +48,13 @@ def binary_kernel_aiu_mixed_load(a_ptr, b_ptr, c_ptr, M, K, BLOCK_SIZE_M: tl.con
     offs_am = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
     offs_ak = (pid_k * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)) % K
     a_ptrs = a_ptr + (offs_am[:, None] * K + offs_ak[None, :])
-    a = tl.load(a_ptrs, mask=offs_ak[None, :] < K, other=0.0)
+    a = tl.load(a_ptrs, mask=offs_ak[None, :] < K, other=0.0)  # noqa: F841
 
     offs_m = pid_m * BLOCK_SIZE_M
     offs_k = pid_k * BLOCK_SIZE_K
-    b = tl.aiu_load(b_ptr, [offs_m, offs_k], [BLOCK_SIZE_M, BLOCK_SIZE_K], [M, K], tl.float16)
+    b = tl.aiu_load(b_ptr, [offs_m, offs_k], [BLOCK_SIZE_M, BLOCK_SIZE_K], [M, K], tl.float16)  # noqa: F841
 
-    c = GENERATE_TEST_HERE
+    c = GENERATE_TEST_HERE  # noqa: F821
 
     offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     offs_ck = pid_k * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
@@ -79,8 +79,8 @@ def test_aiu_binary(op, num_stages, M, K, BLOCK_M, BLOCK_K, num_warps, mixed_loa
     B = torch.randn((M, K), dtype=torch.float16, device=device)
     C = torch.empty((M, K), dtype=torch.float16, device=device)
 
-    A_ref = A.to(torch.float16)
-    B_ref = B.to(torch.float16)
+    A_ref = A.to(torch.float16)  # noqa: F841
+    B_ref = B.to(torch.float16)  # noqa: F841
 
     kernel = patch_kernel(binary_kernel_aiu, {"GENERATE_TEST_HERE": f"a {op} b"})
     if mixed_load is True:

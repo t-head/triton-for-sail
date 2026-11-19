@@ -8,6 +8,11 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR"
 
 python -m pip install -r python/requirements.txt
+python -m pip install pre-commit
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    python -m pre_commit install ||
+        echo "warning: pre-commit hook installation failed; continuing build" >&2
+fi
 
 if [[ -f /etc/os-release ]] && (. /etc/os-release; [[ "$ID" == alios ]]); then
     TRITON_CACHE="${TRITON_HOME:-$HOME}/.triton"

@@ -13,10 +13,6 @@ import triton.language as tl
 @triton.jit
 def triton_poi_fused__to_copy_0(in_ptr0, out_ptr0, xnumel, XBLOCK: tl.constexpr):
     """int64 -> bfloat16 type cast pointwise kernel (scalar input)."""
-    xnumel = 1
-    xoffset = tl.program_id(0) * XBLOCK
-    xindex = xoffset + tl.arange(0, XBLOCK)[:]
-    xmask = tl.full([XBLOCK], True, tl.int1)[:]
     tmp0 = tl.load(in_ptr0 + (0))
     tl.static_assert(tmp0.dtype == tl.int64)
     tmp1 = tl.broadcast_to(tmp0, [XBLOCK])

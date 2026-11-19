@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Matrix Multiplication
 =====================
@@ -415,13 +416,13 @@ def matmul(a, b, output, M, N, K, a_scale, b_scale, VEC_SIZE, pack_along_k, acti
     grid = lambda META: (triton.cdiv(M, META['BLOCK_M']) * triton.cdiv(N, META['BLOCK_N']), )
 
     if args.reshape:
-        k = block_scale_fp4_matmul_reshape[grid](a, b, output, a_scale, b_scale, M, N, K, a_scale.stride(0),
-                                                 a_scale.stride(1), a_scale.stride(2), a_scale.stride(3), a.stride(0),
-                                                 a.stride(1), b.stride(0), b.stride(1), output.stride(0),
-                                                 output.stride(1), VEC_SIZE, PACK_ALONG_K=pack_along_k)
+        block_scale_fp4_matmul_reshape[grid](a, b, output, a_scale, b_scale, M, N, K, a_scale.stride(0),
+                                             a_scale.stride(1), a_scale.stride(2), a_scale.stride(3), a.stride(0),
+                                             a.stride(1), b.stride(0), b.stride(1), output.stride(0), output.stride(1),
+                                             VEC_SIZE, PACK_ALONG_K=pack_along_k)
     else:
         stride_scale = a_scale.stride(0)
-        k = block_scale_fp4_matmul[grid](
+        block_scale_fp4_matmul[grid](
             a,
             b,
             output,
@@ -588,7 +589,7 @@ def benchmark(M, N, K, provider):
     b_mxfp4 = MXFP4Tensor(size=(N, K), device=DEVICE).random()
     b = b_mxfp4.to_packed_tensor(dim=packing_dim).T
     # No need to pack along K since we convert each e2m1 to f32 directly for the reference matmul
-    b_ref = b_mxfp4.to(torch.float32).T
+    b_mxfp4.to(torch.float32).T
     if not args.reshape:
         a_size = (M, (K + VEC_SIZE - 1) // VEC_SIZE)
         b_size = (N, (K + VEC_SIZE - 1) // VEC_SIZE)
