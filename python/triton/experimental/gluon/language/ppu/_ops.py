@@ -76,23 +76,19 @@ def _dot_scaled_scale_layout_v2(mma, operand_index, operand_shape, scale_shape, 
 
 def _mma_scaled(a, a_scale, a_type, b, b_scale, b_type, acc, semantic):
     """ Shared warp-level block-scaled MMA for PPU0015 (MMA v2) """
-    _check(acc is not None, lambda: "acc is required")
-    _check(acc.dtype == ttgl.float32, lambda: f"Expected fp32 acc, got {acc.dtype}")
-
     mma = acc.type.layout
     _check(
         isinstance(mma, PPUMMADistributedLayout) and mma.version == [2, 0],
         lambda: f"Expected acc layout to be a PPUMMADistributedLayout with version [2, 0], got {mma}")
-    _check(mma.instr_shape == [16, 16],
-           lambda: f"PPU warp-level scaled MMA requires instr_shape [16, 16], got {mma.instr_shape}")
 
     a_type = _unwrap_if_constexpr(a_type)
     b_type = _unwrap_if_constexpr(b_type)
     _check(a_type == "e2m1" and b_type == "e2m1",
            lambda: f"PPU0015 (MMA v2) only supports fp4 (e2m1) scaled dot, got a={a_type}, b={b_type}")
-    if a_type == "e2m1":
-        _check(a.dtype == ttgl.uint8 and b.dtype == ttgl.uint8,
-               lambda: f"e2m1 operands must be packed as uint8, got a={a.dtype}, b={b.dtype}")
+    m, kpack = a.type.shape
+    n = b.type.shape[1]
+    _check(m >= 16 and n >= 16 and kpack >= 32,
+           lambda: f"PPU scaled MMA requires M >= 16, N >= 16, packed K >= 32, got M={m}, N={n}, packedK={kpack}")
 
     # 32 bits per register group -> kWidth = 4 for packed fp4 (uint8).
     a = semantic.convert_layout(a, DotOperandLayout(operand_index=0, parent=mma, k_width=4))

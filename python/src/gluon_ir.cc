@@ -317,7 +317,7 @@ py::object layoutToGluon(Attribute layout, bool isRubin = false) {
     auto cgaBases = getCgaLayoutBases(ppuAiu.getCGALayout());
     return layouts.PPUAIUSharedLayout(
         ppuAiu.getVersionMajor(), toStdVector(ppuAiu.getAIUStrategy()),
-        toStdVector(ppuAiu.getOrder()), ppuAiu.getKOffset(), cgaBases);
+        toStdVector(ppuAiu.getOrder()), cgaBases, ppuAiu.getKOffset());
   } else if (auto paddedShared =
                  dyn_cast<ttg::PaddedSharedEncodingAttr>(layout)) {
     auto *ctx = paddedShared.getContext();
@@ -1053,6 +1053,8 @@ void init_gluon_ir(py::module_ &m) {
              self.create<ttpg::AsyncAIUCopyGlobalToLocalOp>(ptr, coord, shape,
                                                             smem);
            })
+      // FIXME: PPU BarrierOp lowering is unsupported; these APIs temporarily
+      // reuse NVIDIA IR operations.
       .def("create_ppu_mbarrier_init",
            [](GluonOpBuilder &self, Value memDesc, int count) {
              self.create<ttng::InitBarrierOp>(memDesc, count);
