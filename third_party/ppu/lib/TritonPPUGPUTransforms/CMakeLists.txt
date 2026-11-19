@@ -1,11 +1,15 @@
 add_triton_library(TritonPPUGPUTransforms
   AcceleratePPUMatmul.cpp
   AIULowering.cpp
+  OptimizeNativeFp8DotB.cpp
   PPUReorderInstructions.cpp
 
   DEPENDS
   TritonPPUGPUTransformsIncGen
   TritonGPUIR
+
+  LINK_LIBS PUBLIC
+  TritonAnalysis
 )
 
 target_include_directories(TritonPPUGPUTransforms PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../../include)
