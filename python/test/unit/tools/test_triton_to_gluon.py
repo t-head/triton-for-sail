@@ -14,6 +14,8 @@ from triton._internal_testing import (
     is_hopper_or_newer,
     is_cuda,
     is_ppu,
+    is_ppu_0010,
+    is_ppu_0015,
     is_hip_cdna4,
     is_hip_gfx1250,
     is_hip_cdna3_or_newer,
@@ -104,8 +106,8 @@ def matmul_tile_kernel(a_ptr, b_ptr, c_ptr, BLOCK_M: tl.constexpr, BLOCK_N: tl.c
 
 
 def test_triton_to_gluon_dot_minimal(tmp_path):
-    if not (is_hopper_or_newer() or is_hip_cdna3_or_newer() or is_hip_gfx1250()):
-        pytest.skip("Requires Hopper, Blackwell, CDNA3+, or gfx1250")
+    if not (is_hopper_or_newer() or is_hip_cdna3_or_newer() or is_hip_gfx1250() or is_ppu_0010() or is_ppu_0015()):
+        pytest.skip("Requires Hopper, Blackwell, CDNA3+, gfx1250, or PPU0010/PPU0015")
     kernel = convert_kernel(matmul_tile_kernel, "matmul_tile_kernel", tmp_path)
     M, N, K = 128, 128, 128
     a = torch.randn((M, K), device="cuda", dtype=torch.float16)
@@ -241,8 +243,8 @@ def test_triton_to_gluon_dot_scaled(
     SCALE_FACTOR,
     tmp_path,
 ):
-    if not (is_hopper_or_newer() or is_hip_cdna4() or is_hip_gfx1250()):
-        pytest.skip("Requires Hopper, Blackwell, CDNA4, or gfx1250")
+    if not (is_hopper_or_newer() or is_hip_cdna4() or is_hip_gfx1250() or is_ppu_0010() or is_ppu_0015()):
+        pytest.skip("Requires Hopper, Blackwell, CDNA4, gfx1250, or PPU0010/PPU0015")
     torch.manual_seed(0)
 
     kernel = convert_kernel(dot_scaled_tile_kernel, "dot_scaled_tile_kernel", tmp_path)
@@ -356,8 +358,8 @@ def dot_transposed_operand_tile_kernel(
     ],
 )
 def test_triton_to_gluon_dot_transposed_operands(lhs_transposed, rhs_transposed, tmp_path):
-    if not is_hopper_or_newer():
-        pytest.skip("Requires Hopper or newer")
+    if not (is_hopper_or_newer() or is_ppu_0010() or is_ppu_0015()):
+        pytest.skip("Requires Hopper or newer, or PPU0010/PPU0015")
 
     kernel = convert_kernel(dot_transposed_operand_tile_kernel, "dot_transposed_operand_tile_kernel", tmp_path)
     block_m = block_n = block_k = 128
@@ -422,8 +424,8 @@ def matmul_kernel(  #
 @pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES", [(128, 128, 64, 1)])
 @pytest.mark.parametrize("NUM_WARPS", [4])
 def test_simple_matmul(dtype_src_str, dtype_dst_str, BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES, NUM_WARPS, tmp_path):
-    if not (is_hopper_or_newer() or is_hip_cdna4() or is_hip_gfx1250()):
-        pytest.skip("Requires Hopper, Blackwell, CDNA4, or gfx1250")
+    if not (is_hopper_or_newer() or is_hip_cdna4() or is_hip_gfx1250() or is_ppu_0010() or is_ppu_0015()):
+        pytest.skip("Requires Hopper, Blackwell, CDNA4, gfx1250, or PPU0010/PPU0015")
     device = "cuda"
     M, N, K = 1024, 512, 256
     torch.manual_seed(42)
