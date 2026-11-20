@@ -1410,6 +1410,8 @@ def test_histogram_small_masked_input(bins, num_warps, device):
             assert "bar.sync" not in compiled.asm["ptx"]
         elif is_hip():
             assert "s_barrier" not in compiled.asm["amdgcn"]
+        elif is_ppu():
+            assert "barrier.cta.sync" not in compiled.asm["llir"]
 
 
 @pytest.mark.parametrize("M", [64, 128, 256])

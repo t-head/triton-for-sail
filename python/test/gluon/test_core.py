@@ -2597,31 +2597,33 @@ def _ppu_mma_kernel(a_ptr, b_ptr, out_ptr, M: ttgl.constexpr, N: ttgl.constexpr,
 
 
 @pytest.mark.skipif(not is_ppu_0015(), reason="Requires PPU0015 (cc89)")
+@pytest.mark.parametrize("M, N, K", [(128, 64, 64), (128, 32, 16), (256, 64, 32)])
+@pytest.mark.parametrize("num_warps", [1, 2, 4, 8])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-def test_ppu_mma_v2(dtype):
-    M, N, K = 64, 64, 64
+def test_ppu_mma_v2(M, N, K, num_warps, dtype):
     a = (torch.randn(M, K, device="cuda") * 0.3).to(dtype)
     b = (torch.randn(K, N, device="cuda") * 0.3).to(dtype)
     out = torch.empty(M, N, device="cuda", dtype=torch.float32)
-    a_lay = ttgl.BlockedLayout([1, 8], [16, 2], [4, 1], [1, 0])
-    b_lay = ttgl.BlockedLayout([8, 1], [2, 16], [1, 4], [0, 1])
-    out_lay = default_blocked_layout([M, N], 4)
-    _ppu_mma_kernel[(1, )](a, b, out, M, N, K, a_lay, b_lay, out_lay, 2, num_warps=4)
+    a_lay = default_blocked_layout([M, K], num_warps)
+    b_lay = default_blocked_layout([K, N], num_warps)
+    out_lay = default_blocked_layout([M, N], num_warps)
+    _ppu_mma_kernel[(1, )](a, b, out, M, N, K, a_lay, b_lay, out_lay, 2, num_warps=num_warps)
     torch.cuda.synchronize()
     torch.testing.assert_close(out, a.float() @ b.float(), rtol=1e-2, atol=1e-2)
 
 
 @pytest.mark.skipif(not is_ppu_0010(), reason="Requires PPU0010 (cc80)")
+@pytest.mark.parametrize("M, N, K", [(128, 64, 64), (128, 32, 16), (256, 64, 32)])
+@pytest.mark.parametrize("num_warps", [1, 2, 4, 8])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-def test_ppu_mma_v1(dtype):
-    M, N, K = 64, 64, 64
+def test_ppu_mma_v1(M, N, K, num_warps, dtype):
     a = (torch.randn(M, K, device="cuda") * 0.3).to(dtype)
     b = (torch.randn(K, N, device="cuda") * 0.3).to(dtype)
     out = torch.empty(M, N, device="cuda", dtype=torch.float32)
-    a_lay = ttgl.BlockedLayout([1, 8], [16, 2], [4, 1], [1, 0])
-    b_lay = ttgl.BlockedLayout([8, 1], [2, 16], [1, 4], [0, 1])
-    out_lay = default_blocked_layout([M, N], 4)
-    _ppu_mma_kernel[(1, )](a, b, out, M, N, K, a_lay, b_lay, out_lay, 1, num_warps=4)
+    a_lay = default_blocked_layout([M, K], num_warps)
+    b_lay = default_blocked_layout([K, N], num_warps)
+    out_lay = default_blocked_layout([M, N], num_warps)
+    _ppu_mma_kernel[(1, )](a, b, out, M, N, K, a_lay, b_lay, out_lay, 1, num_warps=num_warps)
     torch.cuda.synchronize()
     torch.testing.assert_close(out, a.float() @ b.float(), rtol=1e-2, atol=1e-2)
 
@@ -2693,17 +2695,19 @@ def _ppu_run_mma_scaled(M, N, K, fmt, group, scale_dtype, version):
 
 
 @pytest.mark.skipif(not is_ppu_0015(), reason="Requires PPU0015 (cc89)")
-@pytest.mark.parametrize("group,scale_dtype", [(32, "e8m0")])
-def test_ppu_mma_scaled_v2(group, scale_dtype):
-    _ppu_run_mma_scaled(64, 64, 64, "e2m1", group, scale_dtype, version=2)
+@pytest.mark.parametrize("M, N, K", [(64, 64, 64), (128, 64, 128), (64, 128, 64), (128, 128, 128)])
+@pytest.mark.parametrize("scale_dtype", ["e8m0", "e4m3"])
+def test_ppu_mma_scaled_v2(M, N, K, scale_dtype):
+    # PPU0015 scaled MMA is fp4 (e2m1) only, with the standard MX group size of 32.
+    _ppu_run_mma_scaled(M, N, K, "e2m1", 32, scale_dtype, version=2)
 
 
 @pytest.mark.skipif(not (is_ppu_0010() or is_ppu_0015()), reason="Requires PPU0010/PPU0015)")
+@pytest.mark.parametrize("BM, BN", [(32, 32), (64, 64), (128, 64), (64, 128), (128, 128)])
+@pytest.mark.parametrize("num_warps", [1, 2, 4, 8])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
-def test_ppu_aiu_load(dtype):
-    M, N = 64, 64
-    BM, BN = 64, 64
-    num_warps = 4
+def test_ppu_aiu_load(BM, BN, num_warps, dtype):
+    M, N = BM * 2, BN * 2
     a = torch.randn(M, N, device="cuda", dtype=dtype)
     out = torch.empty_like(a)
     bw = 16 if dtype == torch.float16 else 32
@@ -2733,16 +2737,16 @@ def test_ppu_aiu_load(dtype):
 
 
 @pytest.mark.skipif(not is_ppu(), reason="Requires PPU")
+@pytest.mark.parametrize("XBLOCK, YBLOCK, xnumel", [(32, 32, 20), (64, 64, 33), (64, 128, 17), (128, 128, 65)])
+@pytest.mark.parametrize("num_warps", [1, 2, 4, 8])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
-def test_ppu_async_copy(dtype):
-    XBLOCK, YBLOCK = 32, 32
-    xnumel = 20
+def test_ppu_async_copy(XBLOCK, YBLOCK, xnumel, num_warps, dtype):
     inp = torch.randn((xnumel, YBLOCK), device="cuda", dtype=dtype)
     out = torch.empty((XBLOCK, YBLOCK), device="cuda", dtype=dtype)
 
     @gluon.jit
     def kernel(out_ptr, inp_ptr, xnumel, XBLOCK: ttgl.constexpr, YBLOCK: ttgl.constexpr):
-        blocked: ttgl.constexpr = ttgl.BlockedLayout([1, 4], [1, 32], [4, 1], [1, 0])
+        blocked: ttgl.constexpr = ttgl.BlockedLayout([1, 4], [1, 32], [ttgl.num_warps(), 1], [1, 0])
         shared: ttgl.constexpr = ttgl.SwizzledSharedLayout(1, 1, 1, order=[1, 0])
         smem = ttgl.allocate_shared_memory(inp_ptr.dtype.element_ty, [XBLOCK, YBLOCK], shared)
         xindex = ttgl.arange(0, XBLOCK, layout=ttgl.SliceLayout(1, blocked))[:, None]
@@ -2754,7 +2758,7 @@ def test_ppu_async_copy(dtype):
         val = smem.load(blocked)
         ttgl.store(out_ptr + xindex * YBLOCK + yindex, val)
 
-    kernel[(1, )](out, inp, xnumel, XBLOCK, YBLOCK, num_warps=4)
+    kernel[(1, )](out, inp, xnumel, XBLOCK, YBLOCK, num_warps=num_warps)
     torch.cuda.synchronize()
     torch.testing.assert_close(out[:xnumel], inp)
     torch.testing.assert_close(out[xnumel:], torch.zeros((XBLOCK - xnumel, YBLOCK), device="cuda", dtype=dtype))
