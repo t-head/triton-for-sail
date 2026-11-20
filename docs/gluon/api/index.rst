@@ -10,6 +10,7 @@ API Reference
    Language API <language>
    NVIDIA Intrinsics <nvidia>
    AMD Intrinsics <amd>
+   PPU Intrinsics <ppu>
 
 .. rubric:: Core APIs
 
@@ -23,4 +24,6 @@ API Reference
 - :doc:`NVIDIA Intrinsics <nvidia>`: target-specific APIs for NVIDIA Ampere,
   Hopper, and Blackwell GPUs.
 - :doc:`AMD Intrinsics <amd>`: target-specific APIs for AMD CDNA and RDNA GPU
+  generations.
+- :doc:`PPU Intrinsics <ppu>`: target-specific APIs for PPU0010 and PPU0015
   generations.

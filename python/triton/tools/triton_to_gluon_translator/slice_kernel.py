@@ -601,7 +601,11 @@ class SliceRewriter(ReferenceRewriter):
         self.cvt_context.pop()
         if callee in [TensorDescriptor, TensorDescriptor.from_tensor, create_ragged_descriptor
                       ] and not self.cvt_context[-1]:
-            self.inline_helpers.add("convert_host_descriptor")
+            if self.target.is_amd:
+                cvt_helper = "convert_host_descriptor_amd"
+            else:
+                cvt_helper = "convert_host_descriptor"
+            self.inline_helpers.add(cvt_helper)
             new_node = parse_expr(f"convert_host_descriptor({ast.unparse(new_node)})")
         return new_node
 

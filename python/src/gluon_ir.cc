@@ -18,6 +18,8 @@
 #include "third_party/amd/include/Dialect/TritonAMDGPU/IR/Dialect.h"
 #include "third_party/amd/lib/TritonAMDGPUToLLVM/TargetInfo.h"
 #include "third_party/amd/lib/TritonAMDGPUTransforms/Utility.h"
+#include "third_party/ppu/include/Dialect/TritonPPUGPU/IR/Dialect.h"
+#include "third_party/ppu/include/TritonPPUGPUToLLVM/AIUUtility.h"
 #include "triton/Analysis/Utility.h"
 #include "triton/Dialect/Gluon/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -42,6 +44,7 @@ namespace ttg = triton::gpu;
 namespace ttng = triton::nvidia_gpu;
 namespace gluon = mlir::triton::gluon;
 namespace ttag = mlir::triton::amdgpu;
+namespace ttpg = mlir::triton::ppu_gpu;
 
 namespace {
 
@@ -157,6 +160,8 @@ struct GluonLayouts {
   py::handle AMDWMMALayout;
   py::handle PaddedSharedLayout;
   py::handle PartitionedSharedLayout;
+  py::handle PPUMMADistributedLayout;
+  py::handle PPUAIUSharedLayout;
 
   GluonLayouts() {
     auto layouts =
@@ -195,6 +200,12 @@ struct GluonLayouts {
         "triton.experimental.gluon.language.amd.cdna5._layouts");
     PartitionedSharedLayout =
         py::object(cdna5Layouts.attr("PartitionedSharedLayout")).release();
+    auto ppuLayouts =
+        py::module_::import_("triton.experimental.gluon.language.ppu._layouts");
+    PPUMMADistributedLayout =
+        py::object(ppuLayouts.attr("PPUMMADistributedLayout")).release();
+    PPUAIUSharedLayout =
+        py::object(ppuLayouts.attr("PPUAIUSharedLayout")).release();
 
     auto core = py::module_::import_("triton.language.core");
   }
@@ -295,6 +306,18 @@ py::object layoutToGluon(Attribute layout, bool isRubin = false) {
         amdWmma.getVersion(), amdWmma.getIsTransposed(),
         ctaLayout.getBases().lookup(kWarp), ctaLayout.getBases().lookup(kReg),
         toStdVector(amdWmma.getInstrShape()), cgaBases, amdWmma.getRank());
+  } else if (auto ppuMma = dyn_cast<ttg::PPUMmaEncodingAttr>(layout)) {
+    auto cgaBases = getCgaLayoutBases(ppuMma.getCGALayout());
+    return layouts.PPUMMADistributedLayout(
+        std::vector<unsigned>{ppuMma.getVersionMajor(),
+                              ppuMma.getVersionMinor()},
+        toStdVector(ppuMma.getWarpsPerCTA()),
+        toStdVector(ppuMma.getInstrShape()), cgaBases, ppuMma.getVecSize());
+  } else if (auto ppuAiu = dyn_cast<ttg::PPUAIUSharedEncodingAttr>(layout)) {
+    auto cgaBases = getCgaLayoutBases(ppuAiu.getCGALayout());
+    return layouts.PPUAIUSharedLayout(
+        ppuAiu.getVersionMajor(), toStdVector(ppuAiu.getAIUStrategy()),
+        toStdVector(ppuAiu.getOrder()), cgaBases, ppuAiu.getKOffset());
   } else if (auto paddedShared =
                  dyn_cast<ttg::PaddedSharedEncodingAttr>(layout)) {
     auto *ctx = paddedShared.getContext();
@@ -559,6 +582,19 @@ void init_gluon_ir(py::module_ &m) {
                  ctx, version[0], version[1], warpsPerCta, cgaLayout,
                  instrShape);
            })
+      .def(
+          "get_ppu_mma_layout",
+          [](GluonOpBuilder &self, unsigned versionMajor, unsigned versionMinor,
+             std::vector<unsigned> &warpsPerCta,
+             std::vector<std::vector<int32_t>> &cgaBases,
+             std::vector<unsigned> &instrShape, unsigned vecSize) -> Attribute {
+            auto ctx = self.getContext();
+            unsigned rank = warpsPerCta.size();
+            auto cgaLayout = buildCgaLayoutAttr(ctx, cgaBases, rank);
+            return ttg::PPUMmaEncodingAttr::get(ctx, versionMajor, versionMinor,
+                                                warpsPerCta, cgaLayout,
+                                                instrShape, vecSize);
+          })
       .def("get_amd_mfma_layout",
            [](GluonOpBuilder &self, unsigned version,
               std::vector<unsigned> &warpsPerCta,
@@ -628,6 +664,17 @@ void init_gluon_ir(py::module_ &m) {
              return self.getChecked<ttg::NVMMASharedEncodingAttr>(
                  ctx, swizzleByteWidth, transposed, elementBitwidth, fp4Padded,
                  cgaLayout);
+           })
+      .def("get_ppu_aiu_shared_layout",
+           [](GluonOpBuilder &self, unsigned versionMajor,
+              std::vector<unsigned> &aiuStrategy, std::vector<unsigned> &order,
+              std::vector<std::vector<int32_t>> &cgaBases,
+              unsigned kOffset) -> Attribute {
+             auto ctx = self.getContext();
+             unsigned rank = order.size();
+             auto cgaLayout = buildCgaLayoutAttr(ctx, cgaBases, rank);
+             return ttg::PPUAIUSharedEncodingAttr::get(
+                 ctx, versionMajor, aiuStrategy, order, cgaLayout, kOffset);
            })
       .def("get_auto_layout",
            [](GluonOpBuilder &self) -> Attribute {
@@ -818,6 +865,11 @@ void init_gluon_ir(py::module_ &m) {
              self.create<ttag::AsyncCopyLocalToGlobalOp>(
                  smem, pointer, mask, cachePolicy, /*contiguity=*/1);
            })
+      .def("create_ppu_async_copy_mbarrier_arrive",
+           [](GluonOpBuilder &self, Value mbarrier, bool incrementCount) {
+             self.create<ttng::AsyncCopyMbarrierArriveOp>(mbarrier,
+                                                          !incrementCount);
+           })
       .def("create_async_copy_mbarrier_arrive",
            [](GluonOpBuilder &self, Value mbarrier, bool incrementCount) {
              self.create<ttng::AsyncCopyMbarrierArriveOp>(mbarrier,
@@ -994,6 +1046,31 @@ void init_gluon_ir(py::module_ &m) {
              auto wait = self.create<ttng::WarpGroupDotWaitOp>(deps, pendings);
              llvm::append_range(results, wait.getResults());
              return results;
+           })
+      .def("create_async_aiu_copy_global_to_local",
+           [](GluonOpBuilder &self, Value smem, Value ptr,
+              std::vector<Value> &coord, std::vector<Value> &shape) {
+             self.create<ttpg::AsyncAIUCopyGlobalToLocalOp>(ptr, coord, shape,
+                                                            smem);
+           })
+      // FIXME: PPU BarrierOp lowering is unsupported; these APIs temporarily
+      // reuse NVIDIA IR operations.
+      .def("create_ppu_mbarrier_init",
+           [](GluonOpBuilder &self, Value memDesc, int count) {
+             self.create<ttng::InitBarrierOp>(memDesc, count);
+           })
+      .def("create_ppu_mbarrier_inval",
+           [](GluonOpBuilder &self, Value memDesc) {
+             self.create<ttng::InvalBarrierOp>(memDesc);
+           })
+      .def("create_ppu_mbarrier_wait",
+           [](GluonOpBuilder &self, Value memDesc, Value phase, Value pred,
+              std::vector<Value> &deps) {
+             self.create<ttng::WaitBarrierOp>(memDesc, phase, pred, deps);
+           })
+      .def("create_ppu_mbarrier_arrive",
+           [](GluonOpBuilder &self, Value memDesc, uint32_t count, Value pred) {
+             self.create<ttng::ArriveBarrierOp>(memDesc, count, pred);
            })
       .def(
           "create_tmem_alloc",
@@ -1555,6 +1632,17 @@ void init_gluon_ir(py::module_ &m) {
           if (!attr)
             return py::none();
           return layoutToGluon(attr);
+        });
+
+  m.def("compute_aiu_load_strategy",
+        [](unsigned numWarps, unsigned xElems, unsigned channelElems,
+           unsigned elemBytes, unsigned version) -> py::object {
+          auto strategy = mlir::LLVM::PPU::AIULoadStrategy(
+              numWarps, xElems, channelElems, elemBytes, version);
+          if (mlir::failed(strategy))
+            return py::none();
+          return py::cast(
+              std::vector<unsigned>(strategy->begin(), strategy->end()));
         });
 
   m.def("get_amd_wmma_scale_layout",

@@ -16,6 +16,7 @@ from triton.experimental.gluon.language.nvidia.hopper import cluster
 from triton.experimental.gluon.language.nvidia.blackwell import mbarrier, tma, TensorMemoryLayout, TensorMemoryScalesLayout, async_copy
 from triton.experimental.gluon.nvidia.hopper import TensorDescriptor
 from triton.experimental.gluon.language.amd import _layouts as amd_layouts
+from triton.experimental.gluon.language.ppu import PPUMMADistributedLayout, PPUAIUSharedLayout
 from triton.experimental.gluon.language.amd.cdna4 import async_copy as cdna4_async_copy
 from triton.experimental.gluon.language.amd.cdna5 import async_copy as cdna5_async_copy
 from triton.experimental.gluon.language.amd.cdna5 import mbarrier as cdna5_mbarrier
@@ -30,6 +31,7 @@ from triton._filecheck import filecheck_test, run_filecheck_test, run_parser
 from triton.runtime.jit import MockTensor
 import triton.language as tl
 from triton.compiler.errors import CompilationError, CompileTimeAssertionFailure
+from triton._internal_testing import is_ppu
 
 
 @filecheck_test
@@ -67,6 +69,8 @@ BLACKWELL_TARGET = GPUTarget("cuda", 100, 32)
 RUBIN_TARGET = GPUTarget("cuda", 107, 32)
 HOPPER_TARGET = GPUTarget("cuda", 90, 32)
 AMPERE_TARGET = GPUTarget("cuda", 80, 32)
+PPU0010_TARGET = GPUTarget("cuda", 80, 32)
+PPU0015_TARGET = GPUTarget("cuda", 89, 32)
 HIP_TARGET_RDNA3 = GPUTarget("hip", "gfx1100", 32)
 HIP_TARGET_RDNA4 = GPUTarget("hip", "gfx1200", 32)
 HIP_TARGET_CDNA3 = GPUTarget("hip", "gfx942", 64)
@@ -5970,3 +5974,54 @@ def test_tma_cache_policy_frontend_invalid(kind, policy, message):
     with pytest.raises(CompilationError, match=message):
         run_parser(tma_cache_policy_kernel, *make_args(make_tma_cache_policy_desc(kind=kind), False, policy, kind,
                                                        False), target=BLACKWELL_TARGET)
+
+
+@gluon.jit
+def ppu_mma_layout_kernel():
+    ttgl.full([64, 64], 0, ttgl.float32, layout=PPUMMADistributedLayout(version=[1, 0], warps_per_cta=[4, 1],
+                                                                        instr_shape=[16, 16]))
+    ttgl.full([64, 64], 0, ttgl.float32, layout=PPUMMADistributedLayout(version=[2, 0], warps_per_cta=[4, 1],
+                                                                        instr_shape=[16, 16]))
+
+
+@pytest.mark.skipif(not is_ppu(), reason="PPU frontend IR requires the PPU backend")
+@pytest.mark.parametrize("target", [PPU0010_TARGET, PPU0015_TARGET])
+def test_ppu_mma_layout(target):
+    module = run_parser(ppu_mma_layout_kernel, target=target)
+    expecttest.assert_expected_inline(
+        anonymize_ir(module.str_nodebug()), """\
+#mma = #ttg.ppu_mma<{versionMajor = 1, versionMinor = 0, warpsPerCTA = [4, 1], instrShape = [16, 16], vecSize = 2}>
+#mma1 = #ttg.ppu_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [4, 1], instrShape = [16, 16], vecSize = 2}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "...", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func public @ppu_mma_layout_kernel() attributes {noinline = false} {
+    %cst = arith.constant 0.000000e+00 : f32
+    %cst_0 = arith.constant dense<0.000000e+00> : tensor<64x64xf32, #mma>
+    %cst_1 = arith.constant 0.000000e+00 : f32
+    %cst_2 = arith.constant dense<0.000000e+00> : tensor<64x64xf32, #mma1>
+    tt.return
+  }
+}
+""")
+
+
+@gluon.jit
+def ppu_aiu_shared_layout_kernel():
+    ttgl.allocate_shared_memory(ttgl.float16, [64, 64],
+                                PPUAIUSharedLayout(version_major=2, aiu_strategy=[1, 1, 1, 1], order=[1, 0]))
+
+
+@pytest.mark.skipif(not is_ppu(), reason="PPU frontend IR requires the PPU backend")
+@pytest.mark.parametrize("target", [PPU0015_TARGET])
+def test_ppu_aiu_shared_layout(target):
+    module = run_parser(ppu_aiu_shared_layout_kernel, target=target)
+    expecttest.assert_expected_inline(
+        anonymize_ir(module.str_nodebug()), """\
+#shared = #ttg.ppu_aiu_shared<{versionMajor = 2, AIUStrategy = [1, 1, 1, 1], order = [1, 0]}>
+#smem = #ttg.shared_memory
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "...", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func public @ppu_aiu_shared_layout_kernel() attributes {noinline = false} {
+    %0 = ttg.local_alloc : () -> !ttg.memdesc<64x64xf16, #shared, #smem, mutable>
+    tt.return
+  }
+}
+""")

@@ -30,7 +30,9 @@ pytestmark = pytest.mark.skipif(
 def _convert_host_descriptor(desc):
     """Import and call the target-appropriate convert_host_descriptor."""
     target = current_target()
-    if target is not None and target.backend == "hip":
+    if is_ppu():
+        from triton.tools.triton_to_gluon_translator.ppu_helpers import convert_host_descriptor
+    elif target is not None and target.backend == "hip":
         from triton.tools.triton_to_gluon_translator.amd_helpers import convert_host_descriptor
     else:
         from triton.tools.triton_to_gluon_translator.nvidia_helpers import convert_host_descriptor
@@ -39,7 +41,10 @@ def _convert_host_descriptor(desc):
 
 def convert_kernel(kernel, kernel_name, tmp_path):
     t = current_target()
-    target = TranslatorTarget(f"sm{t.arch}" if t.backend == "cuda" else t.arch)
+    if is_ppu():
+        target = {80: TranslatorTarget.PPU0010, 89: TranslatorTarget.PPU0015}[t.arch]
+    else:
+        target = TranslatorTarget(f"sm{t.arch}" if t.backend == "cuda" else t.arch)
 
     converted = convert_triton_to_gluon([kernel], target=target)
 
