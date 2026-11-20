@@ -106,8 +106,8 @@ def matmul_tile_kernel(a_ptr, b_ptr, c_ptr, BLOCK_M: tl.constexpr, BLOCK_N: tl.c
 
 
 def test_triton_to_gluon_dot_minimal(tmp_path):
-    if not (is_hopper_or_newer() or is_hip_cdna3_or_newer() or is_hip_gfx1250() or is_ppu_0010() or is_ppu_0015()):
-        pytest.skip("Requires Hopper, Blackwell, CDNA3+, gfx1250, or PPU0010/PPU0015")
+    if not (is_hopper_or_newer() or is_hip_cdna3_or_newer() or is_hip_gfx1250() or is_ppu()):
+        pytest.skip("Requires Hopper, Blackwell, CDNA3+, gfx1250, or PPU")
     kernel = convert_kernel(matmul_tile_kernel, "matmul_tile_kernel", tmp_path)
     M, N, K = 128, 128, 128
     a = torch.randn((M, K), device="cuda", dtype=torch.float16)
@@ -642,7 +642,7 @@ def cat_translation_kernel(x_ptr, y_ptr, out_ptr, BLOCK: tl.constexpr, CAN_REORD
 
 
 @pytest.mark.parametrize("can_reorder", [False, True])
-@pytest.mark.skipif(not is_cuda(), reason="Requires CUDA")
+@pytest.mark.skipif(not (is_cuda() or is_ppu()), reason="Requires CUDA or PPU")
 def test_cat_translation(tmp_path, can_reorder):
     kernel = convert_kernel(cat_translation_kernel, "cat_translation_kernel", tmp_path)
 
@@ -687,7 +687,7 @@ def extrema_reduce_kernel(x_ptr, max_ptr, min_ptr, BLOCK: tl.constexpr):
     tl.store(min_ptr + tl.arange(0, BLOCK // 2), tl.min(x, axis=1))
 
 
-@pytest.mark.skipif(not is_cuda(), reason="Requires CUDA")
+@pytest.mark.skipif(not (is_cuda() or is_ppu()), reason="Requires CUDA or PPU")
 def test_extrema_reduction(tmp_path):
     kernel = convert_kernel(extrema_reduce_kernel, "extrema_reduce_kernel", tmp_path)
 
