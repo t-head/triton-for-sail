@@ -51,6 +51,18 @@ def TritonPPUAIULoweringPass : Pass<"tritonppu-aiu-lowering", "mlir::ModuleOp"> 
                            "mlir::triton::TritonDialect"];
 }
 
+def TritonPPUAIUStandardizeSharedPass : Pass<"tritonppu-standardize-aiu-shared", "mlir::ModuleOp"> {
+  let summary = "standardize canonical AIU shared layouts";
+
+  let description = [{
+    Convert proven canonical AIU physical layouts to standard swizzled shared encodings
+  }];
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::ppu_gpu::TritonPPUGPUDialect",
+                           "mlir::triton::TritonDialect"];
+}
+
 def TritonPPUGPUReorderInstructions: Pass<"tritonppugpu-reorder-instructions", "mlir::ModuleOp"> {
   let summary = "Reorder instructions";
 

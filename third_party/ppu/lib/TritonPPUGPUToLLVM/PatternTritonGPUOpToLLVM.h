@@ -27,6 +27,8 @@
 #include "TargetInfo.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "triton/Analysis/AxisInfo.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/SharedPhysicalLayout.h"
 
 namespace mlir {
 namespace triton {
@@ -37,11 +39,16 @@ void populateConvertLayoutOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                            RewritePatternSet &patterns,
                                            PatternBenefit benefit);
 
-void populateMemoryOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
-                                    const TargetInfo &targetInfo,
-                                    RewritePatternSet &patterns,
-                                    ModuleAxisInfoAnalysis &axisInfoAnalysis,
-                                    PatternBenefit benefit);
+bool supportsAIUOrdinaryLdMatrix(
+    RankedTensorType tensorTy, triton::gpu::MemDescType memDescType,
+    triton::gpu::PPUAIUSharedEncodingAttr aiuEnc,
+    const triton::gpu::SharedPhysicalLayout &layout, bool isPPU0015, int nVecs);
+
+void populateMemoryOpToLLVMPatterns(
+    LLVMTypeConverter &typeConverter, const TargetInfo &targetInfo,
+    RewritePatternSet &patterns, ModuleAxisInfoAnalysis &axisInfoAnalysis,
+    PatternBenefit benefit, bool enableTixSwzl = false,
+    bool enableAIULdMatrixOrdinary = false);
 
 void populateConvertLayoutOpToLLVMOptimizedPatterns(
     LLVMTypeConverter &typeConverter, const TargetInfo &targetInfo,

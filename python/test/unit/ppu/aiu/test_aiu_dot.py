@@ -2,6 +2,7 @@ import pytest
 import torch
 import triton
 import triton.language as tl
+from triton.backends.ppu.compiler import HGGCOptions
 
 torch.set_printoptions(profile="full")
 
@@ -369,6 +370,115 @@ def test_aiu_matmul_16x16_block(monkeypatch, num_stages, M, N, K, BLOCK_M, BLOCK
     ref_out = torch.matmul(A.to(torch.float32), B.to(torch.float32)).to(torch.float16)
     torch.testing.assert_close(ref_out, C, rtol=1e-3, atol=1e-3)
 
+
+def _run_aiu_ordinary_route(a, b, num_warps, enable, block_k=None, num_stages=1,
+                            enable_tix=False):
+    matmul_kernel_aiu.device_caches.clear()
+    m, k = a.shape
+    n = b.shape[1]
+    c = torch.empty((m, n), dtype=torch.float16, device=a.device)
+    compiled = matmul_kernel_aiu[(1, 1, 1)](
+        a,
+        b,
+        c,
+        a.stride(0),
+        a.stride(1),
+        b.stride(0),
+        b.stride(1),
+        c.stride(0),
+        c.stride(1),
+        m,
+        n,
+        k,
+        m,
+        n,
+        block_k or k,
+        num_warps=num_warps,
+        num_stages=num_stages,
+        enable_aiu_ldmatrix_ordinary=enable,
+        enable_tix_ldmatrix_swzl=enable_tix,
+    )
+    torch.cuda.synchronize()
+    return c, compiled.asm['llir']
+
+
+@pytest.mark.parametrize('size,num_warps', [
+    (16, 1),
+    (32, 1),
+    (64, 1),
+    (64, 4),
+    (64, 8),
+    (128, 4),
+])
+def test_aiu_ldmatrix_ordinary_exact(size, num_warps):
+    values = torch.arange(size * size, device='cuda', dtype=torch.int32).remainder(5) - 2
+    a = values.to(torch.float16).reshape(size, size)
+    b = values.flip(0).to(torch.float16).reshape(size, size)
+    reference = torch.matmul(a.cpu().to(torch.int32), b.cpu().to(torch.int32)).to(torch.float16)
+
+    default_c, default_llir = _run_aiu_ordinary_route(a, b, num_warps, False)
+    ordinary_c, ordinary_llir = _run_aiu_ordinary_route(a, b, num_warps, True)
+    final_c, final_llir = _run_aiu_ordinary_route(a, b, num_warps, False)
+
+    assert 'ppu.cp.async.aiu' in default_llir
+    assert 'ldmatrix.swzl.sync.bulk.tensor' in default_llir
+    assert 'ppu.cp.async.aiu' in ordinary_llir
+    assert 'ppu.ldmatrix.sync.aligned' in ordinary_llir
+    assert 'ldmatrix.swzl.sync.bulk.tensor' not in ordinary_llir
+    default_global = next(line for line in default_llir.splitlines() if '@global_smem =' in line)
+    ordinary_global = next(line for line in ordinary_llir.splitlines() if '@global_smem =' in line)
+    if size in (32, 64):
+        # Canonical standard buffers retain the AIU-required 128-byte alignment.
+        assert 'align 128' in ordinary_global
+    else:
+        assert ordinary_global == default_global
+    assert torch.equal(ordinary_c.cpu(), reference)
+    assert torch.equal(ordinary_c, default_c)
+    assert torch.equal(final_c, default_c)
+    assert final_llir == default_llir
+
+
+@pytest.mark.parametrize('size,num_warps', [(32, 1), (64, 4)])
+def test_aiu_standard_tix_exact(size, num_warps):
+    values = torch.arange(size * size, device='cuda', dtype=torch.int32).remainder(5) - 2
+    a = values.to(torch.float16).reshape(size, size)
+    b = values.flip(0).to(torch.float16).reshape(size, size)
+    reference = torch.matmul(a.cpu().to(torch.int32), b.cpu().to(torch.int32)).to(torch.float16)
+
+    default_c, default_llir = _run_aiu_ordinary_route(a, b, num_warps, False)
+    tix_c, tix_llir = _run_aiu_ordinary_route(a, b, num_warps, True, enable_tix=True)
+
+    assert 'ppu.cp.async.aiu' in tix_llir
+    assert 'ldmatrix.swzl.sync.bulk.tensor' in tix_llir
+    assert 'ppu.ldmatrix.sync.aligned' not in tix_llir
+    assert torch.equal(tix_c.cpu(), reference)
+    assert torch.equal(tix_c, default_c)
+
+
+@pytest.mark.parametrize('size,num_warps,block_k,num_stages', [
+    (64, 1, 32, 2),
+    (64, 4, 16, 2),
+    (64, 4, 16, 4),
+])
+def test_aiu_ldmatrix_ordinary_pipeline(size, num_warps, block_k, num_stages):
+    values = torch.arange(size * size, device='cuda', dtype=torch.int32).remainder(5) - 2
+    a = values.to(torch.float16).reshape(size, size)
+    b = values.flip(0).to(torch.float16).reshape(size, size)
+    reference = torch.matmul(a.cpu().to(torch.int32), b.cpu().to(torch.int32)).to(torch.float16)
+
+    default_c, _ = _run_aiu_ordinary_route(a, b, num_warps, False, block_k, num_stages)
+    ordinary_c, ordinary_llir = _run_aiu_ordinary_route(a, b, num_warps, True, block_k, num_stages)
+
+    assert 'ppu.cp.async.aiu' in ordinary_llir
+    assert 'ppu.ldmatrix.sync.aligned' in ordinary_llir
+    assert 'ldmatrix.swzl.sync.bulk.tensor' not in ordinary_llir
+    assert torch.equal(ordinary_c.cpu(), reference)
+    assert torch.equal(ordinary_c, default_c)
+
+
+def test_aiu_ldmatrix_ordinary_hash():
+    assert HGGCOptions(enable_aiu_ldmatrix_ordinary=False).hash() != HGGCOptions(
+        enable_aiu_ldmatrix_ordinary=True).hash()
 
 # from _pytest.monkeypatch import MonkeyPatch
 # mp = MonkeyPatch()

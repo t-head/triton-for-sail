@@ -49,15 +49,18 @@ struct AllocateSharedMemoryPPU
           AllocateSharedMemoryPPU> {
   using AllocateSharedMemoryPPUBase::AllocateSharedMemoryPPUBase;
 
-  AllocateSharedMemoryPPU(int32_t computeCapability)
-      : AllocateSharedMemoryPPUBase({computeCapability}) {}
+  AllocateSharedMemoryPPU(int32_t computeCapability, bool enableTixLdMatrixSwzl)
+      : AllocateSharedMemoryPPUBase(
+            {computeCapability, enableTixLdMatrixSwzl}) {}
 
   void runOnOperation() override {
     ModuleOp mod = getOperation();
     mlir::triton::ppu::TargetInfo targetInfo(computeCapability);
     ModuleAllocation allocation(
-        mod, mlir::triton::ppu_gpu::getPPUAllocationAnalysisScratchSizeFn(
-                 targetInfo));
+        mod,
+        mlir::triton::ppu_gpu::getPPUAllocationAnalysisScratchSizeFn(
+            targetInfo),
+        /*sharedMemoryPartitionSize=*/0, enableTixLdMatrixSwzl);
     mlir::triton::gpu::attachAllocationSizeAndOffsetAttr(mod, allocation);
   }
 };
@@ -106,7 +109,9 @@ getPPUAllocationAnalysisScratchSizeFn(TargetInfoBase &targetInfo) {
 
 namespace mlir::triton {
 std::unique_ptr<OperationPass<ModuleOp>>
-createAllocateSharedMemoryPPUPass(int32_t computeCapability) {
-  return std::make_unique<AllocateSharedMemoryPPU>(computeCapability);
+createAllocateSharedMemoryPPUPass(int32_t computeCapability,
+                                  bool enableTixLdMatrixSwzl) {
+  return std::make_unique<AllocateSharedMemoryPPU>(computeCapability,
+                                                   enableTixLdMatrixSwzl);
 }
 } // namespace mlir::triton

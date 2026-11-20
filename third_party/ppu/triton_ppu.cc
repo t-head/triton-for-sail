@@ -39,15 +39,24 @@ namespace py = nanobind;
 
 void init_triton_ppu_passes_ttgpuir(py::module_ &m) {
   using namespace mlir::triton;
-  m.def("add_allocate_shared_memory_ppu", [](mlir::PassManager &pm,
-                                             int32_t capability) {
-    pm.addPass(mlir::triton::createAllocateSharedMemoryPPUPass(capability));
-  });
-  m.def("add_to_llvmir", [](mlir::PassManager &pm, int32_t capability) {
-    pm.addPass(mlir::triton::createConvertTritonGPUToLLVMPPUPass(capability));
-  });
-  ADD_PASS_WRAPPER_0("add_accelerate_matmul",
-                     mlir::createTritonPPUGPUAccelerateMatmul);
+  m.def("add_allocate_shared_memory_ppu",
+        [](mlir::PassManager &pm, int32_t capability,
+           bool enableTixLdMatrixSwzl) {
+          pm.addPass(mlir::triton::createAllocateSharedMemoryPPUPass(
+              capability, enableTixLdMatrixSwzl));
+        },
+        py::arg("pm"), py::arg("capability"),
+        py::arg("enable_tix_ldmatrix_swzl") = false);
+  m.def("add_to_llvmir",
+        [](mlir::PassManager &pm, int32_t capability,
+           bool enableTixLdMatrixSwzl, bool enableAIULdMatrixOrdinary) {
+          pm.addPass(mlir::triton::createConvertTritonGPUToLLVMPPUPass(
+              capability, enableTixLdMatrixSwzl, enableAIULdMatrixOrdinary));
+        },
+        py::arg("pm"), py::arg("capability"),
+        py::arg("enable_tix_ldmatrix_swzl") = false,
+        py::arg("enable_aiu_ldmatrix_ordinary") = false);
+  ADD_PASS_WRAPPER_0("add_accelerate_matmul", mlir::createTritonPPUGPUAccelerateMatmul);
   ADD_PASS_WRAPPER_0("add_convert_libdevice_func_to_ppu",
                      mlir::triton::createConvertLibdeviceFuncToPPUPass);
   ADD_PASS_WRAPPER_0("add_ppu_reorder_instructions",
@@ -56,6 +65,8 @@ void init_triton_ppu_passes_ttgpuir(py::module_ &m) {
 
 void init_triton_ppu_passes_ttppugpuir(py::module_ &m) {
   ADD_PASS_WRAPPER_0("add_aiu_lowering", mlir::createTritonPPUAIULoweringPass);
+  ADD_PASS_WRAPPER_0("add_standardize_aiu_shared",
+                     mlir::createTritonPPUAIUStandardizeSharedPass);
   ADD_PASS_WRAPPER_0("add_ppugpu_to_llvm",
                      mlir::triton::createConvertPPUGPUToLLVM);
 }

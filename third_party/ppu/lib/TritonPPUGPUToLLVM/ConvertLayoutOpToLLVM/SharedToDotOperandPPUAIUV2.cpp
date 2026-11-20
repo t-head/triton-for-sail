@@ -26,6 +26,7 @@
 #include "Utility.h"
 #include "mlir/Support/LLVM.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/PPUAIUPlan.h"
 
 using namespace mlir;
 
@@ -35,6 +36,8 @@ using ::mlir::triton::gpu::DotOperandEncodingAttr;
 using ::mlir::triton::gpu::getShapePerCTA;
 using ::mlir::triton::gpu::MemDescType;
 using ::mlir::triton::gpu::PPUAIUSharedEncodingAttr;
+using ::mlir::triton::gpu::PPUAIUPlan;
+using ::mlir::triton::gpu::SharedPhysicalLayout;
 
 namespace SharedToDotOperandPPUAIUV2 {
 
@@ -138,13 +141,23 @@ std::function<void(int, int, int)> getLoadMatrixFn(
     SmallVector<int> instrShape, SmallVector<int> matShape,
     SmallVector<Value> multiDimWarpId, Value lane, ValueTable &vals, bool isA,
     const LLVMTypeConverter *typeConverter, ConversionPatternRewriter &rewriter,
-    Location loc, ArrayRef<unsigned> aiuLoad) {
+    Location loc) {
   auto shapePerCTA = getShapePerCTA(descTy);
   Type eltTy = descTy.getElementType();
   // We assumes that the input operand of Dot should be from shared layout.
   // TODO(Superjomn) Consider other layouts if needed later.
   auto sharedLayout =
       mlir::cast<PPUAIUSharedEncodingAttr>(descTy.getEncoding());
+  auto warpsPerCTA = mmaLayout.getWarpsPerCTA();
+  auto expectedPlan = PPUAIUPlan::fromLegacy(descTy, product(warpsPerCTA));
+  if (!expectedPlan)
+    llvm::report_fatal_error(
+        llvm::Twine(llvm::toString(expectedPlan.takeError())));
+  auto expectedLayout = expectedPlan->toSharedPhysicalLayout(*eltTy.getContext());
+  if (!expectedLayout)
+    llvm::report_fatal_error(
+        llvm::Twine(llvm::toString(expectedLayout.takeError())));
+  auto layout = std::make_shared<SharedPhysicalLayout>(*expectedLayout);
   const int elemBytes = descTy.getElementTypeBitWidth() / 8;
   auto order = sharedLayout.getOrder();
 
@@ -168,26 +181,13 @@ std::function<void(int, int, int)> getLoadMatrixFn(
     if (!isA)
       warpOff = warpNOff;
 
-    unsigned cubeC = aiuLoad[0];
-    unsigned cubeW = aiuLoad[1];
-    unsigned aiuWarpCopyC = aiuLoad[2];
-    unsigned aiuWarpCopyW = aiuLoad[3];
-    unsigned swizzledBytes = aiuLoad[4];
-    unsigned swizzledElems = swizzledBytes / elemBytes;
-    unsigned aiuFactor = swizzledElems / cubeC;
-
-    unsigned cubeElems = cubeC * cubeW;
-    unsigned cubeElemsPerCopy = cubeElems * aiuWarpCopyC * aiuWarpCopyW;
-    unsigned cubeCElemsPerCopy = cubeC * aiuWarpCopyC;
+    unsigned swizzledBytes = layout->swizzledBytes;
     unsigned replicaMN = a >> 1;
     unsigned replicaK = b >> 1;
     unsigned replicaMNElements = shapePerWarpM * warpsPerTile;
     unsigned replicaKElements = 32 / elemBytes;
     unsigned replicaMNOff = replicaMNElements * replicaMN;
     unsigned replicaKOff = replicaKElements * replicaK;
-
-    Value cube_w = builder.i32_val(cubeW);
-    Value warp_c = builder.i32_val(aiuWarpCopyC);
 
     auto smemObjOffsets = smemObj.getOffsets();
     Value smemBase = smemObj.getBase();
@@ -196,112 +196,39 @@ std::function<void(int, int, int)> getLoadMatrixFn(
     if (elemBytes == 1) {
       assert(!needTrans && "needTrans should be false for fp8 aiu");
     }
-    if (!needTrans) {
-      // In order to support prefetch, we update sememBase by smemObjOffsets
-      Value smemObjOffInnerCube =
-          builder.urem(smemObjOffsets[kOrder], builder.i32_val(swizzledElems));
-      Value smemObjOffInterCube = builder.mul(
-          builder.udiv(smemObjOffsets[kOrder], builder.i32_val(swizzledElems)),
-          builder.mul(cube_w, builder.i32_val(swizzledElems)));
-      Value smemObjOff = builder.add(smemObjOffInterCube, smemObjOffInnerCube);
-      smemBase = builder.gep(smemObj.getBase().getType(),
-                             smemObj.getBaseElemType(), smemBase, smemObjOff);
+    {
 
-      // w/x offset of the origin aiu load tile
-      Value tileWOff = builder.add(builder.i32_val(replicaMNOff), warpOff);
-      // operandA has no aiu instruciton copy split in W/X, only warpM split
-      // aiuWarpCopyIdxW is the orginal tile split
-      Value aiuWarpCopyIdxW = builder.udiv(tileWOff, cube_w);
 
-      // W/X offset inside of cube
-      tileWOff = builder.urem(tileWOff, cube_w);
-
-      // channel first iterated
-      Value shMemOffsetAIUWarpW =
-          builder.mul(aiuWarpCopyIdxW,
-                      builder.i32_val(cubeElems * aiuWarpCopyC * aiuFactor));
-
-      // c/z offset of the origin aiu load tile
-      Value tileCOff = builder.i32_val(replicaKOff);
-      // the instruction copy index for channel
-      Value copyIdx =
-          builder.udiv(tileCOff, builder.i32_val(cubeCElemsPerCopy));
-      // channel elements inside of copy
-      Value channelElemsInnerCopy =
-          builder.urem(tileCOff, builder.i32_val(cubeCElemsPerCopy));
-      // aiu copy WarpN index inside of an instruction copy
-      Value aiuWarpCopyIdxC =
-          builder.udiv(channelElemsInnerCopy, builder.i32_val(cubeC));
-
-      Value shMemOffsetCopy =
-          builder.mul(copyIdx, builder.i32_val(cubeElemsPerCopy));
-      Value shMemOffsetAIUWarpC =
-          builder.mul(aiuWarpCopyIdxC, builder.i32_val(cubeElems * aiuFactor));
-      Value shMemOffset =
-          builder.add(shMemOffsetCopy,
-                      builder.add(shMemOffsetAIUWarpW, shMemOffsetAIUWarpC));
-
-      shMemOffset = builder.add(
-          shMemOffset,
-          builder.mul(tileWOff, builder.i32_val(cubeC * aiuFactor)));
-
-      // channel offset inside of a cube
-      Value tileCOffInnerCube = builder.urem(tileCOff, builder.i32_val(cubeC));
-      shMemOffset = builder.add(shMemOffset, tileCOffInnerCube);
-
-      smemBase = builder.gep(smemObj.getBase().getType(),
-                             smemObj.getBaseElemType(), smemBase, shMemOffset);
-    } else {
-      // In order to support prefetch, we update sememBase by smemObjOffsets
-      Value smemObjOffInnerCube =
-          builder.mul(builder.urem(smemObjOffsets[kOrder], cube_w),
-                      builder.i32_val(swizzledElems));
-      Value stride = builder.mul(builder.mul(cube_w, warp_c),
-                                 builder.i32_val(swizzledElems));
-      Value smemObjOffInterCube =
-          builder.mul(builder.udiv(smemObjOffsets[kOrder], cube_w), stride);
-      Value smemObjOff = builder.add(smemObjOffInterCube, smemObjOffInnerCube);
-      smemBase = builder.gep(smemObj.getBase().getType(),
-                             smemObj.getBaseElemType(), smemBase, smemObjOff);
-
-      Value tileWOff = builder.i32_val(replicaKOff);
-      Value aiuWarpCopyIdxW = builder.udiv(tileWOff, cube_w);
-      // W/X offset inside of cube
-      tileWOff = builder.urem(tileWOff, cube_w);
-
-      Value shMemOffsetAIUWarpW =
-          builder.mul(aiuWarpCopyIdxW,
-                      builder.i32_val(cubeElems * aiuWarpCopyC * aiuFactor));
-      Value tileCOff = builder.add(builder.i32_val(replicaMNOff), warpOff);
-
-      // Value copyIdx = udiv(tileCOff, i32_val(cubeC));
-      Value copyIdx =
-          builder.udiv(tileCOff, builder.i32_val(cubeCElemsPerCopy));
-      Value channelElemsInnerCopy =
-          builder.urem(tileCOff, builder.i32_val(cubeCElemsPerCopy));
-      Value aiuWarpCopyIdxC =
-          builder.udiv(channelElemsInnerCopy, builder.i32_val(cubeC));
-
-      Value shMemOffsetCopy =
-          builder.mul(copyIdx, builder.i32_val(cubeElemsPerCopy));
-      Value shMemOffsetAIUWarpC =
-          builder.mul(aiuWarpCopyIdxC, builder.i32_val(cubeElems * aiuFactor));
-      Value shMemOffset =
-          builder.add(shMemOffsetCopy,
-                      builder.add(shMemOffsetAIUWarpW, shMemOffsetAIUWarpC));
 
       // width*channel elems offset inside of a cube
-      shMemOffset = builder.add(
-          shMemOffset,
-          builder.mul(tileWOff, builder.i32_val(cubeC * aiuFactor)));
 
       // channel elems offset inside of a cube
-      Value tileCOffInnerCube = builder.urem(tileCOff, builder.i32_val(cubeC));
-      shMemOffset = builder.add(shMemOffset, tileCOffInnerCube);
-
-      smemBase = builder.gep(smemObj.getBase().getType(),
-                             smemObj.getBaseElemType(), smemBase, shMemOffset);
     }
+
+    Value tileWOff = needTrans
+                         ? builder.i32_val(replicaKOff)
+                         : builder.add(builder.i32_val(replicaMNOff), warpOff);
+    Value tileCOff = needTrans
+                         ? builder.add(builder.i32_val(replicaMNOff), warpOff)
+                         : builder.i32_val(replicaKOff);
+    unsigned nonKOrder = 3 - kOrder;
+    Value globalW = builder.add(tileWOff, smemObjOffsets[nonKOrder]);
+    Value globalC = builder.add(tileCOff, smemObjOffsets[kOrder]);
+    bool rowMajor = layout->order[1] == 0;
+    auto dim0 = StringAttr::get(eltTy.getContext(), "dim0");
+    auto dim1 = StringAttr::get(eltTy.getContext(), "dim1");
+    SmallVector<std::pair<StringAttr, Value>> indices;
+    for (auto dim : layout->logicalToBulkBase.getInDimNames()) {
+      if (dim == dim0)
+        indices.push_back({dim, rowMajor ? globalW : globalC});
+      else if (dim == dim1)
+        indices.push_back({dim, rowMajor ? globalC : globalW});
+    }
+    Value offset =
+        applyLinearLayout(loc, rewriter, layout->logicalToBulkBase, indices)[0]
+            .second;
+    smemBase = builder.gep(smemObj.getBase().getType(),
+                           smemObj.getBaseElemType(), smemBase, offset);
 
     auto matTy = LLVM::LLVMStructType::getLiteral(eltTy.getContext(),
                                                   SmallVector<Type>(4, i32_ty));
@@ -353,8 +280,7 @@ std::function<void(int, int, int)> getLoadMatrixFn(
 Value loadArg(ConversionPatternRewriter &rewriter, Location loc,
               MemDescType descTy, DotOperandEncodingAttr encoding,
               const SharedMemoryObject &smemObj,
-              const LLVMTypeConverter *typeConverter, Value thread, bool isA,
-              ArrayRef<unsigned> aiuLoad) {
+              const LLVMTypeConverter *typeConverter, Value thread, bool isA) {
   auto shapePerCTA = getShapePerCTA(descTy);
   int bitwidth = descTy.getElementTypeBitWidth();
   auto mmaLayout = mlir::cast<PPUMmaEncodingAttr>(encoding.getParent());
@@ -396,7 +322,7 @@ Value loadArg(ConversionPatternRewriter &rewriter, Location loc,
         {1, matShapeM, matShapeK} /*matShape*/,
         {warpB, warpM, warpN} /*multiDimWarpId*/, lane /*laneId*/,
         vals /*vals*/, isA /*isA*/, typeConverter /* typeConverter */,
-        rewriter /*rewriter*/, loc /*loc*/, aiuLoad);
+        rewriter /*rewriter*/, loc /*loc*/);
   else
     loadFn = getLoadMatrixFn(
         descTy, smemObj, mmaLayout, warpsPerTile /*warpsPerTile*/, 1 /*kOrder*/,
@@ -404,7 +330,7 @@ Value loadArg(ConversionPatternRewriter &rewriter, Location loc,
         {1, matShapeK, matShapeN} /*matShape*/,
         {warpB, warpM, warpN} /*multiDimWarpId*/, lane /*laneId*/,
         vals /*vals*/, isA /*isA*/, typeConverter /* typeConverter */,
-        rewriter /*rewriter*/, loc /*loc*/, aiuLoad);
+        rewriter /*rewriter*/, loc /*loc*/);
 
   // Perform loading.
   int numRepBatch = numRep[0];
@@ -420,13 +346,50 @@ Value loadArg(ConversionPatternRewriter &rewriter, Location loc,
       vals, numRepBatch, numRepOuter, numRepK, typeConverter, loc, rewriter);
 }
 
-Value convertLayout(int opIdx, ConversionPatternRewriter &rewriter,
-                    Location loc, Value tensor, DotOperandEncodingAttr encoding,
-                    const SharedMemoryObject &smemObj,
-                    const LLVMTypeConverter *typeConverter, Value thread,
-                    ArrayRef<unsigned> aiuLoad) {
-  // Expand shared/dotOp to 3D before calling loadArg.
+bool supportsBulk(MemDescType descTy, DotOperandEncodingAttr encoding) {
+  auto sharedEncoding = dyn_cast<PPUAIUSharedEncodingAttr>(descTy.getEncoding());
+  auto mmaEncoding = dyn_cast<PPUMmaEncodingAttr>(encoding.getParent());
+  if (!sharedEncoding || !sharedEncoding.isPPU0015() || !mmaEncoding ||
+      !mmaEncoding.isPPU0015())
+    return false;
+  auto expandedOrder =
+      cast<PPUAIUSharedEncodingAttr>(
+          mlir::LLVM::PPU::getExpandedEncoding(sharedEncoding))
+          .getOrder();
+  unsigned kOrder = encoding.getOpIdx() == 0 ? 2 : 1;
+  bool needTrans = kOrder != expandedOrder[0];
+  unsigned bitWidth = descTy.getElementTypeBitWidth();
+  if ((bitWidth == 8 && needTrans) ||
+      (bitWidth != 8 && bitWidth != 16 && bitWidth != 32))
+    return false;
+  if ((bitWidth == 8 && encoding.getKWidth() != 4) ||
+      (bitWidth == 16 && encoding.getKWidth() != 2) ||
+      (bitWidth == 32 && encoding.getKWidth() != 1))
+    return false;
+  auto warpsPerCTA = mmaEncoding.getWarpsPerCTA();
+  auto plan = PPUAIUPlan::fromLegacy(
+      mlir::LLVM::PPU::getExpandedDesc(descTy), product(warpsPerCTA));
+  if (!plan) {
+    llvm::consumeError(plan.takeError());
+    return false;
+  }
+  auto layout = plan->toSharedPhysicalLayout(*descTy.getContext());
+  if (!layout) {
+    llvm::consumeError(layout.takeError());
+    return false;
+  }
+  return true;
+}
+
+FailureOr<Value> convertLayout(int opIdx, ConversionPatternRewriter &rewriter,
+                               Location loc, Value tensor,
+                               DotOperandEncodingAttr encoding,
+                               const SharedMemoryObject &smemObj,
+                               const LLVMTypeConverter *typeConverter,
+                               Value thread) {
   auto descTy = cast<MemDescType>(tensor.getType());
+  if (!supportsBulk(descTy, encoding))
+    return failure();
   auto expandedDescTy = mlir::LLVM::PPU::getExpandedDesc(descTy);
   auto expandedEncoding = cast<DotOperandEncodingAttr>(
       mlir::LLVM::PPU::getExpandedEncoding(encoding));
@@ -435,11 +398,11 @@ Value convertLayout(int opIdx, ConversionPatternRewriter &rewriter,
 
   if (opIdx == 0)
     return loadArg(rewriter, loc, expandedDescTy, expandedEncoding,
-                   expandedSmemObj, typeConverter, thread, true, aiuLoad);
+                   expandedSmemObj, typeConverter, thread, true);
   else {
     assert(opIdx == 1);
     return loadArg(rewriter, loc, expandedDescTy, expandedEncoding,
-                   expandedSmemObj, typeConverter, thread, false, aiuLoad);
+                   expandedSmemObj, typeConverter, thread, false);
   }
 }
 } // namespace SharedToDotOperandPPUAIUV2

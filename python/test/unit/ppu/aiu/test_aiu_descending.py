@@ -97,7 +97,8 @@ def matmul_desc_kernel(a_ptr, b_ptr, c_ptr, M, N, K, stride_cm, stride_cn, BLOCK
 
 
 @pytest.mark.parametrize("num_stages", [1, 3])
-def test_desc_k_negative_prefetch(num_stages):
+@pytest.mark.parametrize("enable_aiu_ordinary", [False, True])
+def test_desc_k_negative_prefetch(num_stages, enable_aiu_ordinary):
     """Direct AIU loads with a loop-carried descending K offset."""
     M, N, K = 64, 64, 512
     generator = torch.Generator(device="cpu").manual_seed(7)
@@ -107,23 +108,17 @@ def test_desc_k_negative_prefetch(num_stages):
     a = a_cpu.to(device="cuda", dtype=torch.float16)
     b = b_cpu.to(device="cuda", dtype=torch.float16)
     c = torch.empty((M, N), dtype=torch.float16, device="cuda")
-    kernel = matmul_desc_kernel[(1, )](
-        a,
-        b,
-        c,
-        M,
-        N,
-        K,
-        *c.stride(),
-        BLOCK_SIZE_M=64,
-        BLOCK_SIZE_N=64,
-        BLOCK_SIZE_K=64,
-        GROUP_SIZE_M=8,
-        num_warps=4,
-        num_stages=num_stages,
+    kernel = matmul_desc_kernel[(1,)](
+        a, b, c, M, N, K, *c.stride(),
+        BLOCK_SIZE_M=64, BLOCK_SIZE_N=64, BLOCK_SIZE_K=64, GROUP_SIZE_M=8,
+        num_warps=4, num_stages=num_stages,
+        enable_aiu_ldmatrix_ordinary=enable_aiu_ordinary,
     )
     assert kernel.asm["ttir"].count("tt.aiu_load") == 2
     assert "cp.async.aiu" in kernel.asm["llir"]
+    if enable_aiu_ordinary and num_stages == 3:
+        assert "ppu.ldmatrix.sync.aligned" in kernel.asm["llir"]
+        assert "ldmatrix.swzl.sync.bulk.tensor" not in kernel.asm["llir"]
     torch.testing.assert_close(c.cpu().view(torch.int16), ref.view(torch.int16), rtol=0, atol=0)
 
 

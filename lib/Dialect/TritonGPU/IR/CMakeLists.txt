@@ -3,6 +3,8 @@ add_triton_library(TritonGPUIR
   LinearLayoutConversions.cpp
   Ops.cpp
   Partitioning.cpp
+  PPUAIUPlan.cpp
+  SharedPhysicalLayout.cpp
   Types.cpp
   Traits.cpp
 

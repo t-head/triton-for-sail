@@ -11,6 +11,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/PPUAIUPlan.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Tools/GenericSwizzling.h"
 #include "triton/Tools/LayoutUtils.h"
@@ -212,10 +213,11 @@ public:
                      Allocation::FuncAllocMapT *funcAllocMap,
                      Allocation *allocation,
                      AllocationAnalysisScratchSizeFn scratchSizeGetter,
-                     size_t partitionSize)
+                     size_t partitionSize, bool enableTixLdMatrixSwzl)
       : operation(operation), funcAllocMap(funcAllocMap),
         allocation(allocation), scratchSizeGetter(scratchSizeGetter),
-        partitionSize(partitionSize) {
+        partitionSize(partitionSize),
+        enableTixLdMatrixSwzl(enableTixLdMatrixSwzl) {
     run();
   }
 
@@ -241,6 +243,15 @@ private:
       return;
     auto allocType = alloc.getType();
     auto alignment = alloc.getAlignmentOrDefault();
+    if (enableTixLdMatrixSwzl) {
+      if (auto sharedEnc = dyn_cast<gpu::SwizzledSharedEncodingAttr>(
+              allocType.getEncoding())) {
+        if (sharedEnc.getMaxPhase() == 8)
+          alignment = std::max<int32_t>(alignment, 128);
+        else if (sharedEnc.getMaxPhase() == 4)
+          alignment = std::max<int32_t>(alignment, 64);
+      }
+    }
 
     // Handle PartitionedSharedEncodingAttr: create one buffer per partition,
     // where each buffer contains all groups for that partition concatenated.
@@ -284,15 +295,19 @@ private:
     if (auto aiuEnc = dyn_cast<triton::gpu::PPUAIUSharedEncodingAttr>(
             allocType.getEncoding())) {
       if (aiuEnc.isPPU0015()) {
-        auto aiuLoad = aiuEnc.getAIUStrategy();
-        unsigned cubeC = aiuLoad[0];
-        unsigned swizzledBytes = aiuLoad[4];
-        unsigned elemBytes = allocType.getElementTypeBitWidth() / 8;
-        if ((elemBytes == 2 && cubeC == 16) ||
-            (elemBytes == 1 && cubeC == 32)) {
-          unsigned swizzledElems = swizzledBytes / elemBytes;
-          bytes *= swizzledElems / cubeC;
-        }
+        auto plan = triton::gpu::PPUAIUPlan::fromLegacy(
+            allocType, triton::gpu::lookupNumWarps(alloc));
+        if (!plan)
+          llvm::report_fatal_error(llvm::Twine(llvm::toString(plan.takeError())));
+        auto physical = plan->toSharedPhysicalLayout(*alloc.getContext());
+        if (!physical)
+          llvm::report_fatal_error(
+              llvm::Twine(llvm::toString(physical.takeError())));
+        int64_t logicalStageElems = plan->getRootShape()[0] * plan->getRootShape()[1];
+        assert(logicalStageElems > 0 && numElems % logicalStageElems == 0);
+        int64_t stageCount = numElems / logicalStageElems;
+        bytes = stageCount * physical->physicalStageElems *
+                (getIntOrFloatOrPtrBitWidth(allocType.getElementType()) / 8);
       }
       alignment = std::max<int32_t>(alignment, 128);
     }
@@ -916,15 +931,18 @@ private:
   BufferRangeMapT bufferRange;
   AllocationAnalysisScratchSizeFn scratchSizeGetter;
   size_t partitionSize;
+  bool enableTixLdMatrixSwzl;
 };
 
 } // namespace triton
 
 void Allocation::run(FuncAllocMapT &funcAllocMap,
                      triton::AllocationAnalysisScratchSizeFn scratchSizeGetter,
-                     size_t sharedMemoryPartitionSize) {
+                     size_t sharedMemoryPartitionSize,
+                     bool enableTixLdMatrixSwzl) {
   triton::AllocationAnalysis(getOperation(), &funcAllocMap, this,
-                             scratchSizeGetter, sharedMemoryPartitionSize);
+                             scratchSizeGetter, sharedMemoryPartitionSize,
+                             enableTixLdMatrixSwzl);
 }
 
 void Allocation::addPartitionBuffers(Value key, unsigned numPartitions,

@@ -96,7 +96,8 @@ public:
   ///        in bytes. A value of 0 means shared memory is not partitioned.
   void run(FuncAllocMapT &funcAllocMap,
            triton::AllocationAnalysisScratchSizeFn scratchSizeGetter,
-           size_t sharedMemoryPartitionSize = 0);
+           size_t sharedMemoryPartitionSize = 0,
+           bool enableTixLdMatrixSwzl = false);
 
   /// Returns the operation this analysis was constructed from.
   Operation *getOperation() const { return operation; }
@@ -282,7 +283,8 @@ public:
   ModuleAllocation(ModuleOp moduleOp,
                    triton::AllocationAnalysisScratchSizeFn scratchSizeGetter =
                        triton::defaultAllocationAnalysisScratchSizeFn,
-                   size_t sharedMemoryPartitionSize = 0)
+                   size_t sharedMemoryPartitionSize = 0,
+                   bool enableTixLdMatrixSwzl = false)
       : triton::CallGraph<Allocation>(moduleOp) {
     walk<WalkOrder::PreOrder, WalkOrder::PostOrder>(
         // Pre-order edge walk callback
@@ -292,7 +294,7 @@ public:
           auto [iter, inserted] = funcMap.try_emplace(funcOp, funcOp);
           if (inserted)
             iter->second.run(funcMap, scratchSizeGetter,
-                             sharedMemoryPartitionSize);
+                             sharedMemoryPartitionSize, enableTixLdMatrixSwzl);
         });
   }
 

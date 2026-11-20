@@ -26,10 +26,14 @@
 
 #include "mlir/Support/LogicalResult.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
+#include "triton/Dialect/TritonGPU/IR/SharedPhysicalLayout.h"
 
 namespace mlir {
 namespace LLVM {
 namespace PPU {
+inline constexpr llvm::StringLiteral kAIUWriterStrategyAttr = "ppu.aiu_strategy";
+inline constexpr llvm::StringLiteral kAIUSourceAttr = "ppu.aiu_source";
+
 SmallVector<Value> getStrides(const SharedMemoryObject &smemObj,
                               triton::gpu::MemDescType memDesc, Location loc,
                               RewriterBase &rewriter);
@@ -49,89 +53,21 @@ getExpandedSharedMemoryObject(ConversionPatternRewriter &rewriter, Location loc,
 Value getSliceKOffset(ConversionPatternRewriter &rewriter, Location loc,
                       Value tensor, int opIdx);
 
+Value getPPUAIUV2SwizzledSharedPtr(
+    Location loc, const triton::gpu::SharedPhysicalLayout &layout, Type resElemTy,
+    Value dstPtrBase, Value idxRow, Value idxCol, RewriterBase &rewriter);
+
 DenseMap<unsigned, Value> getAIUSwizzledSharedPtrs(
     Location loc, const TargetInfoBase &target, unsigned inVec,
     RankedTensorType srcTy, triton::gpu::MemDescType memTy,
     triton::gpu::PPUAIUSharedEncodingAttr resSharedLayout, Type resElemTy,
     SharedMemoryObject smemObj, RewriterBase &rewriter,
-    SmallVectorImpl<Value> &offsetVals);
+    SmallVectorImpl<Value> &offsetVals,
+    const triton::gpu::SharedPhysicalLayout *layout = nullptr);
 
-inline FailureOr<llvm::SmallVector<unsigned>>
+FailureOr<llvm::SmallVector<unsigned>>
 AIULoadStrategy(unsigned numWarps, unsigned xElems, unsigned channelElems,
-                unsigned elemBytes, unsigned version = 1) {
-  constexpr unsigned minXElems = 16;
-  constexpr unsigned maxCubeW = 2048;
-  if (numWarps == 0 || xElems < minXElems || channelElems == 0 ||
-      elemBytes == 0)
-    return failure();
-  if ((version == 1 && elemBytes != 1 && elemBytes != 2 && elemBytes != 4) ||
-      (version == 2 && elemBytes != 1 && elemBytes != 2 && elemBytes != 4))
-    return failure();
-
-  if (version == 1) {
-    constexpr unsigned sliceByte = 32;
-    constexpr unsigned maxSliceBytes = 128;
-    unsigned channelBytes = channelElems * elemBytes;
-    if (channelBytes < sliceByte)
-      return failure();
-
-    unsigned sliceTotal = channelBytes / sliceByte;
-    unsigned numSlice;
-    if (channelBytes <= maxSliceBytes) {
-      numSlice = sliceTotal;
-    } else if (sliceTotal % 4 == 0) {
-      numSlice = 4;
-    } else if (sliceTotal % 2 == 0) {
-      numSlice = 2;
-    } else {
-      numSlice = 1;
-    }
-
-    unsigned channelCopy = sliceTotal / numSlice;
-    unsigned warpC;
-    unsigned warpW;
-    unsigned maxWarpW = xElems / minXElems;
-    if (numWarps % channelCopy == 0) {
-      warpC = channelCopy;
-      warpW = std::min<unsigned>(numWarps / channelCopy, maxWarpW);
-    } else if (channelCopy % numWarps == 0) {
-      warpC = numWarps;
-      warpW = 1;
-    } else {
-      warpC = 1;
-      warpW = std::min<unsigned>(numWarps, maxWarpW);
-    }
-
-    unsigned cubeW = xElems / warpW;
-    if (cubeW > maxCubeW)
-      return failure();
-    unsigned cubeC = numSlice * sliceByte / elemBytes;
-    return llvm::SmallVector<unsigned>{cubeC, cubeW, warpC, warpW, numSlice};
-  }
-
-  if (version == 2) {
-    if (channelElems % 64 != 0 && channelElems % 32 != 0 &&
-        channelElems % 16 != 0)
-      return failure();
-
-    unsigned swizzledBytes = channelElems * elemBytes <= 64 ? 64 : 128;
-    unsigned channelBytes = elemBytes * channelElems;
-    unsigned cubeC =
-        channelBytes < swizzledBytes ? channelElems : swizzledBytes / elemBytes;
-    unsigned warpCMax = (channelElems + cubeC - 1) / cubeC;
-    unsigned warpC = std::min<unsigned>(numWarps, warpCMax);
-    unsigned warpWMax = xElems / minXElems;
-    unsigned warpW = std::min<unsigned>(numWarps / warpC, warpWMax);
-    unsigned cubeW = xElems / warpW;
-    if (cubeW > maxCubeW)
-      return failure();
-
-    return llvm::SmallVector<unsigned>{cubeC, cubeW, warpC, warpW,
-                                       swizzledBytes};
-  }
-
-  return failure();
-}
+                unsigned elemBytes, unsigned version = 1);
 
 } // namespace PPU
 } // namespace LLVM

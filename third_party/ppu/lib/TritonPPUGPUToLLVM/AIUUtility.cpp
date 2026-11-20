@@ -23,6 +23,7 @@
 
 #include "Utility.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
+#include "triton/Dialect/TritonGPU/IR/SharedPhysicalLayout.h"
 
 namespace mlir {
 namespace LLVM {
@@ -295,128 +296,56 @@ DenseMap<unsigned, Value> getPPUAIUV1SwizzledSharedPtrs(
   return ret;
 }
 
+Value getPPUAIUV2SwizzledSharedPtr(
+    Location loc, const triton::gpu::SharedPhysicalLayout &layout, Type resElemTy,
+    Value dstPtrBase, Value idxRow, Value idxCol, RewriterBase &rewriter) {
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  auto *ctx = rewriter.getContext();
+  auto dim0 = StringAttr::get(ctx, "dim0");
+  auto dim1 = StringAttr::get(ctx, "dim1");
+  bool rowMajor = layout.order[1] == 0;
+  SmallVector<std::pair<StringAttr, Value>> indices;
+  for (auto dim : layout.logicalToPhysical.getInDimNames()) {
+    if (dim == dim0)
+      indices.push_back({dim, rowMajor ? idxRow : idxCol});
+    else if (dim == dim1)
+      indices.push_back({dim, rowMajor ? idxCol : idxRow});
+  }
+  Value offset =
+      applyLinearLayout(loc, rewriter, layout.logicalToPhysical, indices)[0]
+          .second;
+  return b.gep(ptr_ty(ctx, 3), resElemTy, dstPtrBase, offset);
+}
+
 DenseMap<unsigned, Value> getPPUAIUV2SwizzledSharedPtrs(
     Location loc, const TargetInfoBase &target, unsigned inVec,
     RankedTensorType srcTy, triton::gpu::MemDescType memTy,
-    triton::gpu::PPUAIUSharedEncodingAttr resSharedLayout, Type resElemTy,
+    triton::gpu::PPUAIUSharedEncodingAttr resSharedLayout,
+    const triton::gpu::SharedPhysicalLayout &layout, Type resElemTy,
     SharedMemoryObject smemObj, RewriterBase &rewriter,
     SmallVectorImpl<Value> &offsetVals) {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
-  auto dstPtrTy = ptr_ty(rewriter.getContext(), 3);
-  auto dstOffset =
-      dot(rewriter, loc, offsetVals, getStrides(smemObj, memTy, loc, rewriter));
-
-  Value dstPtrBase = b.gep(dstPtrTy, resElemTy, smemObj.getBase(), dstOffset);
+  Value dstPtrBase = smemObj.getBase();
   auto srcEncoding = srcTy.getEncoding();
   unsigned numElems = triton::gpu::getTotalElemsPerThread(srcTy);
   auto outOrder = resSharedLayout.getOrder();
-  auto elemBytes = resElemTy.getIntOrFloatBitWidth() / 8;
-
-  // Return values
-  DenseMap<unsigned, Value> ret;
-  // Tensor indices held by the current thread, as LLVM values
-  auto srcIndices = emitIndices(loc, rewriter, target, srcEncoding, srcTy,
-                                /*withCTAOffset=*/false);
-
-  auto aiuLoad = resSharedLayout.getAIUStrategy();
-  unsigned cubeC = aiuLoad[0];
-  unsigned cubeW = aiuLoad[1];
-  unsigned aiuWarpCopyC = aiuLoad[2];
-  unsigned aiuWarpCopyW = aiuLoad[3];
-  unsigned swizzledBytes = aiuLoad[4];
-  unsigned perPhase = 1;
-  unsigned maxPhase = 8;
-  if (swizzledBytes == 64) {
-    perPhase = 2;
-    maxPhase = 4;
-  }
   unsigned outVec = 128 / srcTy.getElementTypeBitWidth();
   unsigned minVec = std::min(outVec, inVec);
-  unsigned swizzledElems = swizzledBytes / elemBytes;
 
-  // When cubeC is smaller than swizzledElems(i.e. channel bytes < swizzled
-  // bytes), we use aiuFactor to skip invalid data in shared memory
-  unsigned aiuFactor = swizzledElems / cubeC;
-  assert(cubeC * elemBytes * aiuFactor == swizzledBytes);
-
-  unsigned elemsPerCube = cubeC * cubeW * aiuFactor;
-  unsigned elemsPerCopy = elemsPerCube * aiuWarpCopyC * aiuWarpCopyW;
-
+  DenseMap<unsigned, Value> ret;
+  auto srcIndices = emitIndices(loc, rewriter, target, srcEncoding, srcTy,
+                                /*withCTAOffset=*/false);
   for (unsigned elemIdx = 0; elemIdx < numElems; elemIdx += minVec) {
     auto idx = srcIndices[elemIdx];
-    Value idxCol = idx[outOrder[0]]; // contiguous dimension
-    Value idxRow;
-    if (outOrder.size() >= 2) {
-      idxRow = idx[outOrder[1]]; // discontiguous dimension
-    } else {
-      idxRow = b.i32_val(0);
+    Value idxCol = idx[outOrder[0]];
+    Value idxRow = outOrder.size() >= 2 ? idx[outOrder[1]] : b.i32_val(0);
+    if (outOrder.size() >= 2 && offsetVals.size() >= 2) {
+      idxCol = b.add(idxCol, offsetVals[outOrder[0]]);
+      idxRow = b.add(idxRow, offsetVals[outOrder[1]]);
     }
-
-    // cube row index inside tensor
-    Value idxRowCube = b.udiv(idxRow, b.i32_val(cubeW));
-    // cube col index inside tensor
-    Value idxColCube = b.udiv(idxCol, b.i32_val(cubeC));
-    // warp channel index inside copy
-    Value warpCIdx = b.urem(idxColCube, b.i32_val(aiuWarpCopyC));
-    // warp width index inside copy
-    Value warpWIdx = b.urem(idxRowCube, b.i32_val(aiuWarpCopyW));
-    // copy index inside tensor
-    Value copyIdx = b.udiv(idxColCube, b.i32_val(aiuWarpCopyC));
-    // warp offset inside copy
-    Value warpOffset =
-        b.add(b.mul(warpWIdx, b.i32_val(elemsPerCube * aiuWarpCopyC)),
-              b.mul(warpCIdx, b.i32_val(elemsPerCube)));
-    // copy offset inside tensor
-    Value copyOffset = b.mul(copyIdx, b.i32_val(elemsPerCopy));
-    Value cubeStartOffset = b.add(copyOffset, warpOffset);
-
-    // Computes the pointers for accessing the provided swizzled
-    // shared memory layout `resSharedLayout`. More specifically, it computes,
-    // for all indices (row, col) of `srcEncoding` such that idx % inVec = 0,
-    // the pointer: ptr[(row, col)] = base + (rowOff * strideRow + colOff)
-    // where:
-    //   phase = (row // perPhase) % maxPhase
-    //   rowOff = row
-    //   colOff = colOffSwizzled + colOffOrdered
-    //     colOffSwizzled = ((col // outVec) ^ phase) * outVec
-    //     colOffOrdered = (col % outVec) // minVec * minVec
-
-    // element row index inside cube
-    Value idxRowInnerCube = b.urem(idxRow, b.i32_val(cubeW));
-    // element column index inside cube
-    Value idxColInnerCube = b.urem(idxCol, b.i32_val(cubeC * aiuFactor));
-
-    // To support cubeC smaller than swizzledElems(i.e. cubeC = 16), we need to
-    // update indices (row, col) as follows:
-    //   row = row + col // cubeC
-    //   col = col % cubeC
-    idxRowInnerCube =
-        b.add(idxRowInnerCube, b.udiv(idxColInnerCube, b.i32_val(cubeC)));
-    idxColInnerCube = b.urem(idxColInnerCube, b.i32_val(cubeC));
-
-    // phase = (row // perPhase) % maxPhase
-    Value phase = b.urem(b.udiv(idxRowInnerCube, b.i32_val(perPhase)),
-                         b.i32_val(maxPhase));
-
-    // row offset is simply idxRowInnerCube * numElemsPerSwizzlingRow
-    Value rowOff = b.mul(idxRowInnerCube, b.i32_val(cubeC * aiuFactor));
-
-    // Because swizzling happens at a granularity of outVec, we need to
-    // decompose colOff into a swizzled factor and a non-swizzled
-    // (ordered) factor: colOffSwizzled = ((col // outVec) ^ phase) * outVec
-    // colOffOrdered = (col % outVec) // minVec * minVec
-    Value colOffSwizzled =
-        b.xor_(b.udiv(idxColInnerCube, b.i32_val(outVec)), phase);
-    colOffSwizzled = b.mul(colOffSwizzled, b.i32_val(outVec));
-    Value colOffOrdered = b.urem(idxColInnerCube, b.i32_val(outVec));
-    colOffOrdered = b.udiv(colOffOrdered, b.i32_val(minVec));
-    colOffOrdered = b.mul(colOffOrdered, b.i32_val(minVec));
-    Value colOff = b.add(colOffSwizzled, colOffOrdered);
-
-    Value offset = b.add(cubeStartOffset, b.add(rowOff, colOff));
-    ret[elemIdx] = b.gep(dstPtrTy, resElemTy, dstPtrBase, offset);
+    ret[elemIdx] = getPPUAIUV2SwizzledSharedPtr(
+        loc, layout, resElemTy, dstPtrBase, idxRow, idxCol, rewriter);
   }
-
   return ret;
 }
 
@@ -425,16 +354,17 @@ DenseMap<unsigned, Value> getAIUSwizzledSharedPtrs(
     RankedTensorType srcTy, triton::gpu::MemDescType memTy,
     triton::gpu::PPUAIUSharedEncodingAttr resSharedLayout, Type resElemTy,
     SharedMemoryObject smemObj, RewriterBase &rewriter,
-    SmallVectorImpl<Value> &offsetVals) {
+    SmallVectorImpl<Value> &offsetVals,
+    const triton::gpu::SharedPhysicalLayout *layout) {
   if (resSharedLayout.isPPU0010()) {
     return getPPUAIUV1SwizzledSharedPtrs(loc, target, inVec, srcTy, memTy,
                                          resSharedLayout, resElemTy, smemObj,
                                          rewriter, offsetVals);
   } else {
-    assert(resSharedLayout.isPPU0015());
+    assert(resSharedLayout.isPPU0015() && layout);
     return getPPUAIUV2SwizzledSharedPtrs(loc, target, inVec, srcTy, memTy,
-                                         resSharedLayout, resElemTy, smemObj,
-                                         rewriter, offsetVals);
+                                      resSharedLayout, *layout, resElemTy, smemObj,
+                                      rewriter, offsetVals);
   }
 }
 
