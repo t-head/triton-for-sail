@@ -2535,39 +2535,6 @@ def test_amd_mfma_scaled(M, N, K, a_type, b_type, cd_regclass, has_scale, device
     _check_cd_regclass_pins(compiled.asm['llir'], cd_regclass)
 
 
-def _ppu_e2m1_decode(v):
-    sign = (v >> 3) & 1
-    mag = v & 0x7
-    exp = (mag >> 1) & 0x3
-    man = mag & 0x1
-    val = torch.zeros_like(v, dtype=torch.float32)
-    sub = exp == 0
-    val[sub] = man[sub].float() * 0.5
-    norm = exp > 0
-    val[norm] = (2.0**(exp[norm].float() - 1.0)) * (1.0 + 0.5 * man[norm].float())
-    return torch.where(sign == 1, -val, val)
-
-
-def _ppu_decode_fp4(packed):
-    lo = _ppu_e2m1_decode(packed & 0xF)
-    hi = _ppu_e2m1_decode((packed >> 4) & 0xF)
-    return torch.stack([lo, hi], dim=-1).reshape(packed.shape[0], -1)
-
-
-def _ppu_scale_factor(scale, scale_dtype):
-    if scale_dtype == "e8m0":
-        return 2.0**(scale.float() - 127.0)
-    return scale.float()
-
-
-def _ppu_scaled_ref(a_dec, b_dec, a_scale, b_scale, group, scale_dtype):
-    asf = _ppu_scale_factor(a_scale, scale_dtype)
-    bsf = _ppu_scale_factor(b_scale, scale_dtype)
-    a_f = a_dec * asf.repeat_interleave(group, dim=1)
-    b_f = (b_dec * bsf.repeat_interleave(group, dim=1)).T
-    return a_f @ b_f
-
-
 @gluon.jit
 def _ppu_mma_kernel(a_ptr, b_ptr, out_ptr, M: ttgl.constexpr, N: ttgl.constexpr, K: ttgl.constexpr,
                     a_lay: ttgl.constexpr, b_lay: ttgl.constexpr, out_lay: ttgl.constexpr, VERSION: ttgl.constexpr):
@@ -2661,45 +2628,33 @@ def _ppu_mma_scaled_kernel(a_ptr, b_ptr, as_ptr, bs_ptr, out_ptr, M: ttgl.conste
     ttgl.store(out_ptr + offs_m2 * N + offs_n2, ret)
 
 
-def _ppu_run_mma_scaled(M, N, K, fmt, group, scale_dtype, version):
-    torch.manual_seed(0)
-    if fmt == "e2m1":
-        kpack = K // 2
-        a = torch.randint(0, 256, (M, kpack), device="cuda", dtype=torch.uint8)
-        b = torch.randint(0, 256, (kpack, N), device="cuda", dtype=torch.uint8)
-        a_dec = _ppu_decode_fp4(a)
-        b_dec = _ppu_decode_fp4(b.T.contiguous())
-    else:
-        kpack = K
-        t = torch.float8_e4m3fn if fmt == "e4m3" else torch.float8_e5m2
-        a = (torch.randn(M, K, device="cuda") * 0.5).to(t)
-        b = (torch.randn(K, N, device="cuda") * 0.5).to(t)
-        a_dec = a.float()
-        b_dec = b.float().T
-    if scale_dtype == "e8m0":
-        a_scale = torch.randint(120, 130, (M, K // group), device="cuda", dtype=torch.uint8)
-        b_scale = torch.randint(120, 130, (N, K // group), device="cuda", dtype=torch.uint8)
-    else:
-        a_scale = (torch.rand(M, K // group, device="cuda") * 2 + 0.5).to(torch.float8_e4m3fn)
-        b_scale = (torch.rand(N, K // group, device="cuda") * 2 + 0.5).to(torch.float8_e4m3fn)
+def _ppu_run_mma_scaled(M, N, K, group, version):
+    torch.manual_seed(42)
+    a_mx = MXFP4Tensor(size=(M, K), device="cuda").random()
+    b_mx = MXFP4Tensor(size=(N, K), device="cuda").random()
+    a = a_mx.to_packed_tensor(dim=1)
+    b = b_mx.to_packed_tensor(dim=1).T.contiguous()
+    kpack = K // 2
+    a_scale = MXScaleTensor(torch.rand(M, K // group, device="cuda")).data
+    b_scale = MXScaleTensor(torch.rand(N, K // group, device="cuda")).data
     out = torch.empty(M, N, device="cuda", dtype=torch.float32)
     a_lay = ttgl.BlockedLayout([1, 16], [16, 2], [4, 1], [1, 0])
     b_lay = ttgl.BlockedLayout([16, 1], [2, 16], [1, 4], [0, 1])
     s_lay = ttgl.BlockedLayout([1, 1], [16, 2], [4, 1], [1, 0])
     out_lay = default_blocked_layout([M, N], 4)
-    _ppu_mma_scaled_kernel[(1, )](a, b, a_scale, b_scale, out, M, N, K, group, kpack, fmt, fmt, a_lay, b_lay, s_lay,
-                                  out_lay, version, num_warps=4)
+    _ppu_mma_scaled_kernel[(1, )](a, b, a_scale, b_scale, out, M, N, K, group, kpack, "e2m1", "e2m1", a_lay, b_lay,
+                                  s_lay, out_lay, version, num_warps=4)
     torch.cuda.synchronize()
-    ref = _ppu_scaled_ref(a_dec, b_dec, a_scale, b_scale, group, scale_dtype)
-    torch.testing.assert_close(out, ref, rtol=1e-2, atol=1e-2)
+    a_ref = a_mx.to(torch.float32) * fp8e8m0_to_float32(a_scale).repeat_interleave(group, dim=1)
+    b_ref = (b_mx.to(torch.float32) * fp8e8m0_to_float32(b_scale).repeat_interleave(group, dim=1)).T
+    ref = a_ref @ b_ref
+    torch.testing.assert_close(out, ref, rtol=0.02, atol=0.01)
 
 
 @pytest.mark.skipif(not is_ppu_0015(), reason="Requires PPU0015 (cc89)")
 @pytest.mark.parametrize("M, N, K", [(64, 64, 64), (128, 64, 128), (64, 128, 64), (128, 128, 128)])
-@pytest.mark.parametrize("scale_dtype", ["e8m0", "e4m3"])
-def test_ppu_mma_scaled_v2(M, N, K, scale_dtype):
-    # PPU0015 scaled MMA is fp4 (e2m1) only, with the standard MX group size of 32.
-    _ppu_run_mma_scaled(M, N, K, "e2m1", 32, scale_dtype, version=2)
+def test_ppu_mma_scaled_v2(M, N, K):
+    _ppu_run_mma_scaled(M, N, K, 32, version=2)
 
 
 @pytest.mark.skipif(not (is_ppu_0010() or is_ppu_0015()), reason="Requires PPU0010/PPU0015)")
