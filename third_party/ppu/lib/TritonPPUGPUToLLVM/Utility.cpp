@@ -104,24 +104,33 @@ Value shuffleIdx(Location loc, RewriterBase &rewriter, Value val, Value i) {
                        b.i32_val(0x1f));
 }
 
+static Value readPPUProgramId(Location loc, RewriterBase &rewriter,
+                              StringRef reg) {
+  mlir::triton::ppu::TIXBuilder builder;
+  auto *dst = builder.newOperand("=r");
+  auto *src = builder.newConstantOperand(reg.str());
+  auto &mov = *builder.create("ppu.mov.u32");
+  mov(dst, src);
+  return builder.launch(rewriter, loc, i32_ty, false);
+}
+
 Value llGetPid(Location loc, RewriterBase &rewriter, ModuleOp moduleOp,
                ProgramIDDim axis) {
   assert(moduleOp);
 
   // It is not easy to get the compute capability here, so we use numCTAs to
-  // decide the semantic of GetProgramIdOp. If numCTAs = 1, then
-  // GetProgramIdOp is converted to "%ctaid", otherwise it is converted to
-  // "%clusterid".
+  // decide the semantic of GetProgramIdOp. If numCTAs = 1, GetProgramIdOp reads
+  // the PPU task index, otherwise it is converted to "%clusterid".
   int numCTAs = triton::gpu::TritonGPUDialect::getNumCTAs(moduleOp);
 
   if (numCTAs == 1) {
     switch (axis) {
     case ProgramIDDim::X:
-      return NVVM::BlockIdXOp::create(rewriter, loc, i32_ty);
+      return readPPUProgramId(loc, rewriter, "%tix");
     case ProgramIDDim::Y:
-      return NVVM::BlockIdYOp::create(rewriter, loc, i32_ty);
+      return readPPUProgramId(loc, rewriter, "%tiy");
     case ProgramIDDim::Z:
-      return NVVM::BlockIdZOp::create(rewriter, loc, i32_ty);
+      return readPPUProgramId(loc, rewriter, "%tiz");
     }
   } else {
     switch (axis) {

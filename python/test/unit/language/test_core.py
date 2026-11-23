@@ -973,6 +973,37 @@ def test_invalid_pid_axis(device):
     assert re.search(r"program_id axis must be 0, 1, or 2 but got 20", str(exc_info.value.__cause__))
 
 
+@pytest.mark.skipif(not is_ppu(), reason="Requires PPU")
+def test_program_id_y_large_grid(device):
+    n = 65537
+
+    @triton.jit
+    def _kernel(raw_ptr, quotient_ptr, remainder_ptr, written_ptr, offsets_ptr):
+        pid = tl.program_id(1)
+        quotient = pid // 12
+        remainder = pid % 12
+        tl.store(raw_ptr + pid, pid)
+        tl.store(quotient_ptr + pid, quotient)
+        tl.store(remainder_ptr + pid, remainder)
+        dst = tl.load(offsets_ptr + quotient) * 12 + remainder
+        tl.store(written_ptr + dst, pid)
+
+    buffers = [torch.full((n, ), -1, dtype=torch.int32, device=device) for _ in range(4)]
+    offsets = torch.arange(triton.cdiv(n, 12), dtype=torch.int32, device=device)
+    compiled = _kernel[(1, n, 1)](*buffers, offsets, num_warps=4)
+    raw, quotient, remainder, written = [buffer.cpu() for buffer in buffers]
+    expected = torch.arange(n, dtype=torch.int32)
+    assert torch.equal(raw, expected)
+    assert torch.equal(quotient, expected // 12)
+    assert torch.equal(remainder, expected % 12)
+    assert torch.equal(written, expected)
+
+    llir = compiled.asm["llir"]
+    assert "%tiy" in llir
+    assert "ctaid.y" not in llir
+    assert not re.search(r"\b[us](?:div|rem)\s+i16\b", llir)
+
+
 # ---------------
 # test where
 # ---------------
