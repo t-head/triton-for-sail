@@ -250,6 +250,41 @@ jobs:
           submodules: recursive
           persist-credentials: false
 
+      - name: Record actual build source
+        id: source
+        shell: bash
+        env:
+          SOURCE_REPO: ${{ github.repository }}
+          SAFE_ID: ${{ steps.ref.outputs.safe_id }}
+          SOURCE_METADATA: ${{ runner.temp }}/build-source.json
+        run: |
+          set -euo pipefail
+          python3 - <<'PYEOF'
+          import json
+          import os
+          import subprocess
+
+          def git(*args):
+              return subprocess.check_output(["git", *args], text=True).strip()
+
+          branch = subprocess.run(
+              ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
+              capture_output=True, text=True, check=False)
+          if branch.returncode not in (0, 1):
+              raise SystemExit("Failed to read the build source branch")
+          source = {
+              "safe_id": os.environ["SAFE_ID"],
+              "repo": os.environ["SOURCE_REPO"],
+              "commit": git("rev-parse", "HEAD"),
+              "branch": branch.stdout.strip(),
+              "tag": ",".join(git("tag", "--points-at", "HEAD").splitlines()),
+          }
+          with open(os.environ["SOURCE_METADATA"], "w") as f:
+              json.dump(source, f)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"commit={source['commit']}\n")
+          PYEOF
+
       - name: Build wheel on PPU (${{ matrix.entry.tag }})
         id: ppu-build
         uses: t-head/ci-infra/cluster-run@main
@@ -276,6 +311,11 @@ jobs:
             # Fix: image bakes in git insteadOf redirecting github.com to unreachable internal gerrit
             git config --global --unset-all url.https://ai-gerrit.eng.t-head.cn/Public/Github/.insteadOf 2>/dev/null || true
             git config --global --add safe.directory '*'
+            # Source metadata describes the runner checkout; verify the pod uses the same commit before building.
+            if [[ "$(git rev-parse HEAD)" != '${{ steps.source.outputs.commit }}' ]]; then
+              echo "::error::Pod source commit does not match the recorded build source"
+              exit 1
+            fi
             # PPU SDK is pre-installed in the docker image
             source /usr/local/PPU_SDK/envsetup.sh
             export TRITON_IR_FORMATTER_PATH=/usr/local/PPU_SDK/bin/llvm-irformatter
@@ -564,6 +604,7 @@ jobs:
           cleanup_policy: on_success
 
       - name: Upload wheel (${{ matrix.entry.ref }} / ${{ matrix.entry.tag }})
+        id: wheel
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
@@ -571,6 +612,34 @@ jobs:
           path: /wl_nas/devops/triton-build-matrix/${{ github.run_id }}/${{ github.run_attempt }}/${{ steps.ref.outputs.safe_id }}/wheels/*.whl
           if-no-files-found: error
           compression-level: 0
+          overwrite: true
+          retention-days: 14
+
+      - name: Bind source metadata to the actual wheel artifact
+        shell: bash
+        env:
+          SOURCE_METADATA: ${{ runner.temp }}/build-source.json
+          WHEEL_ARTIFACT_ID: ${{ steps.wheel.outputs.artifact-id }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PYEOF'
+          import json
+          import os
+
+          path = os.environ["SOURCE_METADATA"]
+          with open(path) as f:
+              source = json.load(f)
+          source["artifact_id"] = int(os.environ["WHEEL_ARTIFACT_ID"])
+          with open(path, "w") as f:
+              json.dump(source, f)
+          PYEOF
+
+      - name: Upload build source metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: triton-build-source-${{ github.run_id }}-${{ steps.ref.outputs.safe_id }}
+          path: ${{ runner.temp }}/build-source.json
+          if-no-files-found: error
           overwrite: true
           retention-days: 14
 
@@ -586,36 +655,128 @@ jobs:
           fi
           cat "$NAS_RESULT_DIR/build_meta.txt" >> "$GITHUB_STEP_SUMMARY"
 
-  merge:
-    name: Merge wheel artifacts
+  prepare-publish:
+    name: Compose publish matrix from actual build sources
     # Every matrix entry must pass before anything is published.
-    needs: build-wheel
+    needs: [prepare-matrix, build-wheel]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
-      artifact_name: ${{ steps.artifact-name.outputs.artifact_name }}
+      matrix: ${{ steps.compose.outputs.matrix }}
     steps:
-      - name: Set merged artifact name
-        id: artifact-name
+      - name: Download build source metadata
+        uses: actions/download-artifact@v4
+        with:
+          # Omit the attempt from metadata names so failed-job reruns can reuse previously successful entries.
+          pattern: triton-build-source-${{ github.run_id }}-*
+          path: ${{ runner.temp }}/build-sources
+
+      - name: Group runtime configs with the same source
+        id: compose
         shell: bash
+        env:
+          BUILD_MATRIX: ${{ needs.prepare-matrix.outputs.matrix }}
+          METADATA_DIR: ${{ runner.temp }}/build-sources
         run: |
-          echo "artifact_name=triton-wheels-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          python3 - <<'PYEOF'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          expected = {
+              e["ref"].replace("/", "-") + "-" + e["tag"]
+              for e in json.loads(os.environ["BUILD_MATRIX"])
+          }
+          sources = {}
+          for path in sorted(Path(os.environ["METADATA_DIR"]).glob("*/build-source.json")):
+              with path.open() as f:
+                  source = json.load(f)
+              safe_id = source["safe_id"]
+              if safe_id not in expected:
+                  continue
+              if safe_id in sources:
+                  raise SystemExit(f"Duplicate build source: {safe_id}")
+              if not re.fullmatch(r"[0-9a-f]{40}", source["commit"]):
+                  raise SystemExit(f"Invalid build commit: {safe_id}")
+              if not isinstance(source["artifact_id"], int) or source["artifact_id"] <= 0:
+                  raise SystemExit(f"Invalid wheel artifact ID: {safe_id}")
+              sources[safe_id] = source
+          if not expected or sources.keys() != expected:
+              raise SystemExit(f"Missing build source metadata: {sorted(expected - sources.keys())}")
+
+          groups = {}
+          for safe_id, source in sources.items():
+              # Template properties apply to every wheel in the artifact; never mix different sources.
+              key = tuple(source[k] for k in ("repo", "commit", "branch", "tag"))
+              if key not in groups:
+                  groups[key] = {
+                      k: source[k] for k in ("repo", "commit", "branch", "tag")
+                  }
+                  groups[key]["artifact_name"] = (
+                      f"triton-wheels-{os.environ['GITHUB_RUN_ID']}-"
+                      f"{os.environ['GITHUB_RUN_ATTEMPT']}-{len(groups)}"
+                  )
+                  groups[key]["artifact_ids"] = []
+                  groups[key]["entries"] = []
+              groups[key]["artifact_ids"].append(str(source["artifact_id"]))
+              groups[key]["entries"].append(safe_id)
+          matrix = list(groups.values())
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("## Publish sources\n\n")
+              for group in matrix:
+                  group["artifact_ids"] = ",".join(group["artifact_ids"])
+                  entries = ", ".join(group.pop("entries"))
+                  f.write(f"- {entries}: repo={group['repo']}, commit={group['commit']}, "
+                          f"branch={group['branch']!r}, tag={group['tag']!r}\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"matrix={json.dumps(matrix)}\n")
+          PYEOF
+
+  merge:
+    name: Merge wheel artifacts (${{ matrix.source.commit }} / ${{ matrix.source.branch }})
+    needs: prepare-publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        source: ${{ fromJson(needs.prepare-publish.outputs.matrix) }}
+    steps:
+      - name: Download wheel artifacts with the same source
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ matrix.source.artifact_ids }}
+          path: ${{ runner.temp }}/wheels
+          merge-multiple: true
 
       - name: Merge wheel artifacts
-        uses: actions/upload-artifact/merge@v4
+        uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.artifact-name.outputs.artifact_name }}
-          pattern: triton-wheel-${{ github.run_id }}-${{ github.run_attempt }}-*
+          name: ${{ matrix.source.artifact_name }}
+          path: ${{ runner.temp }}/wheels/*.whl
+          if-no-files-found: error
           compression-level: 0
-          delete-merged: false
+          overwrite: true
+          retention-days: 14
 
   push:
-    name: Call temporary wheel upload template
-    needs: merge
+    name: Call temporary wheel upload template (${{ matrix.source.commit }} / ${{ matrix.source.branch }})
+    needs: [prepare-publish, merge]
+    strategy:
+      fail-fast: false
+      matrix:
+        source: ${{ fromJson(needs.prepare-publish.outputs.matrix) }}
     uses: t-head/ci-infra/.github/workflows/push-tmp-wheel.yml@main
     with:
       # run_attempt moves when only the publishing job is rerun.
-      artifact_name: ${{ needs.merge.outputs.artifact_name }}
+      # Use the artifact name from the completed source-grouping job; do not recompute the attempt when publishing.
+      artifact_name: ${{ matrix.source.artifact_name }}
+      repo: ${{ matrix.source.repo }}
+      commit: ${{ matrix.source.commit }}
+      branch: ${{ matrix.source.branch }}
+      tag: ${{ matrix.source.tag }}
       template_repository: t-head/ci-infra
       template_ref: main
     secrets:
@@ -624,8 +785,8 @@ jobs:
       template_token: ${{ secrets.TEMPLATE_TOKEN }}
 
   result:
-    name: Show batch directory URL
-    needs: push
+    name: Show publish results
+    needs: [prepare-publish, push]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -633,6 +794,10 @@ jobs:
         shell: bash
         env:
           UPLOAD_URL: ${{ needs.push.outputs.upload_url }}
+          PUBLISH_MATRIX: ${{ needs.prepare-publish.outputs.matrix }}
         run: |
           set -euo pipefail
-          printf 'Batch directory: %s\n' "$UPLOAD_URL" | tee -a "$GITHUB_STEP_SUMMARY"
+          COUNT=$(python3 -c 'import json, os; print(len(json.loads(os.environ["PUBLISH_MATRIX"])))')
+          printf 'Published %s wheel groups by actual build source. See each upload job log for its directory URL.\n' "$COUNT" | tee -a "$GITHUB_STEP_SUMMARY"
+          # A matrix job returns one completed instance's output, not a shared directory for all sources.
+          printf 'Directory for one published batch: %s\n' "$UPLOAD_URL" | tee -a "$GITHUB_STEP_SUMMARY"
