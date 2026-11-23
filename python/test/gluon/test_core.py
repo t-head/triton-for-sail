@@ -2575,7 +2575,6 @@ def test_ppu_mma_v2(M, N, K, num_warps, dtype):
     b_lay = default_blocked_layout([K, N], num_warps)
     out_lay = default_blocked_layout([M, N], num_warps)
     _ppu_mma_kernel[(1, )](a, b, out, M, N, K, a_lay, b_lay, out_lay, 2, num_warps=num_warps)
-    torch.cuda.synchronize()
     torch.testing.assert_close(out, a.float() @ b.float(), rtol=1e-2, atol=1e-2)
 
 
@@ -2591,7 +2590,6 @@ def test_ppu_mma_v1(M, N, K, num_warps, dtype):
     b_lay = default_blocked_layout([K, N], num_warps)
     out_lay = default_blocked_layout([M, N], num_warps)
     _ppu_mma_kernel[(1, )](a, b, out, M, N, K, a_lay, b_lay, out_lay, 1, num_warps=num_warps)
-    torch.cuda.synchronize()
     torch.testing.assert_close(out, a.float() @ b.float(), rtol=1e-2, atol=1e-2)
 
 
@@ -2644,7 +2642,6 @@ def _ppu_run_mma_scaled(M, N, K, group, version):
     out_lay = default_blocked_layout([M, N], 4)
     _ppu_mma_scaled_kernel[(1, )](a, b, a_scale, b_scale, out, M, N, K, group, kpack, "e2m1", "e2m1", a_lay, b_lay,
                                   s_lay, out_lay, version, num_warps=4)
-    torch.cuda.synchronize()
     a_ref = a_mx.to(torch.float32) * fp8e8m0_to_float32(a_scale).repeat_interleave(group, dim=1)
     b_ref = (b_mx.to(torch.float32) * fp8e8m0_to_float32(b_scale).repeat_interleave(group, dim=1)).T
     ref = a_ref @ b_ref
@@ -2687,7 +2684,6 @@ def test_ppu_aiu_load(BM, BN, num_warps, dtype):
         ttgl.store(out_ptr + offs_m * N + offs_n, val)
 
     kernel[(M // BM, N // BN)](a, out, M, N, BM, BN, aiu_lay, ttgl_dtype, num_warps=num_warps)
-    torch.cuda.synchronize()
     torch.testing.assert_close(out, a)
 
 
@@ -2714,7 +2710,6 @@ def test_ppu_async_copy(XBLOCK, YBLOCK, xnumel, num_warps, dtype):
         ttgl.store(out_ptr + xindex * YBLOCK + yindex, val)
 
     kernel[(1, )](out, inp, xnumel, XBLOCK, YBLOCK, num_warps=num_warps)
-    torch.cuda.synchronize()
     torch.testing.assert_close(out[:xnumel], inp)
     torch.testing.assert_close(out[xnumel:], torch.zeros((XBLOCK - xnumel, YBLOCK), device="cuda", dtype=dtype))
 
@@ -2796,7 +2791,6 @@ def test_ppu_aiu_mma_pipelined(dtype, BK, num_k_tiles, num_buffers):
     out_lay = default_blocked_layout([BM, BN], num_warps)
     _ppu_gemm_pipelined_kernel[(M // BM, N // BN)](a, b, out, M, N, K, BM, BN, BK, num_buffers, acc0, aiu_a, aiu_b,
                                                    ttgl_dtype, out_lay, 1, num_warps=num_warps)
-    torch.cuda.synchronize()
     torch.testing.assert_close(out, a.float() @ b.float() + acc0, rtol=1e-2, atol=1e-2)
 
 
