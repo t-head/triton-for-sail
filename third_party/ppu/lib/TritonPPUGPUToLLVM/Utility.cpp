@@ -126,11 +126,11 @@ Value llGetPid(Location loc, RewriterBase &rewriter, ModuleOp moduleOp,
   if (numCTAs == 1) {
     switch (axis) {
     case ProgramIDDim::X:
-      return readPPUProgramId(loc, rewriter, "%tix");
+      return readPPUProgramId(loc, rewriter, "%ctaid.x");
     case ProgramIDDim::Y:
-      return readPPUProgramId(loc, rewriter, "%tiy");
+      return readPPUProgramId(loc, rewriter, "%ctaid.y");
     case ProgramIDDim::Z:
-      return readPPUProgramId(loc, rewriter, "%tiz");
+      return readPPUProgramId(loc, rewriter, "%ctaid.z");
     }
   } else {
     switch (axis) {

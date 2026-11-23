@@ -999,8 +999,8 @@ def test_program_id_y_large_grid(device):
     assert torch.equal(written, expected)
 
     llir = compiled.asm["llir"]
-    assert "%tiy" in llir
-    assert "ctaid.y" not in llir
+    assert "ppu.mov.u32 $0, %ctaid.y;" in llir
+    assert "llvm.nvvm.read.ptx.sreg.ctaid.y" not in llir
     assert not re.search(r"\b[us](?:div|rem)\s+i16\b", llir)
 
 
