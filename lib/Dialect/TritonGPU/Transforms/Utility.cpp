@@ -152,11 +152,16 @@ getAtomicElementsPerThreadCap(Operation *op, unsigned bitWidth) {
   if (atomicRmw.getAtomicRmwOp() != RMWOp::FADD)
     return std::nullopt;
 
+  auto targetAttr =
+      moduleOp ? moduleOp->getAttrOfType<StringAttr>(ttg::AttrTargetName)
+               : nullptr;
+  bool isPPU = targetAttr && targetAttr.getValue().starts_with("ppu:");
   auto targetInfo = TargetInfoBase::fromModuleOp(moduleOp);
-  if (!targetInfo || !targetInfo->isCuda())
+  if (!isPPU && (!targetInfo || !targetInfo->isCuda()))
     return std::nullopt;
 
-  int computeCapability = getNVIDIAComputeCapability(moduleOp);
+  int computeCapability = isPPU ? getPPUComputeCapability(moduleOp)
+                                : getNVIDIAComputeCapability(moduleOp);
   if (computeCapability >= 90)
     return std::nullopt;
 
