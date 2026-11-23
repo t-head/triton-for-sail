@@ -105,10 +105,10 @@ Value shuffleIdx(Location loc, RewriterBase &rewriter, Value val, Value i) {
 }
 
 static Value readPPUProgramId(Location loc, RewriterBase &rewriter,
-                              StringRef reg) {
+                              const std::string &reg) {
   mlir::triton::ppu::TIXBuilder builder;
   auto *dst = builder.newOperand("=r");
-  auto *src = builder.newConstantOperand(reg.str());
+  auto *src = builder.newConstantOperand(reg);
   auto &mov = *builder.create("ppu.mov.u32");
   mov(dst, src);
   return builder.launch(rewriter, loc, i32_ty, false);
