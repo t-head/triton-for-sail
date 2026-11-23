@@ -380,6 +380,55 @@ LogicalResult lowerPPULdMatrix(
   return success();
 }
 
+DotOperandEncodingAttr matchEquivalentAIUV2DotEncoding(
+    triton::gpu::LocalLoadOp op, PPUAIUSharedEncodingAttr sharedEnc,
+    const ppu::TargetInfo &targetInfo) {
+  auto dstTy = op.getType();
+  auto elemTy = dstTy.getElementType();
+  if (targetInfo.getComputeCapability() != 89 || !sharedEnc.isPPU0015() ||
+      dstTy.getRank() != 2 ||
+      !isa<LinearEncodingAttr>(dstTy.getEncoding()))
+    return {};
+
+  unsigned bitWidth = elemTy.getIntOrFloatBitWidth();
+  if (bitWidth != 8 && !elemTy.isF16() && !elemTy.isBF16() && !elemTy.isF32())
+    return {};
+  auto cgaLayout = sharedEnc.getCGALayout();
+  auto dstLayout = toLinearLayout(dstTy);
+  auto ctx = op.getContext();
+  if (cgaLayout.getCTAsPerCGA() != SmallVector<unsigned>({1, 1}) ||
+      dstLayout.getInDimSize(StringAttr::get(ctx, "block")) != 1)
+    return {};
+  auto strategy = sharedEnc.getAIUStrategy();
+  if (strategy.size() != 5 || (strategy[4] != 64 && strategy[4] != 128))
+    return {};
+
+  unsigned numWarps = lookupNumWarps(op);
+  unsigned kWidth = 32 / bitWidth;
+  auto shape = dstTy.getShape();
+  for (unsigned opIdx = 0; opIdx < 2; ++opIdx) {
+    unsigned kDim = 1 - opIdx;
+    unsigned nonKDim = opIdx;
+    unsigned kTile = std::max(16u, 256 / bitWidth);
+    if (shape[kDim] < kTile || shape[kDim] % kTile != 0 ||
+        shape[nonKDim] < 16 || shape[nonKDim] % 16 != 0 ||
+        (bitWidth == 8 && sharedEnc.getOrder()[0] != kDim))
+      continue;
+    for (unsigned warpM = 1; warpM <= numWarps; warpM *= 2) {
+      if (numWarps % warpM != 0)
+        continue;
+      auto mma = PPUMmaEncodingAttr::get(
+          ctx, 2, 0, {warpM, numWarps / warpM}, cgaLayout, {16, 16});
+      auto dot = DotOperandEncodingAttr::get(ctx, opIdx, mma, kWidth);
+      auto dotTy = dstTy.cloneWithEncoding(dot);
+      // Keep register broadcasts and slot order in the equivalence check.
+      if (toLinearLayout(dotTy) == dstLayout)
+        return dot;
+    }
+  }
+  return {};
+}
+
 struct LocalLoadOpConversion
     : public ConvertOpToLLVMPattern<triton::gpu::LocalLoadOp> {
 public:
@@ -408,12 +457,15 @@ public:
       if (isa<DotOperandEncodingAttr>(dstLayout) &&
           isa<PPUMmaEncodingAttr>(
               cast<DotOperandEncodingAttr>(dstLayout).getParent())) {
-        return lowerAIUSharedToPPUDotOperand(op, adaptor, getTypeConverter(),
-                                             rewriter);
-      } else {
-        return lowerAIUSharedToDistributed(op, adaptor, getTypeConverter(),
-                                           rewriter);
+        return lowerAIUSharedToPPUDotOperand(
+            op, adaptor, cast<DotOperandEncodingAttr>(dstLayout),
+            getTypeConverter(), rewriter);
       }
+      if (auto dotEnc = matchEquivalentAIUV2DotEncoding(op, sharedEnc, targetInfo))
+        return lowerAIUSharedToPPUDotOperand(op, adaptor, dotEnc,
+                                             getTypeConverter(), rewriter);
+      return lowerAIUSharedToDistributed(op, adaptor, getTypeConverter(),
+                                         rewriter);
     }
 
     // Try to lower to ppu.ldmatrix
@@ -515,6 +567,7 @@ public:
   LogicalResult
   lowerAIUSharedToPPUDotOperand(triton::gpu::LocalLoadOp op,
                                 triton::gpu::LocalLoadOpAdaptor adaptor,
+                                DotOperandEncodingAttr dotEnc,
                                 const LLVMTypeConverter *typeConverter,
                                 ConversionPatternRewriter &rewriter) const {
     auto loc = op.getLoc();
@@ -522,7 +575,6 @@ public:
     auto src = op.getSrc();
     auto dstTy = cast<RankedTensorType>(op.getType());
     auto srcTy = cast<MemDescType>(op.getSrc().getType());
-    auto dotEnc = cast<DotOperandEncodingAttr>(dstTy.getEncoding());
     auto mmaEncoding =
         dyn_cast<triton::gpu::PPUMmaEncodingAttr>(dotEnc.getParent());
     auto llvmElemTy = typeConverter->convertType(dstTy.getElementType());

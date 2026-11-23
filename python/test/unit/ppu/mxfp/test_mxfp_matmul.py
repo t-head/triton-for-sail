@@ -150,3 +150,104 @@ def test_blocked_scale_mxfp4(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES, USE
     atol = 0.01
     rtol = 0.02
     torch.testing.assert_close(ref_out, output, atol=atol, rtol=rtol)
+
+
+@triton.jit
+def _aiu_mxfp4_linear_load_kernel(  #
+        a_ptr, b_ptr, output_ptr,  #
+        a_scale, b_scale,  #
+        M, N, K,  #
+        stride_scale,  #
+        stride_am, stride_ak,  #
+        stride_bk, stride_bn,  #
+        stride_cm, stride_cn,  #
+        VEC_SIZE: tl.constexpr,  #
+        BLOCK_M: tl.constexpr,  #
+        BLOCK_N: tl.constexpr,  #
+        BLOCK_K: tl.constexpr,  #
+        num_stages: tl.constexpr, PACK_ALONG_K: tl.constexpr):  #
+    pid = tl.program_id(axis=0)
+    num_pid_m = tl.cdiv(M, BLOCK_M)
+    pid_m = pid % num_pid_m
+    pid_n = pid // num_pid_m
+    offs_am = (pid_m * BLOCK_M + tl.arange(0, BLOCK_M))
+    offs_bn = (pid_n * BLOCK_N + tl.arange(0, BLOCK_N))
+    PACKING_ALONG_M_N: tl.constexpr = 1 if PACK_ALONG_K else 2
+    offs_am_packed = (pid_m * (BLOCK_M // PACKING_ALONG_M_N) + tl.arange(0, BLOCK_M // PACKING_ALONG_M_N))
+    offs_bn_packed = (pid_n * (BLOCK_N // PACKING_ALONG_M_N) + tl.arange(0, BLOCK_N // PACKING_ALONG_M_N))
+    BLOCK_K_PACKED: tl.constexpr = BLOCK_K // 2 if PACK_ALONG_K else BLOCK_K
+
+    # Two e2m1 values per K
+    offs_k = tl.arange(0, BLOCK_K_PACKED)
+    offs_scale_k = tl.arange(0, BLOCK_K // VEC_SIZE)
+    if a_scale is not None:
+        a_scale_ptr = a_scale + offs_am[:, None] * stride_scale + offs_scale_k[None, :]
+    if b_scale is not None:
+        b_scale_ptr = b_scale + offs_bn[:, None] * stride_scale + offs_scale_k[None, :]
+    # a_ptrs = a_ptr + (offs_am_packed[:, None] * stride_am + offs_k[None, :] * stride_ak)
+    # b_ptrs = b_ptr + (offs_k[:, None] * stride_bk + offs_bn_packed[None, :] * stride_bn)
+    accumulator = tl.zeros((BLOCK_M, BLOCK_N), dtype=output_ptr.dtype.element_ty)
+
+    offs_am_aiu = (pid_m * (BLOCK_M // PACKING_ALONG_M_N))
+    offs_bn_aiu = (pid_n * (BLOCK_N // PACKING_ALONG_M_N))
+    offs_k_aiu = 0
+
+    for k in tl.range(0, tl.cdiv(K, BLOCK_K), num_stages=num_stages):
+        a = tl.aiu_load(a_ptr, (offs_am_aiu, offs_k_aiu), (BLOCK_M // PACKING_ALONG_M_N, BLOCK_K_PACKED), (M, K//2), tl.uint8, (1, 0))
+        b = tl.aiu_load(b_ptr, (offs_k_aiu, offs_bn_aiu), (BLOCK_K_PACKED, BLOCK_N // PACKING_ALONG_M_N), (K//2, N), tl.uint8, (0, 1))
+
+        if a_scale is not None:
+            scale_a = tl.load(a_scale_ptr)
+        else:
+            scale_a = None
+        if b_scale is not None:
+            scale_b = tl.load(b_scale_ptr)
+        else:
+            scale_b = None
+        accumulator = tl.dot_scaled(a, scale_a, "e2m1", b, scale_b, "e2m1", accumulator, lhs_k_pack=PACK_ALONG_K,
+                                    rhs_k_pack=PACK_ALONG_K)
+        offs_k_aiu += BLOCK_K_PACKED
+        if a_scale is not None:
+            a_scale_ptr += BLOCK_K // VEC_SIZE
+        if b_scale is not None:
+            b_scale_ptr += BLOCK_K // VEC_SIZE
+    offs_cm = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_cn = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    output_ptrs = output_ptr + stride_cm * offs_cm[:, None] + stride_cn * offs_cn[None, :]
+    c_mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
+    tl.store(output_ptrs, accumulator, mask=c_mask)
+
+
+@pytest.mark.parametrize("num_stages", [3, 4, 5])
+@pytest.mark.parametrize("pattern", ["packed", "one_hot"])
+@pytest.mark.parametrize("K", [256, 512])
+@pytest.mark.skipif(not (is_ppu() and torch.cuda.get_device_capability() == (8, 9)), reason="Requires PPU0015")
+def test_aiu_mxfp4_equivalent_linear_load(K, pattern, num_stages, device):
+    import re
+
+    M, N = K, 64
+    gen = torch.Generator().manual_seed(1234)
+    a = torch.randint(0, 256, (M, K // 2), dtype=torch.uint8, generator=gen)
+    b = torch.randint(0, 256, (N, K // 2), dtype=torch.uint8, generator=gen)
+    if pattern == "one_hot":
+        a.zero_()
+        row = torch.arange(M)
+        a[row, row // 2] = (2 << (4 * (row % 2))).to(torch.uint8)
+    sa = torch.randint(124, 128, (M, K // 32), dtype=torch.uint8, generator=gen)
+    sb = torch.randint(124, 128, (N, K // 32), dtype=torch.uint8, generator=gen)
+    lut = torch.tensor([0., .5, 1., 1.5, 2., 3., 4., 6., -0., -.5, -1., -1.5, -2., -3., -4., -6.])
+    a_ref = torch.stack((lut[(a & 15).long()], lut[(a >> 4).long()]), dim=-1).reshape(M, K)
+    b_ref = torch.stack((lut[(b & 15).long()], lut[(b >> 4).long()]), dim=-1).reshape(N, K)
+    a_ref *= torch.exp2(sa.float() - 127).repeat_interleave(32, dim=1)
+    b_ref *= torch.exp2(sb.float() - 127).repeat_interleave(32, dim=1)
+    expected = a_ref @ b_ref.T
+    a, b, sa, sb = a.to(device), b.to(device).T, sa.to(device), sb.to(device)
+    output = torch.empty((M, N), dtype=torch.float32, device=device)
+    compiled = _aiu_mxfp4_linear_load_kernel[(triton.cdiv(M, 128),)](
+        a, b, output, sa, sb, M, N, K, sa.stride(0),
+        *a.stride(), *b.stride(), *output.stride(), 32,
+        BLOCK_M=128, BLOCK_N=64, BLOCK_K=128, PACK_ALONG_K=True,
+        num_warps=4, num_stages=num_stages)
+    assert re.search(r"ttg.local_load.*tensor<64x64xi8, #linear", compiled.asm["ttgir"])
+    assert "ppu.ldmatrix.swzl" in compiled.asm["llir"]
+    torch.testing.assert_close(output.cpu(), expected, atol=0, rtol=0)
