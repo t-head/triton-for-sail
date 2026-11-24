@@ -113,7 +113,8 @@ static Value readPPUProgramId(Location loc, RewriterBase &rewriter,
   mov(dst, src);
   Value pid = builder.launch(rewriter, loc, i32_ty);
   TritonLLVMOpBuilder b(loc, rewriter);
-  // Preserve the non-negative range that NVVM provided for scalar optimizations.
+  // Preserve the non-negative range that NVVM provided for scalar
+  // optimizations.
   LLVM::AssumeOp::create(rewriter, loc, b.icmp_sge(pid, b.i32_val(0)));
   return pid;
 }
