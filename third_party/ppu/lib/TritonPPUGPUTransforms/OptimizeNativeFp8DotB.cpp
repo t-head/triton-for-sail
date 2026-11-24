@@ -65,10 +65,9 @@ bool isNativeFp8DotBConversion(ConvertLayoutOp cvtOp) {
     return false;
   auto dstDotOp =
       dyn_cast<triton::gpu::DotOperandEncodingAttr>(dstType.getEncoding());
-  if (!dstDotOp || !cvtNeedsSharedMemory(srcType, dstType))
+  if (!dstDotOp || !cvtNeedsSharedMemory(cvtOp))
     return false;
-  auto ppuMma =
-      dyn_cast<triton::gpu::PPUMmaEncodingAttr>(dstDotOp.getParent());
+  auto ppuMma = dyn_cast<triton::gpu::PPUMmaEncodingAttr>(dstDotOp.getParent());
   if (!ppuMma || ppuMma.getVersionMajor() != 2 || dstDotOp.getOpIdx() != 1 ||
       dstDotOp.getKWidth() != 4)
     return false;
@@ -91,8 +90,7 @@ void rewriteToNativeSharedK(ConvertLayoutOp cvtOp) {
   auto srcEncoding = srcType.getEncoding();
   auto dstDotOp =
       cast<triton::gpu::DotOperandEncodingAttr>(dstType.getEncoding());
-  auto ppuMma =
-      cast<triton::gpu::PPUMmaEncodingAttr>(dstDotOp.getParent());
+  auto ppuMma = cast<triton::gpu::PPUMmaEncodingAttr>(dstDotOp.getParent());
   OpBuilder builder(cvtOp);
   auto *ctx = cvtOp.getContext();
   auto blocked = triton::gpu::BlockedEncodingAttr::get(
@@ -111,8 +109,8 @@ void rewriteToNativeSharedK(ConvertLayoutOp cvtOp) {
       sharedMemorySpace);
   auto tmp = triton::gpu::LocalAllocOp::create(builder, cvtOp.getLoc(), tmpType,
                                                sharedSource);
-  auto newConvert = triton::gpu::LocalLoadOp::create(builder, cvtOp.getLoc(),
-                                                     dstType, tmp);
+  auto newConvert =
+      triton::gpu::LocalLoadOp::create(builder, cvtOp.getLoc(), dstType, tmp);
   cvtOp.replaceAllUsesWith(newConvert.getResult());
   cvtOp.erase();
 }
