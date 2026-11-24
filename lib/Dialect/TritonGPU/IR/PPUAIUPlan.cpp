@@ -124,39 +124,68 @@ PPUAIUPlan::enumerateProvenCandidates(
     ArrayRef<unsigned> order) {
   auto legacy = createLegacyDefault(numWarps, xElems, channelElems,
                                     elementBitWidth, rootShape, order);
-  if (!legacy)
+  if (!numWarps || xElems < 16 || !channelElems ||
+      (elementBitWidth != 8 && elementBitWidth != 16 && elementBitWidth != 32))
     return legacy.takeError();
 
-  std::vector<PPUAIUPlan> candidates{*legacy};
+  std::vector<PPUAIUPlan> candidates;
   std::set<std::array<unsigned, 5>> seen;
-  auto legacyFields = legacy->toLegacyStrategy();
-  seen.insert({legacyFields[0], legacyFields[1], legacyFields[2],
-               legacyFields[3], legacyFields[4]});
-  for (unsigned warpC = 1; warpC <= numWarps; ++warpC) {
-    if (legacy->getStorageFactor() == 2 && warpC != 1)
-      continue;
-    if (legacy->getStorageFactor() == 1 &&
-        channelElems % (static_cast<uint64_t>(legacy->getCubeC()) * warpC) != 0)
-      continue;
-    for (unsigned warpW = 1; warpW <= numWarps / warpC; ++warpW) {
-      if (xElems % warpW != 0)
-        continue;
-      uint64_t cubeW = xElems / warpW;
-      if (cubeW < 16 || cubeW > 2048)
-        continue;
-      SmallVector<unsigned> strategy{legacy->getCubeC(),
-                                     static_cast<unsigned>(cubeW), warpC, warpW,
-                                     legacy->getSwizzledBytes()};
-      std::array<unsigned, 5> key{strategy[0], strategy[1], strategy[2],
-                                  strategy[3], strategy[4]};
-      if (!seen.insert(key).second)
-        continue;
-      auto candidate = fromLegacy(numWarps, xElems, channelElems,
-                                  elementBitWidth, rootShape, order, strategy);
-      if (!candidate)
-        return candidate.takeError();
-      candidates.push_back(*candidate);
+  auto appendCandidate = [&](ArrayRef<unsigned> strategy) {
+    std::array<unsigned, 5> key{strategy[0], strategy[1], strategy[2],
+                                strategy[3], strategy[4]};
+    if (!seen.insert(key).second)
+      return;
+    auto candidate = fromLegacy(numWarps, xElems, channelElems,
+                                elementBitWidth, rootShape, order, strategy);
+    if (!candidate) {
+      llvm::consumeError(candidate.takeError());
+      return;
     }
+    candidates.push_back(*candidate);
+  };
+  if (legacy)
+    appendCandidate(legacy->toLegacyStrategy());
+
+  unsigned elementBytes = elementBitWidth / 8;
+  for (unsigned swizzledBytes : {64, 128}) {
+    unsigned factorOneCubeC = swizzledBytes / elementBytes;
+    for (unsigned warpC = 1; warpC <= numWarps; ++warpC) {
+      if (channelElems % (static_cast<uint64_t>(factorOneCubeC) * warpC) != 0)
+        continue;
+      for (unsigned warpW = 1; warpW <= numWarps / warpC; ++warpW) {
+        if (xElems % warpW != 0)
+          continue;
+        uint64_t cubeW = xElems / warpW;
+        if (cubeW < 16 || cubeW > 2048)
+          continue;
+        SmallVector<unsigned> strategy{factorOneCubeC,
+                                       static_cast<unsigned>(cubeW), warpC,
+                                       warpW, swizzledBytes};
+        appendCandidate(strategy);
+      }
+    }
+
+    if (swizzledBytes == 64) {
+      unsigned factorTwoCubeC = 32 / elementBytes;
+      if (channelElems == factorTwoCubeC) {
+        for (unsigned warpW = 1; warpW <= numWarps; ++warpW) {
+          if (xElems % warpW != 0)
+            continue;
+          uint64_t cubeW = xElems / warpW;
+          if (cubeW < 16 || cubeW > 2048)
+            continue;
+          SmallVector<unsigned> strategy{factorTwoCubeC,
+                                         static_cast<unsigned>(cubeW), 1,
+                                         warpW, swizzledBytes};
+          appendCandidate(strategy);
+        }
+      }
+    }
+  }
+  if (!legacy) {
+    if (candidates.empty())
+      return legacy.takeError();
+    llvm::consumeError(legacy.takeError());
   }
   return candidates;
 }

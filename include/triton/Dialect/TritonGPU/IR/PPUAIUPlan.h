@@ -28,6 +28,8 @@ public:
   static llvm::Expected<PPUAIUPlan> fromLegacy(MemDescType memDescTy,
                                                unsigned numWarps);
 
+  // Enumerate every scalar-valid strategy in the current finite AIU model.
+  // Canonical standard-layout candidates are a subset; legacy-only plans remain included.
   static llvm::Expected<std::vector<PPUAIUPlan>>
   enumerateProvenCandidates(unsigned numWarps, uint64_t xElems,
                             uint64_t channelElems, unsigned elementBitWidth,

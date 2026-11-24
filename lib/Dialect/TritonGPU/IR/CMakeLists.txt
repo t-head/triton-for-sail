@@ -4,6 +4,8 @@ add_triton_library(TritonGPUIR
   Ops.cpp
   Partitioning.cpp
   PPUAIUPlan.cpp
+  PPUAIUWriterSolver.cpp
+  PPULayoutSpec.cpp
   SharedPhysicalLayout.cpp
   Types.cpp
   Traits.cpp

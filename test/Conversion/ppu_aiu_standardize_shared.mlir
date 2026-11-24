@@ -17,6 +17,7 @@
 #blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
 #mma = #ttg.ppu_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [2, 2], instrShape = [16, 16], vecSize = 2}>
 #aiu_default = #ttg.ppu_aiu_shared<{versionMajor = 2, AIUStrategy = [64, 16, 1, 4, 128], order = [1, 0]}>
+#aiu_variant = #ttg.ppu_aiu_shared<{versionMajor = 2, AIUStrategy = [64, 64, 1, 1, 128], order = [1, 0]}>
 #smem = #ttg.shared_memory
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "ppu:89", "ttg.threads-per-warp" = 32 : i32} {
   tt.func public @canonical(%P: !tt.ptr<f16>, %A: tensor<64x64xf16, #blocked>) {
@@ -25,6 +26,9 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
     %a = ttg.local_alloc %A : (tensor<64x64xf16, #blocked>) -> !ttg.memdesc<64x64xf16, #aiu_default, #smem>
     %token = ttpg.async_aiu_copy_global_to_local %P[%c0, %c0][%c64, %c64] %a : !tt.ptr<f16> -> !ttg.memdesc<64x64xf16, #aiu_default, #smem>
     %a_dot = ttg.local_load %a : !ttg.memdesc<64x64xf16, #aiu_default, #smem> -> tensor<64x64xf16, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>>
+    %b = ttg.local_alloc %A : (tensor<64x64xf16, #blocked>) -> !ttg.memdesc<64x64xf16, #aiu_variant, #smem>
+    %token_b = ttpg.async_aiu_copy_global_to_local %P[%c0, %c0][%c64, %c64] %b : !tt.ptr<f16> -> !ttg.memdesc<64x64xf16, #aiu_variant, #smem>
+    %b_dot = ttg.local_load %b : !ttg.memdesc<64x64xf16, #aiu_variant, #smem> -> tensor<64x64xf16, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>>
     tt.return
   }
 }
@@ -32,6 +36,8 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 // CHECK-LABEL: tt.func public @canonical
 // CHECK: alignment = 128 : i32
 // CHECK: ppu.aiu_strategy = [64 : i32, 16 : i32, 1 : i32, 4 : i32, 128 : i32]
+// CHECK: ppu.aiu_source
+// CHECK: ppu.aiu_strategy = [64 : i32, 64 : i32, 1 : i32, 1 : i32, 128 : i32]
 // CHECK: ppu.aiu_source
 
 // -----

@@ -262,11 +262,17 @@ TEST(PPUAIUPlan, ExplicitFactorTwoCoordinates) {
   EXPECT_EQ(distributedOffset(plan, 15, 15), 503);
 }
 
-TEST(PPUAIUPlan, EnumeratesOnlyProvenWarpVariants) {
+TEST(PPUAIUPlan, EnumeratesAllProvenCandidates) {
   auto factorOne = provenCandidates(4, 64, 128, 16);
-  EXPECT_EQ(factorOne.size(), 5);
+  EXPECT_EQ(factorOne.size(), 11);
   EXPECT_EQ(factorOne.front().toLegacyStrategy(),
             defaultPlan(4, 64, 128, 16).toLegacyStrategy());
+  EXPECT_EQ(llvm::count_if(factorOne, [](const PPUAIUPlan &plan) {
+              return plan.getSwizzledBytes() == 64;
+            }), 6);
+  EXPECT_EQ(llvm::count_if(factorOne, [](const PPUAIUPlan &plan) {
+              return plan.getSwizzledBytes() == 128;
+            }), 5);
   for (const auto &plan : factorOne)
     provePlan(plan);
 
@@ -390,4 +396,61 @@ TEST(PPUAIUPlan, RejectsNonCanonicalSharedEncoding) {
   auto blockedChannels = validPlan(4, 64, 64, 16, {32, 32, 2, 2, 64});
   expectInvalidEncoding(blockedChannels.toCanonicalSwizzledSharedEncoding(
       aiuMemDesc(blockedChannels, context)));
+}
+
+TEST(PPUAIUPlan, ExhaustiveGeometryMatrixValidatesEveryCandidate) {
+  MLIRContext context;
+  context.loadDialect<TritonGPUDialect>();
+  size_t evaluated = 0;
+  size_t canonical = 0;
+  SmallVector<SmallVector<unsigned>> orders{{1, 0}, {0, 1}};
+  for (unsigned bits : {8, 16, 32}) {
+    for (unsigned warps : {1, 2, 4, 8}) {
+      for (uint64_t x : {16, 32, 64, 128}) {
+        for (uint64_t channelBytes : {32, 64, 128, 256}) {
+          uint64_t channel = channelBytes / (bits / 8);
+          if (channel % 16 != 0)
+            continue;
+          for (const auto &order : orders) {
+            SmallVector<int64_t> shape;
+            if (order[1] == 0)
+              shape = {static_cast<int64_t>(x), static_cast<int64_t>(channel)};
+            else
+              shape = {static_cast<int64_t>(channel), static_cast<int64_t>(x)};
+            auto plans = PPUAIUPlan::enumerateProvenCandidates(
+                warps, x, channel, bits, shape, order);
+            ASSERT_TRUE(!!plans);
+            ASSERT_FALSE(plans->empty());
+            for (const auto &plan : *plans) {
+              auto physical = plan.toSharedPhysicalLayout(context);
+              ASSERT_TRUE(!!physical);
+              auto type = aiuMemDesc(plan, context, shape, order);
+              auto encoding = plan.toCanonicalSwizzledSharedEncoding(type);
+              if (!encoding) {
+                llvm::consumeError(encoding.takeError());
+                continue;
+              }
+              ++canonical;
+              auto reconstructed = PPUAIUPlan::fromCanonicalSwizzled(
+                  withEncoding(type, *encoding), warps,
+                  plan.toLegacyStrategy());
+              ASSERT_TRUE(!!reconstructed);
+              EXPECT_EQ(reconstructed->toLegacyStrategy(),
+                        plan.toLegacyStrategy());
+            }
+            evaluated += plans->size();
+          }
+        }
+      }
+    }
+  }
+  EXPECT_GT(evaluated, 1000);
+  EXPECT_GT(canonical, 100);
+}
+
+TEST(PPUAIUPlan, ExhaustiveEnumerationSkipsOnlyInvalidBranches) {
+  auto plans = provenCandidates(8, 4096, 64, 16);
+  EXPECT_FALSE(plans.empty());
+  for (const auto &plan : plans)
+    EXPECT_LE(plan.getCubeW(), 2048);
 }
