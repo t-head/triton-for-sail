@@ -41,6 +41,8 @@ def _is_layout_applicable(layout) -> bool:
         if isinstance(layout, ttgl.NVMMASharedLayout):
             return True
         mma_layout = layout.parent if isinstance(layout, ttgl.DotOperandLayout) else layout
+        if isinstance(mma_layout, ttgl.ppu.PPUMMADistributedLayout):
+            return mma_layout.version[0] in (1, 2)
         if not isinstance(mma_layout, ttgl.NVMMADistributedLayout):
             return False
         return mma_layout.version[0] in (1, 2)
@@ -168,8 +170,8 @@ def test_scan_rejects_axis_split_across_ctas(device, capfd):
 
 
 def test_scan_blocked_broadcast_layout(device):
-    if not is_cuda():
-        pytest.skip("requires CUDA")
+    if not (is_cuda() or is_ppu()):
+        pytest.skip("requires CUDA or PPU")
     if THREADS_PER_WARP != 32:
         pytest.skip("requires 32-thread warps")
 
@@ -195,8 +197,8 @@ def test_scan_blocked_broadcast_layout(device):
 
 
 def test_scan_blocked_broadcast_layout_multiblock(device):
-    if not is_cuda():
-        pytest.skip("requires CUDA")
+    if not (is_cuda() or is_ppu()):
+        pytest.skip("requires CUDA or PPU")
     if THREADS_PER_WARP != 32:
         pytest.skip("requires 32-thread warps")
 
@@ -997,6 +999,8 @@ def _reduce_layouts():
         ttgl.BlockedLayout([1, 4], [8, THREADS_PER_WARP // 8], [4, 1], [0, 1]),
         ttgl.NVMMADistributedLayout(version=[2, 0], warps_per_cta=[2, 4], instr_shape=[16, 8]),
         ttgl.NVMMADistributedLayout(version=[3, 0], warps_per_cta=[4, 1], instr_shape=[16, 16, 16]),
+        ttgl.ppu.PPUMMADistributedLayout(version=[1, 0], warps_per_cta=[4, 1], instr_shape=[16, 16], vec_size=1),
+        ttgl.ppu.PPUMMADistributedLayout(version=[2, 0], warps_per_cta=[4, 1], instr_shape=[16, 16]),
         ttgl.amd.AMDMFMALayout(version=1, instr_shape=[32, 32, 8], transposed=True, warps_per_cta=[1, 4]),
         ttgl.amd.AMDMFMALayout(version=2, instr_shape=[32, 32, 8], transposed=True, warps_per_cta=[1, 4]),
         ttgl.amd.AMDMFMALayout(version=3, instr_shape=[32, 32, 8], transposed=True, warps_per_cta=[1, 4]),
@@ -1020,7 +1024,8 @@ def _reduce_layouts():
     rets = []
     for (M, N) in shapes:
         for layout in layouts:
-            if isinstance(layout, (ttgl.amd.AMDMFMALayout, ttgl.amd.AMDWMMALayout, ttgl.NVMMADistributedLayout)):
+            if isinstance(layout, (ttgl.amd.AMDMFMALayout, ttgl.amd.AMDWMMALayout, ttgl.NVMMADistributedLayout,
+                                   ttgl.ppu.PPUMMADistributedLayout)):
                 instr_shape = layout.instr_shape
                 if M < instr_shape[0] or N < instr_shape[1]:
                     continue
@@ -1094,7 +1099,7 @@ def test_reduce_layouts(M, N, src_layout, axis, epilogue_kind, dtype_str, saniti
     torch.testing.assert_close(z, z_ref.to(torch_dtype))
 
 
-@pytest.mark.skipif(not is_cuda(), reason="NVIDIA redux instructions")
+@pytest.mark.skipif(not (is_cuda() or is_ppu()), reason="requires CUDA or PPU")
 @pytest.mark.parametrize("size, group_bit, broadcast_bits",
                          [(16, i, ()) for i in range(5)] + [(8, 0, ()),
                                                             (32, 0, ())] + [(16, i, (i, ))
@@ -1222,35 +1227,37 @@ def test_reduce_partitioned(size, group_bit, broadcast_bits, op, dtype_str, prop
         zero = expected == 0
         np.testing.assert_array_equal(np.signbit(actual[zero]), np.signbit(expected[zero]))
 
-    ptx = compiled.asm["ptx"]
-    if major >= 10 and op in ("min", "max"):
-        profitable = group_stride == 1 or (group_stride == 2 and size >= 8)
-    else:
-        profitable = (group_stride == 1 and size >= 4) or (group_stride == 2 and size == 16)
-    use_redux = size == 32 or (profitable and "64" not in dtype_str)
-    if is_float and major != 10:
-        use_redux = False
-    if use_redux:
-        expected_count = group_stride
-        if "64" in dtype_str:
-            expected_count = 3 if op == "add" else 2
-        assert ptx.count("redux.sync.") == expected_count
-        assert "shfl.sync.bfly" not in ptx
-        for line in ptx.splitlines():
-            if "redux.sync." in line:
-                assert line.strip().startswith("redux.sync.")
-        # LLVM may materialize the constant member mask in a PTX register.
-        redux_calls = [
-            line for line in compiled.asm["llir"].splitlines() if "call" in line and "@llvm.nvvm.redux.sync." in line
-        ]
-        assert len(redux_calls) == expected_count
-        assert all("i32 -1)" in line for line in redux_calls)
-    else:
-        assert "redux.sync." not in ptx
-        assert "shfl.sync.bfly" in ptx
+    if is_cuda():
+        ptx = compiled.asm["ptx"]
+        if major >= 10 and op in ("min", "max"):
+            profitable = group_stride == 1 or (group_stride == 2 and size >= 8)
+        else:
+            profitable = (group_stride == 1 and size >= 4) or (group_stride == 2 and size == 16)
+        use_redux = size == 32 or (profitable and "64" not in dtype_str)
+        if is_float and major != 10:
+            use_redux = False
+        if use_redux:
+            expected_count = group_stride
+            if "64" in dtype_str:
+                expected_count = 3 if op == "add" else 2
+            assert ptx.count("redux.sync.") == expected_count
+            assert "shfl.sync.bfly" not in ptx
+            for line in ptx.splitlines():
+                if "redux.sync." in line:
+                    assert line.strip().startswith("redux.sync.")
+            # LLVM may materialize the constant member mask in a PTX register.
+            redux_calls = [
+                line for line in compiled.asm["llir"].splitlines()
+                if "call" in line and "@llvm.nvvm.redux.sync." in line
+            ]
+            assert len(redux_calls) == expected_count
+            assert all("i32 -1)" in line for line in redux_calls)
+        else:
+            assert "redux.sync." not in ptx
+            assert "shfl.sync.bfly" in ptx
 
 
-@pytest.mark.skipif(not is_cuda(), reason="NVIDIA redux instructions")
+@pytest.mark.skipif(not (is_cuda() or is_ppu()), reason="requires CUDA or PPU")
 @pytest.mark.parametrize("op", ["add", "xor", "max"])
 def test_reduce_broadcast_across_warps(op, device):
     import numpy as np
@@ -1277,9 +1284,10 @@ def test_reduce_broadcast_across_warps(op, device):
     compiled = kernel[(1, )](x, y, op, num_warps=4)
     reduce_fn = {"add": np.add, "xor": np.bitwise_xor, "max": np.maximum}[op]
     assert y.item() == reduce_fn.reduce(values)
-    # One full-warp redux, then one redux over four broadcast warp results.
-    assert compiled.asm["ptx"].count("redux.sync.") == 2
-    assert "shfl.sync.bfly" not in compiled.asm["ptx"]
+    if is_cuda():
+        # One full-warp redux, then one redux over four broadcast warp results.
+        assert compiled.asm["ptx"].count("redux.sync.") == 2
+        assert "shfl.sync.bfly" not in compiled.asm["ptx"]
 
 
 @pytest.mark.parametrize("M", [32, 64, 128, 256])
@@ -1402,6 +1410,8 @@ def test_histogram_small_masked_input(bins, num_warps, device):
             assert "bar.sync" not in compiled.asm["ptx"]
         elif is_hip():
             assert "s_barrier" not in compiled.asm["amdgcn"]
+        elif is_ppu():
+            assert "barrier.cta.sync" not in compiled.asm["llir"]
 
 
 @pytest.mark.parametrize("M", [64, 128, 256])
@@ -1682,6 +1692,29 @@ _mma_pairs = [
     [
         ttgl.amd.AMDWMMALayout(version=2, transposed=True, warp_bases=[[0, 1], [0, 2], [1, 0], [2, 0]]),
         ttgl.amd.AMDWMMALayout(version=2, transposed=True, warp_bases=[[1, 0], [2, 0], [4, 0], [8, 0]]),
+    ],
+    # PPU MMA v1 layouts
+    [
+        ttgl.ppu.PPUMMADistributedLayout(version=[1, 0], warps_per_cta=[4, 1], instr_shape=[16, 16], vec_size=1),
+        ttgl.ppu.PPUMMADistributedLayout(version=[1, 0], warps_per_cta=[1, 4], instr_shape=[16, 16], vec_size=1),
+    ],
+    [
+        ttgl.ppu.PPUMMADistributedLayout(version=[1, 0], warps_per_cta=[2, 2], instr_shape=[16, 16], vec_size=1),
+        ttgl.ppu.PPUMMADistributedLayout(version=[1, 0], warps_per_cta=[4, 1], instr_shape=[16, 16], vec_size=1),
+    ],
+    [
+        ttgl.ppu.PPUMMADistributedLayout(version=[1, 0], warps_per_cta=[4, 1], instr_shape=[16, 16], vec_size=2),
+        ttgl.ppu.PPUMMADistributedLayout(version=[1, 0], warps_per_cta=[1, 4], instr_shape=[16, 16], vec_size=2),
+    ],
+    # PPU MMA v2 layouts
+    [
+        ttgl.ppu.PPUMMADistributedLayout(version=[2, 0], warps_per_cta=[4, 1], instr_shape=[16, 16]),
+        ttgl.ppu.PPUMMADistributedLayout(version=[2, 0], warps_per_cta=[1, 4], instr_shape=[16, 16]),
+    ],
+    # PPU MMA v1 <-> v2
+    [
+        ttgl.ppu.PPUMMADistributedLayout(version=[1, 0], warps_per_cta=[4, 1], instr_shape=[16, 16], vec_size=1),
+        ttgl.ppu.PPUMMADistributedLayout(version=[2, 0], warps_per_cta=[4, 1], instr_shape=[16, 16]),
     ],
 ]
 

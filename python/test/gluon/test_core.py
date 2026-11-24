@@ -135,8 +135,9 @@ def _inline_asm_tmem_load(outputs, inputs):
     ("tensor", True, 32),
 ])
 def test_inline_asm_memdesc_view(memory_space, threadwise, pack, device):
-    if not is_cuda() or (memory_space == "tensor" and not (is_blackwell() or is_blackwell_ultra() or is_rubin())):
-        pytest.skip("requires CUDA shared memory or Blackwell tensor memory")
+    if not (is_cuda() or is_ppu()) or (memory_space == "tensor"
+                                       and not (is_blackwell() or is_blackwell_ultra() or is_rubin())):
+        pytest.skip("requires CUDA/PPU shared memory or Blackwell tensor memory")
 
     generator = _inline_asm_tmem_load if memory_space == "tensor" else _inline_asm_shared_load
     if threadwise:
@@ -191,8 +192,8 @@ def _inline_asm_sum(outputs, inputs):
 
 @pytest.mark.parametrize("elementwise", [False, True])
 def test_inline_asm_memdesc_store(elementwise, device):
-    if not is_cuda():
-        pytest.skip("uses PTX")
+    if not (is_cuda() or is_ppu()):
+        pytest.skip("uses PTX/TIX")
 
     @gluon.jit
     def kernel(Out, ELEMENTWISE: ttgl.constexpr):
@@ -222,8 +223,8 @@ def test_inline_asm_memdesc_store(elementwise, device):
 
 
 def test_inline_asm_many_elements(device):
-    if not is_cuda():
-        pytest.skip("uses PTX")
+    if not (is_cuda() or is_ppu()):
+        pytest.skip("uses PTX/TIX")
 
     @gluon.jit
     def kernel(X, Y):
@@ -250,8 +251,8 @@ def _inline_asm_add_bias(outputs, inputs):
 
 
 def test_inline_asm_replicated_registers(device):
-    if not is_cuda():
-        pytest.skip("uses PTX")
+    if not (is_cuda() or is_ppu()):
+        pytest.skip("uses PTX/TIX")
 
     @gluon.jit
     def kernel(X, Y, bias):
@@ -276,8 +277,10 @@ def _inline_asm_count(out):
 
 @pytest.mark.parametrize("warp_specialized", [False, True])
 def test_inline_asm_once_per_thread(warp_specialized, device):
-    if not is_cuda():
-        pytest.skip("uses PTX")
+    if not (is_cuda() or is_ppu()):
+        pytest.skip("uses PTX/TIX")
+    if warp_specialized and (is_ppu_0010() or is_ppu_0015()):
+        pytest.skip("ttgl.warp_specialize is unsupported on PPU0010/PPU0015")
 
     @gluon.jit
     def kernel(Out, WS: ttgl.constexpr):
@@ -292,7 +295,7 @@ def test_inline_asm_once_per_thread(warp_specialized, device):
     torch.testing.assert_close(out, torch.full_like(out, 3 * 128), atol=0, rtol=0)
 
 
-@pytest.mark.skipif(not is_cuda(), reason="Requires CUDA PTX")
+@pytest.mark.skipif(not (is_cuda() or is_ppu()), reason="requires CUDA or PPU")
 @pytest.mark.parametrize("op", ["load", "store"])
 @pytest.mark.parametrize(
     "dtype",
@@ -333,13 +336,14 @@ def test_atomic_load_store_vectorization(op, dtype, stride, offset, mask_group, 
     assert torch.equal(out, expected)
     if dtype == torch.bool:
         assert torch.all(out.view(torch.uint8) <= 1)
-    bit_width = dtype.itemsize * 8
-    vec = min(vec, 128 // bit_width)
-    word_bits = max(bit_width, min(32, vec * bit_width))
-    words = vec * bit_width // word_bits
-    suffix = f".v{words}" if words > 1 else ""
-    opcode = "st" if op == "store" else "ld"
-    assert f"{opcode}.relaxed.gpu.global{suffix}.b{word_bits}" in compiled.asm["ptx"]
+    if is_cuda():
+        bit_width = dtype.itemsize * 8
+        vec = min(vec, 128 // bit_width)
+        word_bits = max(bit_width, min(32, vec * bit_width))
+        words = vec * bit_width // word_bits
+        suffix = f".v{words}" if words > 1 else ""
+        opcode = "st" if op == "store" else "ld"
+        assert f"{opcode}.relaxed.gpu.global{suffix}.b{word_bits}" in compiled.asm["ptx"]
 
 
 @pytest.mark.parametrize("block_size", [1, 16, 128, 512])
@@ -366,8 +370,8 @@ def test_atomic_poll_tensor_results(block_size, num_warps, timeout, device):
 @pytest.mark.parametrize("block_size", [16, 128, 512])
 @pytest.mark.parametrize("use_result", [False, True])
 def test_atomic_poll_tensor_acquire(block_size, use_result, device):
-    if not is_cuda():
-        pytest.skip("requires concurrent CUDA CTAs")
+    if not (is_cuda() or is_ppu()):
+        pytest.skip("requires concurrent CUDA or PPU CTAs")
 
     @gluon.jit
     def kernel(Flags, Payload, Out, BLOCK: ttgl.constexpr, UseResult: ttgl.constexpr):
@@ -449,7 +453,8 @@ def _noinline_shared_allocation_call_kernel(input, output, sentinel_output, NEST
     ttgl.store(sentinel_output + offsets, caller_allocation.load(layout))
 
 
-@pytest.mark.skipif(not (is_ampere_or_newer() or is_hip()), reason="Requires Ampere or newer, or AMD")
+@pytest.mark.skipif(not (is_ampere_or_newer() or is_hip() or is_ppu_0010_or_newer()),
+                    reason="Requires Ampere or newer, AMD, or PPU")
 @pytest.mark.parametrize("NESTED", [False, True], ids=["direct", "nested"])
 def test_noinline_call_preserves_live_shared_allocation(NESTED, fresh_knobs):
     fresh_knobs.compilation.instrumentation_mode = ""
@@ -2530,39 +2535,6 @@ def test_amd_mfma_scaled(M, N, K, a_type, b_type, cd_regclass, has_scale, device
     _check_cd_regclass_pins(compiled.asm['llir'], cd_regclass)
 
 
-def _ppu_e2m1_decode(v):
-    sign = (v >> 3) & 1
-    mag = v & 0x7
-    exp = (mag >> 1) & 0x3
-    man = mag & 0x1
-    val = torch.zeros_like(v, dtype=torch.float32)
-    sub = exp == 0
-    val[sub] = man[sub].float() * 0.5
-    norm = exp > 0
-    val[norm] = (2.0**(exp[norm].float() - 1.0)) * (1.0 + 0.5 * man[norm].float())
-    return torch.where(sign == 1, -val, val)
-
-
-def _ppu_decode_fp4(packed):
-    lo = _ppu_e2m1_decode(packed & 0xF)
-    hi = _ppu_e2m1_decode((packed >> 4) & 0xF)
-    return torch.stack([lo, hi], dim=-1).reshape(packed.shape[0], -1)
-
-
-def _ppu_scale_factor(scale, scale_dtype):
-    if scale_dtype == "e8m0":
-        return 2.0**(scale.float() - 127.0)
-    return scale.float()
-
-
-def _ppu_scaled_ref(a_dec, b_dec, a_scale, b_scale, group, scale_dtype):
-    asf = _ppu_scale_factor(a_scale, scale_dtype)
-    bsf = _ppu_scale_factor(b_scale, scale_dtype)
-    a_f = a_dec * asf.repeat_interleave(group, dim=1)
-    b_f = (b_dec * bsf.repeat_interleave(group, dim=1)).T
-    return a_f @ b_f
-
-
 @gluon.jit
 def _ppu_mma_kernel(a_ptr, b_ptr, out_ptr, M: ttgl.constexpr, N: ttgl.constexpr, K: ttgl.constexpr,
                     a_lay: ttgl.constexpr, b_lay: ttgl.constexpr, out_lay: ttgl.constexpr, VERSION: ttgl.constexpr):
@@ -2592,32 +2564,32 @@ def _ppu_mma_kernel(a_ptr, b_ptr, out_ptr, M: ttgl.constexpr, N: ttgl.constexpr,
 
 
 @pytest.mark.skipif(not is_ppu_0015(), reason="Requires PPU0015 (cc89)")
+@pytest.mark.parametrize("M, N, K", [(128, 64, 64), (128, 32, 16), (256, 64, 32)])
+@pytest.mark.parametrize("num_warps", [1, 2, 4, 8])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-def test_ppu_mma_v2(dtype):
-    M, N, K = 64, 64, 64
+def test_ppu_mma_v2(M, N, K, num_warps, dtype):
     a = (torch.randn(M, K, device="cuda") * 0.3).to(dtype)
     b = (torch.randn(K, N, device="cuda") * 0.3).to(dtype)
     out = torch.empty(M, N, device="cuda", dtype=torch.float32)
-    a_lay = ttgl.BlockedLayout([1, 8], [16, 2], [4, 1], [1, 0])
-    b_lay = ttgl.BlockedLayout([8, 1], [2, 16], [1, 4], [0, 1])
-    out_lay = default_blocked_layout([M, N], 4)
-    _ppu_mma_kernel[(1, )](a, b, out, M, N, K, a_lay, b_lay, out_lay, 2, num_warps=4)
-    torch.cuda.synchronize()
+    a_lay = default_blocked_layout([M, K], num_warps)
+    b_lay = default_blocked_layout([K, N], num_warps)
+    out_lay = default_blocked_layout([M, N], num_warps)
+    _ppu_mma_kernel[(1, )](a, b, out, M, N, K, a_lay, b_lay, out_lay, 2, num_warps=num_warps)
     torch.testing.assert_close(out, a.float() @ b.float(), rtol=1e-2, atol=1e-2)
 
 
 @pytest.mark.skipif(not is_ppu_0010(), reason="Requires PPU0010 (cc80)")
+@pytest.mark.parametrize("M, N, K", [(128, 64, 64), (128, 32, 16), (256, 64, 32)])
+@pytest.mark.parametrize("num_warps", [1, 2, 4, 8])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-def test_ppu_mma_v1(dtype):
-    M, N, K = 64, 64, 64
+def test_ppu_mma_v1(M, N, K, num_warps, dtype):
     a = (torch.randn(M, K, device="cuda") * 0.3).to(dtype)
     b = (torch.randn(K, N, device="cuda") * 0.3).to(dtype)
     out = torch.empty(M, N, device="cuda", dtype=torch.float32)
-    a_lay = ttgl.BlockedLayout([1, 8], [16, 2], [4, 1], [1, 0])
-    b_lay = ttgl.BlockedLayout([8, 1], [2, 16], [1, 4], [0, 1])
-    out_lay = default_blocked_layout([M, N], 4)
-    _ppu_mma_kernel[(1, )](a, b, out, M, N, K, a_lay, b_lay, out_lay, 1, num_warps=4)
-    torch.cuda.synchronize()
+    a_lay = default_blocked_layout([M, K], num_warps)
+    b_lay = default_blocked_layout([K, N], num_warps)
+    out_lay = default_blocked_layout([M, N], num_warps)
+    _ppu_mma_kernel[(1, )](a, b, out, M, N, K, a_lay, b_lay, out_lay, 1, num_warps=num_warps)
     torch.testing.assert_close(out, a.float() @ b.float(), rtol=1e-2, atol=1e-2)
 
 
@@ -2654,51 +2626,40 @@ def _ppu_mma_scaled_kernel(a_ptr, b_ptr, as_ptr, bs_ptr, out_ptr, M: ttgl.conste
     ttgl.store(out_ptr + offs_m2 * N + offs_n2, ret)
 
 
-def _ppu_run_mma_scaled(M, N, K, fmt, group, scale_dtype, version):
-    torch.manual_seed(0)
-    if fmt == "e2m1":
-        kpack = K // 2
-        a = torch.randint(0, 256, (M, kpack), device="cuda", dtype=torch.uint8)
-        b = torch.randint(0, 256, (kpack, N), device="cuda", dtype=torch.uint8)
-        a_dec = _ppu_decode_fp4(a)
-        b_dec = _ppu_decode_fp4(b.T.contiguous())
-    else:
-        kpack = K
-        t = torch.float8_e4m3fn if fmt == "e4m3" else torch.float8_e5m2
-        a = (torch.randn(M, K, device="cuda") * 0.5).to(t)
-        b = (torch.randn(K, N, device="cuda") * 0.5).to(t)
-        a_dec = a.float()
-        b_dec = b.float().T
-    if scale_dtype == "e8m0":
-        a_scale = torch.randint(120, 130, (M, K // group), device="cuda", dtype=torch.uint8)
-        b_scale = torch.randint(120, 130, (N, K // group), device="cuda", dtype=torch.uint8)
-    else:
-        a_scale = (torch.rand(M, K // group, device="cuda") * 2 + 0.5).to(torch.float8_e4m3fn)
-        b_scale = (torch.rand(N, K // group, device="cuda") * 2 + 0.5).to(torch.float8_e4m3fn)
+def _ppu_run_mma_scaled(M, N, K, group, version):
+    torch.manual_seed(42)
+    a_mx = MXFP4Tensor(size=(M, K), device="cuda").random()
+    b_mx = MXFP4Tensor(size=(N, K), device="cuda").random()
+    a = a_mx.to_packed_tensor(dim=1)
+    b = b_mx.to_packed_tensor(dim=1).T.contiguous()
+    kpack = K // 2
+    a_scale = MXScaleTensor(torch.rand(M, K // group, device="cuda")).data
+    b_scale = MXScaleTensor(torch.rand(N, K // group, device="cuda")).data
     out = torch.empty(M, N, device="cuda", dtype=torch.float32)
     a_lay = ttgl.BlockedLayout([1, 16], [16, 2], [4, 1], [1, 0])
     b_lay = ttgl.BlockedLayout([16, 1], [2, 16], [1, 4], [0, 1])
     s_lay = ttgl.BlockedLayout([1, 1], [16, 2], [4, 1], [1, 0])
     out_lay = default_blocked_layout([M, N], 4)
-    _ppu_mma_scaled_kernel[(1, )](a, b, a_scale, b_scale, out, M, N, K, group, kpack, fmt, fmt, a_lay, b_lay, s_lay,
-                                  out_lay, version, num_warps=4)
-    torch.cuda.synchronize()
-    ref = _ppu_scaled_ref(a_dec, b_dec, a_scale, b_scale, group, scale_dtype)
-    torch.testing.assert_close(out, ref, rtol=1e-2, atol=1e-2)
+    _ppu_mma_scaled_kernel[(1, )](a, b, a_scale, b_scale, out, M, N, K, group, kpack, "e2m1", "e2m1", a_lay, b_lay,
+                                  s_lay, out_lay, version, num_warps=4)
+    a_ref = a_mx.to(torch.float32) * fp8e8m0_to_float32(a_scale).repeat_interleave(group, dim=1)
+    b_ref = (b_mx.to(torch.float32) * fp8e8m0_to_float32(b_scale).repeat_interleave(group, dim=1)).T
+    ref = a_ref @ b_ref
+    torch.testing.assert_close(out, ref, rtol=0.02, atol=0.01)
 
 
 @pytest.mark.skipif(not is_ppu_0015(), reason="Requires PPU0015 (cc89)")
-@pytest.mark.parametrize("group,scale_dtype", [(32, "e8m0")])
-def test_ppu_mma_scaled_v2(group, scale_dtype):
-    _ppu_run_mma_scaled(64, 64, 64, "e2m1", group, scale_dtype, version=2)
+@pytest.mark.parametrize("M, N, K", [(64, 64, 64), (128, 64, 128), (64, 128, 64), (128, 128, 128)])
+def test_ppu_mma_scaled_v2(M, N, K):
+    _ppu_run_mma_scaled(M, N, K, 32, version=2)
 
 
-@pytest.mark.skipif(not (is_ppu_0010() or is_ppu_0015()), reason="AIU bulk-copy requires VMEM_AIU_LD (PPU0010/PPU0015)")
+@pytest.mark.skipif(not (is_ppu_0010() or is_ppu_0015()), reason="Requires PPU0010/PPU0015)")
+@pytest.mark.parametrize("BM, BN", [(32, 32), (64, 64), (128, 64), (64, 128), (128, 128)])
+@pytest.mark.parametrize("num_warps", [1, 2, 4, 8])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
-def test_ppu_aiu_load(dtype):
-    M, N = 64, 64
-    BM, BN = 64, 64
-    num_warps = 4
+def test_ppu_aiu_load(BM, BN, num_warps, dtype):
+    M, N = BM * 2, BN * 2
     a = torch.randn(M, N, device="cuda", dtype=dtype)
     out = torch.empty_like(a)
     bw = 16 if dtype == torch.float16 else 32
@@ -2723,21 +2684,20 @@ def test_ppu_aiu_load(dtype):
         ttgl.store(out_ptr + offs_m * N + offs_n, val)
 
     kernel[(M // BM, N // BN)](a, out, M, N, BM, BN, aiu_lay, ttgl_dtype, num_warps=num_warps)
-    torch.cuda.synchronize()
     torch.testing.assert_close(out, a)
 
 
 @pytest.mark.skipif(not is_ppu(), reason="Requires PPU")
+@pytest.mark.parametrize("XBLOCK, YBLOCK, xnumel", [(32, 32, 20), (64, 64, 33), (64, 128, 17), (128, 128, 65)])
+@pytest.mark.parametrize("num_warps", [1, 2, 4, 8])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
-def test_ppu_async_copy(dtype):
-    XBLOCK, YBLOCK = 32, 32
-    xnumel = 20
+def test_ppu_async_copy(XBLOCK, YBLOCK, xnumel, num_warps, dtype):
     inp = torch.randn((xnumel, YBLOCK), device="cuda", dtype=dtype)
     out = torch.empty((XBLOCK, YBLOCK), device="cuda", dtype=dtype)
 
     @gluon.jit
     def kernel(out_ptr, inp_ptr, xnumel, XBLOCK: ttgl.constexpr, YBLOCK: ttgl.constexpr):
-        blocked: ttgl.constexpr = ttgl.BlockedLayout([1, 4], [1, 32], [4, 1], [1, 0])
+        blocked: ttgl.constexpr = ttgl.BlockedLayout([1, 4], [1, 32], [ttgl.num_warps(), 1], [1, 0])
         shared: ttgl.constexpr = ttgl.SwizzledSharedLayout(1, 1, 1, order=[1, 0])
         smem = ttgl.allocate_shared_memory(inp_ptr.dtype.element_ty, [XBLOCK, YBLOCK], shared)
         xindex = ttgl.arange(0, XBLOCK, layout=ttgl.SliceLayout(1, blocked))[:, None]
@@ -2749,10 +2709,109 @@ def test_ppu_async_copy(dtype):
         val = smem.load(blocked)
         ttgl.store(out_ptr + xindex * YBLOCK + yindex, val)
 
-    kernel[(1, )](out, inp, xnumel, XBLOCK, YBLOCK, num_warps=4)
-    torch.cuda.synchronize()
+    kernel[(1, )](out, inp, xnumel, XBLOCK, YBLOCK, num_warps=num_warps)
     torch.testing.assert_close(out[:xnumel], inp)
     torch.testing.assert_close(out[xnumel:], torch.zeros((XBLOCK - xnumel, YBLOCK), device="cuda", dtype=dtype))
+
+
+@gluon.jit
+def _ppu_gemm_issue_loads(copy_idx, sa, sb, a_ptr, b_ptr, pid_m, pid_n, M: ttgl.constexpr, N: ttgl.constexpr,
+                          K: ttgl.constexpr, BM: ttgl.constexpr, BN: ttgl.constexpr, BK: ttgl.constexpr,
+                          NB: ttgl.constexpr):
+    k = copy_idx * BK
+    ppu0010.aiu.aiu_load(sa.index(copy_idx % NB), a_ptr, [pid_m * BM, k], [M, K])
+    ppu0010.aiu.aiu_load(sb.index(copy_idx % NB), b_ptr, [k, pid_n * BN], [K, N])
+    ppu0010.async_copy.commit_group()
+    return copy_idx + 1
+
+
+@gluon.jit
+def _ppu_gemm_consume(read_idx, sa, sb, acc, a_op_lay: ttgl.constexpr, b_op_lay: ttgl.constexpr, NB: ttgl.constexpr,
+                      VERSION: ttgl.constexpr):
+    a = sa.index(read_idx % NB).load(a_op_lay)
+    b = sb.index(read_idx % NB).load(b_op_lay)
+    if VERSION == 1:
+        acc = ppu0010.mma_v1(a, b, acc)
+    else:
+        acc = ppu0015.mma_v2(a, b, acc)
+    return read_idx + 1, acc
+
+
+@gluon.jit
+def _ppu_gemm_pipelined_kernel(a_ptr, b_ptr, out_ptr, M: ttgl.constexpr, N: ttgl.constexpr, K: ttgl.constexpr,
+                               BM: ttgl.constexpr, BN: ttgl.constexpr, BK: ttgl.constexpr, NB: ttgl.constexpr,
+                               ACC0: ttgl.constexpr, aiu_a: ttgl.constexpr, aiu_b: ttgl.constexpr, DT: ttgl.constexpr,
+                               out_lay: ttgl.constexpr, VERSION: ttgl.constexpr):
+    num_warps: ttgl.constexpr = ttgl.num_warps()
+    pid_m = ttgl.program_id(0)
+    pid_n = ttgl.program_id(1)
+    mma_layout: ttgl.constexpr = PPUMMADistributedLayout(version=[VERSION, 0], warps_per_cta=[num_warps, 1],
+                                                         instr_shape=[16, 16], vec_size=1 if VERSION == 1 else 2)
+    a_op_lay: ttgl.constexpr = ttgl.DotOperandLayout(parent=mma_layout, operand_index=0, k_width=2)
+    b_op_lay: ttgl.constexpr = ttgl.DotOperandLayout(parent=mma_layout, operand_index=1, k_width=2)
+    sa = ttgl.allocate_shared_memory(DT, [NB, BM, BK], aiu_a)
+    sb = ttgl.allocate_shared_memory(DT, [NB, BK, BN], aiu_b)
+    acc = ttgl.full([BM, BN], ACC0, ttgl.float32, layout=mma_layout)
+    num_k_tiles: ttgl.constexpr = K // BK
+    copy_idx = 0
+    read_idx = 0
+    for _ in ttgl.static_range(NB - 1):
+        copy_idx = _ppu_gemm_issue_loads(copy_idx, sa, sb, a_ptr, b_ptr, pid_m, pid_n, M, N, K, BM, BN, BK, NB)
+    for _ in range(num_k_tiles - (NB - 1)):
+        copy_idx = _ppu_gemm_issue_loads(copy_idx, sa, sb, a_ptr, b_ptr, pid_m, pid_n, M, N, K, BM, BN, BK, NB)
+        ppu0010.async_copy.wait_group(NB - 1)
+        read_idx, acc = _ppu_gemm_consume(read_idx, sa, sb, acc, a_op_lay, b_op_lay, NB, VERSION)
+    for i in ttgl.static_range(NB - 1):
+        ppu0010.async_copy.wait_group(NB - 2 - i)
+        read_idx, acc = _ppu_gemm_consume(read_idx, sa, sb, acc, a_op_lay, b_op_lay, NB, VERSION)
+    ret = ttgl.convert_layout(acc, out_lay)
+    offs_m = pid_m * BM + ttgl.arange(0, BM, layout=ttgl.SliceLayout(1, out_lay))[:, None]
+    offs_n = pid_n * BN + ttgl.arange(0, BN, layout=ttgl.SliceLayout(0, out_lay))[None, :]
+    ttgl.store(out_ptr + offs_m * N + offs_n, ret)
+
+
+@pytest.mark.skipif(not is_ppu_0010(), reason="Requires PPU0010")
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("BK, num_k_tiles, num_buffers", [(32, 1, 1), (32, 1, 2), (32, 4, 2), (32, 4, 3), (64, 2, 3),
+                                                          (64, 4, 2)])
+def test_ppu_aiu_mma_pipelined(dtype, BK, num_k_tiles, num_buffers):
+    M, N = 128, 128
+    BM, BN = 64, 64
+    K = BK * num_k_tiles
+    num_warps = 4
+    acc0 = 1.0
+    torch.manual_seed(0)
+    a = (torch.randn(M, K, device="cuda") * 0.3).to(dtype)
+    b = (torch.randn(K, N, device="cuda") * 0.3).to(dtype)
+    out = torch.empty(M, N, device="cuda", dtype=torch.float32)
+    bw = 16
+    aiu_a = PPUAIUSharedLayout.get_default_for(num_warps, [BM, BK], bw, version_major=1)
+    aiu_b = PPUAIUSharedLayout.get_default_for(num_warps, [BK, BN], bw, version_major=1)
+    ttgl_dtype = ttgl.float16 if dtype == torch.float16 else ttgl.bfloat16
+    out_lay = default_blocked_layout([BM, BN], num_warps)
+    _ppu_gemm_pipelined_kernel[(M // BM, N // BN)](a, b, out, M, N, K, BM, BN, BK, num_buffers, acc0, aiu_a, aiu_b,
+                                                   ttgl_dtype, out_lay, 1, num_warps=num_warps)
+    torch.testing.assert_close(out, a.float() @ b.float() + acc0, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("version, target", [(1, GPUTarget("cuda", 80, 32)), (2, GPUTarget("cuda", 89, 32))])
+def test_ppu_aiu_mma_pipelined_compile(version, target, fresh_triton_cache):
+    M, N, BM, BN, BK, NB = 128, 128, 64, 64, 32, 2
+    K = BK * 4
+    num_warps = 4
+    aiu_a = PPUAIUSharedLayout.get_default_for(num_warps, [BM, BK], 16, version_major=version)
+    aiu_b = PPUAIUSharedLayout.get_default_for(num_warps, [BK, BN], 16, version_major=version)
+    out_lay = default_blocked_layout([BM, BN], num_warps)
+    signature = {"a_ptr": "*fp16", "b_ptr": "*fp16", "out_ptr": "*fp32"}
+    constexprs = {
+        "M": M, "N": N, "K": K, "BM": BM, "BN": BN, "BK": BK, "NB": NB, "ACC0": 1.0, "aiu_a": aiu_a, "aiu_b": aiu_b,
+        "DT": ttgl.float16, "out_lay": out_lay, "VERSION": version
+    }
+    for name in constexprs:
+        signature[name] = "constexpr"
+    source = gluon.GluonASTSource(_ppu_gemm_pipelined_kernel, signature, constexprs)
+    compiled = triton.compile(source, target=target, options={"num_warps": num_warps})
+    assert compiled.asm["cubin"]
 
 
 def test_math_fast_expf():
@@ -3243,7 +3302,7 @@ def test_block_m_64_mma():
     torch.testing.assert_close(d_ref, d_tri, rtol=0.08, atol=0)
 
 
-@pytest.mark.skipif(not is_cuda(), reason="Requires CUDA")
+@pytest.mark.skipif(not (is_cuda() or is_ppu()), reason="requires CUDA or PPU")
 @pytest.mark.parametrize("high_base", [1, 2])
 def test_shared_dynamic_stage_synchronization(high_base, fresh_knobs):
     fresh_knobs.compilation.instrumentation_mode = ""
@@ -3282,18 +3341,29 @@ def test_shared_dynamic_stage_synchronization(high_base, fresh_knobs):
         total += stages[high]
     torch.testing.assert_close(out, torch.full_like(out, total + stages[(n_iters - 1) % 2]))
 
-    ptx = compiled.asm["ptx"]
-    load = re.search(r"\b(?:ld\.shared|ldmatrix\.)", ptx)
-    stores = list(re.finditer(r"\b(?:st\.shared|stmatrix\.)", ptx))
-    assert load and stores
-    before = next(store for store in reversed(stores) if store.start() < load.start())
-    barrier = re.search(r"\b(?:bar\.sync|barrier\.cta\.sync)\b", ptx[before.end():load.start()])
-    # Disjoint physical MAY-sets remove the low-store/high-load barrier.
-    # Overlapping groups require it because the read layout exchanges warps.
-    assert (barrier is not None) == (high_base == 1)
+    if is_cuda():
+        ptx = compiled.asm["ptx"]
+        load = re.search(r"\b(?:ld\.shared|ldmatrix\.)", ptx)
+        stores = list(re.finditer(r"\b(?:st\.shared|stmatrix\.)", ptx))
+        assert load and stores
+        before = next(store for store in reversed(stores) if store.start() < load.start())
+        barrier = re.search(r"\b(?:bar\.sync|barrier\.cta\.sync)\b", ptx[before.end():load.start()])
+        # Disjoint physical MAY-sets remove the low-store/high-load barrier.
+        # Overlapping groups require it because the read layout exchanges warps.
+        assert (barrier is not None) == (high_base == 1)
+
+    if is_ppu():
+        # The membar barrier lowers to NVVM intrinsics in LLIR on ppu.
+        llir = compiled.asm["llir"]
+        load = re.search(r"\bldmatrix\b", llir)
+        stores = list(re.finditer(r"\bstore\b.*addrspace\(3\)", llir))
+        assert load and stores
+        before = next(store for store in reversed(stores) if store.start() < load.start())
+        barrier = re.search(r"\bbarrier\.cta\.sync\b", llir[before.end():load.start()])
+        assert (barrier is not None) == (high_base == 1)
 
 
-@pytest.mark.skipif(not is_hopper_or_newer(), reason="Requires Hopper")
+@pytest.mark.skipif(not (is_hopper_or_newer() or is_ppu()), reason="Requires Hopper or PPU")
 def test_multibuffer_prefix_subslice():
 
     @gluon.jit
@@ -4308,7 +4378,7 @@ def test_convert_auto_layout_to_coalesced_layout():
     torch.testing.assert_close(output, ref)
 
 
-@pytest.mark.skipif(not is_ampere_or_newer(), reason="Requires Ampere or newer")
+@pytest.mark.skipif(not (is_ampere_or_newer() or is_ppu()), reason="Requires Ampere or newer, or PPU")
 @pytest.mark.parametrize("operation", ["ld", "st"])
 @pytest.mark.parametrize("dtype, transpose, reg_bases, lane_bases", [
     pytest.param(torch.int8, True, [128, 32, 64, 8, 512, 1024], [16, 256, 1, 2, 4], id="b8-transpose-nonadditive"),
@@ -4360,8 +4430,13 @@ def test_ldstmatrix_register_order(operation, dtype, transpose, reg_bases, lane_
     total_bytes = size * inp.element_size()
     count = min(total_bytes, 512) // bytes_per_matrix
     trans = r"\.trans" if transpose else ""
-    opcode = rf"{operation}matrix\.sync\.aligned\.(?:{shape}\.x{count}|x{count}\.{shape}){trans}\.shared\.b{bitwidth}"
-    assert len(re.findall(opcode, compiled.asm["ptx"])) == total_bytes // (bytes_per_matrix * count)
+    expected = total_bytes // (bytes_per_matrix * count)
+    if is_cuda():
+        opcode = rf"{operation}matrix\.sync\.aligned\.(?:{shape}\.x{count}|x{count}\.{shape}){trans}\.shared\.b{bitwidth}"
+        assert len(re.findall(opcode, compiled.asm["ptx"])) == expected
+    if is_ppu():
+        opcode = rf"@llvm\.nvvm\.{operation}matrix\.sync\.aligned\.{shape}\.x{count}{trans}\.b{bitwidth}\b"
+        assert len(re.findall(rf"call[^\n]*{opcode}", compiled.asm["llir"])) == expected
 
 
 @gluon.jit
