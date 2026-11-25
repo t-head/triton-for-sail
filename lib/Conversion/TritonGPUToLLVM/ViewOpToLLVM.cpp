@@ -415,7 +415,8 @@ struct MemDescIndexOpConversion
       if (aiuEnc.isPPU0015()) {
         auto plan = PPUAIUPlan::fromLegacy(dstTy, lookupNumWarps(op));
         if (!plan)
-          llvm::report_fatal_error(llvm::Twine(llvm::toString(plan.takeError())));
+          llvm::report_fatal_error(
+              llvm::Twine(llvm::toString(plan.takeError())));
         auto physical = plan->toSharedPhysicalLayout(*op.getContext());
         if (!physical)
           llvm::report_fatal_error(
@@ -487,7 +488,8 @@ struct MemDescSubsliceOpConversion
         if (aiuEnc.isPPU0015()) {
           auto plan = PPUAIUPlan::fromLegacy(srcTy, lookupNumWarps(op));
           if (!plan)
-            llvm::report_fatal_error(llvm::Twine(llvm::toString(plan.takeError())));
+            llvm::report_fatal_error(
+                llvm::Twine(llvm::toString(plan.takeError())));
           auto physical = plan->toSharedPhysicalLayout(*op.getContext());
           if (!physical)
             llvm::report_fatal_error(

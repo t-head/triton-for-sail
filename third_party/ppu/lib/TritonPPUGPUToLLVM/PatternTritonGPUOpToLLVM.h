@@ -38,10 +38,12 @@ void populateConvertLayoutOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                            RewritePatternSet &patterns,
                                            PatternBenefit benefit);
 
-void populateMemoryOpToLLVMPatterns(
-    LLVMTypeConverter &typeConverter, const TargetInfo &targetInfo,
-    RewritePatternSet &patterns, ModuleAxisInfoAnalysis &axisInfoAnalysis,
-    PatternBenefit benefit, bool enableTixSwzl = false);
+void populateMemoryOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
+                                    const TargetInfo &targetInfo,
+                                    RewritePatternSet &patterns,
+                                    ModuleAxisInfoAnalysis &axisInfoAnalysis,
+                                    PatternBenefit benefit,
+                                    bool enableTixSwzl = false);
 
 void populateConvertLayoutOpToLLVMOptimizedPatterns(
     LLVMTypeConverter &typeConverter, const TargetInfo &targetInfo,

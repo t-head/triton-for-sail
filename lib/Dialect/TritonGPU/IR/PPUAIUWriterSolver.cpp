@@ -4,8 +4,8 @@ namespace mlir::triton::gpu {
 namespace {
 
 llvm::Error invalidSolverInput(llvm::Twine message) {
-  return llvm::createStringError(std::make_error_code(std::errc::invalid_argument),
-                                 message);
+  return llvm::createStringError(
+      std::make_error_code(std::errc::invalid_argument), message);
 }
 
 } // namespace
@@ -60,10 +60,10 @@ PPUAIUWriterSolver::solve(const PPULayoutSpec &layout, unsigned numWarps) {
       auto aiuEncoding = PPUAIUSharedEncodingAttr::get(
           context, 2, plan.toLegacyStrategy(), layout.getOrder(), cga);
       auto elementType = IntegerType::get(context, layout.getElementBitWidth());
-      auto memDescTy = MemDescType::get(
-          layout.getRootShape(), elementType, aiuEncoding,
-          SharedMemorySpaceAttr::get(context), /*mutableMemory=*/true,
-          layout.getRootShape());
+      auto memDescTy =
+          MemDescType::get(layout.getRootShape(), elementType, aiuEncoding,
+                           SharedMemorySpaceAttr::get(context),
+                           /*mutableMemory=*/true, layout.getRootShape());
       auto encoding = plan.toCanonicalSwizzledSharedEncoding(memDescTy);
       if (!encoding) {
         llvm::consumeError(encoding.takeError());

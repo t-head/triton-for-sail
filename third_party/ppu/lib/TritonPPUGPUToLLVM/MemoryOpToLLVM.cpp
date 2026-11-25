@@ -113,12 +113,13 @@ LogicalResult lowerLdStMatrix(
   return failure();
 }
 
-std::optional<Value> lowerPPULdMatrixSwzl(
-    Location loc, RankedTensorType tensorTy, MemDescType memDescType,
-    bool transpose, Value smemBase, Type llvmElemTy,
-    ConversionPatternRewriter &rewriter,
-    const LLVMTypeConverter *typeConverter, DotOperandEncodingAttr dotEnc,
-    bool isPPU0015, const LinearLayout &cvt, int nVecs) {
+std::optional<Value>
+lowerPPULdMatrixSwzl(Location loc, RankedTensorType tensorTy,
+                     MemDescType memDescType, bool transpose, Value smemBase,
+                     Type llvmElemTy, ConversionPatternRewriter &rewriter,
+                     const LLVMTypeConverter *typeConverter,
+                     DotOperandEncodingAttr dotEnc, bool isPPU0015,
+                     const LinearLayout &cvt, int nVecs) {
   if (!isPPU0015 || nVecs != 4 ||
       SharedMemoryObject::isAffineSharedMemoryAccess(memDescType))
     return std::nullopt;
@@ -168,8 +169,7 @@ std::optional<Value> lowerPPULdMatrixSwzl(
   for (int i = 0; i < cvt.getInDimSize(kReg); i += step) {
     for (int warp = 0; warp < cvt.getInDimSize(kWarp); ++warp) {
       auto base = cvt.apply({{kReg, i}, {kLane, 0}, {kWarp, warp}});
-      auto origin = memLayout.apply(
-          {{kOffset, base[0].second}, {kBlock, 0}});
+      auto origin = memLayout.apply({{kOffset, base[0].second}, {kBlock, 0}});
       int originRow = origin[0].second;
       int originCol = origin[1].second;
       if (originRow % 16 != 0 || originCol % (2 * rowElements) != 0)
@@ -177,16 +177,15 @@ std::optional<Value> lowerPPULdMatrixSwzl(
       for (int lane = 0; lane < 32; ++lane) {
         for (int q = 0; q < 4; ++q) {
           // Raw packets are TL, BL, TR, BR; operand B exchanges r1/r2 once.
-          int matrixQ = dotEnc.getOpIdx() == 1 && q == 1 ? 2
-                        : dotEnc.getOpIdx() == 1 && q == 2 ? 1 : q;
+          int matrixQ = dotEnc.getOpIdx() == 1 && q == 1   ? 2
+                        : dotEnc.getOpIdx() == 1 && q == 2 ? 1
+                                                           : q;
           for (int h = 0; h < elementsPerReg; ++h) {
             int row = originRow + 8 * (matrixQ % 2) +
                       (transpose ? 2 * (lane % 4) + h : lane / 4);
             int col = originCol + rowElements * (matrixQ / 2) +
-                      (transpose ? lane / 4
-                                 : elementsPerReg * (lane % 4) + h);
-            auto expected =
-                logicalToShared.apply({{kDim0, row}, {kDim1, col}});
+                      (transpose ? lane / 4 : elementsPerReg * (lane % 4) + h);
+            auto expected = logicalToShared.apply({{kDim0, row}, {kDim1, col}});
             auto actual = cvt.apply({{kReg, i + q * elementsPerReg + h},
                                      {kLane, lane},
                                      {kWarp, warp}});
@@ -211,11 +210,11 @@ std::optional<Value> lowerPPULdMatrixSwzl(
   auto smemPtrTy = ptr_ty(ctx, 3);
   SmallVector<Value> srcVals;
   for (int i = 0; i < cvt.getInDimSize(kReg); i += step) {
-    Value offset = applyLinearLayout(loc, rewriter, cvt,
-                                     {{kReg, b.i32_val(i)},
-                                      {kLane, b.i32_val(0)},
-                                      {kWarp, warpId}})[0]
-                       .second;
+    Value offset =
+        applyLinearLayout(
+            loc, rewriter, cvt,
+            {{kReg, b.i32_val(i)}, {kLane, b.i32_val(0)}, {kWarp, warpId}})[0]
+            .second;
     Value vecAddr = b.gep(smemPtrTy, llvmElemTy, smemBase, offset,
                           LLVM::GEPNoWrapFlags::inbounds);
     Value baseDiv16 = b.lshr(b.ptrtoint(i64_ty, vecAddr), b.i64_val(4));
@@ -223,14 +222,17 @@ std::optional<Value> lowerPPULdMatrixSwzl(
     auto resArgs = builder.newListOperand(4, "=r");
     auto sbase = builder.newAddrOperand(baseDiv16, "r");
     auto lbo = builder.newOperand(b.i32_val(1), "r");
-    auto sbo = builder.newOperand(b.i32_val(swizzledBytes == 128 ? 64 : 32), "r");
-    auto mode = builder.newOperand(b.i32_val(swizzledBytes == 128 ? 0 : 1), "r");
-    auto ldmatrix = builder.create("ppu.ldmatrix.swzl.sync.bulk.tensor.m8n8.x4")
-                        ->o("trans", transpose)
-                        .o("b16");
+    auto sbo =
+        builder.newOperand(b.i32_val(swizzledBytes == 128 ? 64 : 32), "r");
+    auto mode =
+        builder.newOperand(b.i32_val(swizzledBytes == 128 ? 0 : 1), "r");
+    auto ldmatrix =
+        builder.create("ppu.ldmatrix.swzl.sync.bulk.tensor.m8n8.x4")
+            ->o("trans", transpose)
+            .o("b16");
     ldmatrix(resArgs, sbase, lbo, sbo, mode);
-    Type matTy = LLVM::LLVMStructType::getLiteral(
-        ctx, SmallVector<Type>(4, i32_ty));
+    Type matTy =
+        LLVM::LLVMStructType::getLiteral(ctx, SmallVector<Type>(4, i32_ty));
     Value res = builder.launch(rewriter, loc, matTy);
 
     if (dotEnc.getOpIdx() == 1) {
@@ -240,16 +242,19 @@ std::optional<Value> lowerPPULdMatrixSwzl(
       elemsI32.push_back(b.extract_val(i32_ty, res, 1));
       elemsI32.push_back(b.extract_val(i32_ty, res, 3));
       for (int j = 0; j < 4; ++j) {
-        Value output = b.bitcast(elemsI32[j], vec_ty(llvmElemTy, elementsPerReg));
+        Value output =
+            b.bitcast(elemsI32[j], vec_ty(llvmElemTy, elementsPerReg));
         for (int k = 0; k < elementsPerReg; ++k)
-          srcVals.push_back(b.extract_element(llvmElemTy, output, b.i32_val(k)));
+          srcVals.push_back(
+              b.extract_element(llvmElemTy, output, b.i32_val(k)));
       }
     } else {
       for (int j = 0; j < 4; ++j) {
         Value output = b.extract_val(i32_ty, res, j);
         output = b.bitcast(output, vec_ty(llvmElemTy, elementsPerReg));
         for (int k = 0; k < elementsPerReg; ++k)
-          srcVals.push_back(b.extract_element(llvmElemTy, output, b.i32_val(k)));
+          srcVals.push_back(
+              b.extract_element(llvmElemTy, output, b.i32_val(k)));
       }
     }
   }
@@ -575,11 +580,11 @@ public:
     bool lowered = false;
     Value val;
     for (bool transpose : {false, true}) {
-      lowered = lowerPPULdMatrix(op.getLoc(), dstTy, memDescType, transpose,
-                                 val, smemBase, llvmElemTy, rewriter,
-                                 targetInfo, getTypeConverter(), nullptr,
-                                 enableTixSwzl)
-                    .succeeded();
+      lowered =
+          lowerPPULdMatrix(op.getLoc(), dstTy, memDescType, transpose, val,
+                           smemBase, llvmElemTy, rewriter, targetInfo,
+                           getTypeConverter(), nullptr, enableTixSwzl)
+              .succeeded();
       if (lowered) {
         rewriter.replaceOp(op, val);
         return success();
@@ -644,8 +649,8 @@ public:
 
     auto plan = PPUAIUPlan::fromLegacy(srcTy, lookupNumWarps(op));
     if (!plan)
-      return op.emitError() << "invalid AIU plan: "
-                            << llvm::toString(plan.takeError());
+      return op.emitError()
+             << "invalid AIU plan: " << llvm::toString(plan.takeError());
     auto layout = plan->toSharedPhysicalLayout(*op.getContext());
     if (!layout)
       return op.emitError() << "invalid AIU physical layout: "

@@ -8,7 +8,6 @@ import torch
 import triton
 from triton._internal_testing import is_ppu
 
-
 CASES = [
     {'name': 'bwd-short', 'z': 1, 'h': 2, 'n': 128, 'd': 64},
     {'name': 'bwd-medium', 'z': 1, 'h': 4, 'n': 256, 'd': 64},
@@ -34,11 +33,9 @@ def _setup(case):
     dout = torch.randn_like(q)
     m = torch.empty((z, h, n), device='cuda', dtype=torch.float32)
     o = torch.empty_like(q)
-    mod._attn_fwd.fn[(triton.cdiv(n, 64), z * h, 1)](
-        q, k, v, 0.5, m, o,
-        *q.stride(), *k.stride(), *v.stride(), *o.stride(),
-        z, h, n, HEAD_DIM=d, BLOCK_M=64, BLOCK_N=64, STAGE=3,
-        num_warps=4, num_stages=1, enable_tix_ldmatrix_swzl=False)
+    mod._attn_fwd.fn[(triton.cdiv(n, 64), z * h, 1)](q, k, v, 0.5, m, o, *q.stride(), *k.stride(), *v.stride(),
+                                                     *o.stride(), z, h, n, HEAD_DIM=d, BLOCK_M=64, BLOCK_N=64, STAGE=3,
+                                                     num_warps=4, num_stages=1, enable_tix_ldmatrix_swzl=False)
     return mod, q, k, v, dout, m, o
 
 
@@ -47,37 +44,46 @@ def _prepare(case, enabled, config=None):
     z, h, n, d = case['z'], case['h'], case['n'], case['d']
     config = config or {}
     delta = torch.empty_like(m)
-    preprocess = mod._attn_bwd_preprocess[(n // 128, z * h, 1)](
-        o, dout, delta, z, h, n, BLOCK_M=128, HEAD_DIM=d,
-        num_warps=4, num_stages=1, enable_tix_ldmatrix_swzl=enabled)
+    preprocess = mod._attn_bwd_preprocess[(n // 128, z * h, 1)](o, dout, delta, z, h, n, BLOCK_M=128, HEAD_DIM=d,
+                                                                num_warps=4, num_stages=1,
+                                                                enable_tix_ldmatrix_swzl=enabled)
     dq, dk, dv = torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
     arg_k = k * (0.5 * 1.4426950408889634)
     grid = (n // 128, 1, z * h)
-    compiled = mod._attn_bwd.fn[grid](
-        q, arg_k, v, 0.5, dout, dq, dk, dv, m, delta,
-        *q.stride(), H=h, N_CTX=n,
-        BLOCK_M1=config.get('block_m1', 64), BLOCK_N1=128,
-        BLOCK_M2=128, BLOCK_N2=config.get('block_n2', 64),
-        BLK_SLICE_FACTOR=2, HEAD_DIM=d,
-        num_warps=config.get('num_warps', 4), num_stages=config.get('num_stages', 1),
-        enable_tix_ldmatrix_swzl=enabled)
+    compiled = mod._attn_bwd.fn[grid](q, arg_k, v, 0.5, dout, dq, dk, dv, m, delta, *q.stride(), H=h, N_CTX=n,
+                                      BLOCK_M1=config.get('block_m1', 64), BLOCK_N1=128, BLOCK_M2=128,
+                                      BLOCK_N2=config.get('block_n2', 64), BLK_SLICE_FACTOR=2, HEAD_DIM=d,
+                                      num_warps=config.get('num_warps', 4), num_stages=config.get('num_stages', 1),
+                                      enable_tix_ldmatrix_swzl=enabled)
     return {
-        'mod': mod, 'q': q, 'k': k, 'v': v, 'dout': dout, 'm': m, 'o': o,
-        'arg_k': arg_k, 'delta': delta, 'dq': dq, 'dk': dk, 'dv': dv,
-        'compiled': compiled, 'preprocess': preprocess, 'grid': grid, 'config': config,
+        'mod': mod,
+        'q': q,
+        'k': k,
+        'v': v,
+        'dout': dout,
+        'm': m,
+        'o': o,
+        'arg_k': arg_k,
+        'delta': delta,
+        'dq': dq,
+        'dk': dk,
+        'dv': dv,
+        'compiled': compiled,
+        'preprocess': preprocess,
+        'grid': grid,
+        'config': config,
     }
 
 
 def _launch(case, prepared):
     z, h, n, d = case['z'], case['h'], case['n'], case['d']
-    prepared['preprocess'][(n // 128, z * h, 1)](
-        prepared['o'], prepared['dout'], prepared['delta'], z, h, n, 128, d)
-    prepared['compiled'][prepared['grid']](
-        prepared['q'], prepared['arg_k'], prepared['v'], 0.5, prepared['dout'],
-        prepared['dq'], prepared['dk'], prepared['dv'], prepared['m'], prepared['delta'],
-        *prepared['q'].stride(), h, n,
-        prepared['config'].get('block_m1', 64), 128, 128,
-        prepared['config'].get('block_n2', 64), 2, d)
+    prepared['preprocess'][(n // 128, z * h, 1)](prepared['o'], prepared['dout'], prepared['delta'], z, h, n, 128, d)
+    prepared['compiled'][prepared['grid']](prepared['q'], prepared['arg_k'], prepared['v'], 0.5, prepared['dout'],
+                                           prepared['dq'], prepared['dk'], prepared['dv'], prepared['m'],
+                                           prepared['delta'], *prepared['q'].stride(), h, n,
+                                           prepared['config'].get('block_m1',
+                                                                  64), 128, 128, prepared['config'].get('block_n2',
+                                                                                                        64), 2, d)
 
 
 def _route(prepared):

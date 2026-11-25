@@ -1,6 +1,6 @@
 #include "triton/Dialect/TritonGPU/IR/SharedPhysicalLayout.h"
-#include "triton/Dialect/TritonGPU/IR/PPUAIUPlan.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
+#include "triton/Dialect/TritonGPU/IR/PPUAIUPlan.h"
 #include "llvm/Support/MathExtras.h"
 #include <algorithm>
 #include <limits>
@@ -9,8 +9,8 @@ namespace mlir::triton::gpu {
 namespace {
 
 llvm::Error invalidLayout(llvm::Twine message) {
-  return llvm::createStringError(std::make_error_code(std::errc::invalid_argument),
-                                 message);
+  return llvm::createStringError(
+      std::make_error_code(std::errc::invalid_argument), message);
 }
 
 uint64_t physicalOffset(const PPUAIUPlan &plan, uint64_t row, uint64_t col,
@@ -20,9 +20,9 @@ uint64_t physicalOffset(const PPUAIUPlan &plan, uint64_t row, uint64_t col,
   uint64_t warpC = colCube % plan.getWarpCopyC();
   uint64_t warpW = rowCube % plan.getWarpCopyW();
   uint64_t copy = colCube / plan.getWarpCopyC();
-  uint64_t base = copy * plan.getWriterCopyElems() +
-                  (warpW * plan.getWarpCopyC() + warpC) *
-                      plan.getWriterCubeElems();
+  uint64_t base =
+      copy * plan.getWriterCopyElems() +
+      (warpW * plan.getWarpCopyC() + warpC) * plan.getWriterCubeElems();
   uint64_t innerRow = row % plan.getCubeW();
   uint64_t innerCol = col % (plan.getCubeC() * plan.getStorageFactor());
   innerRow += innerCol / plan.getCubeC();
@@ -66,9 +66,8 @@ llvm::Expected<triton::LinearLayout>
 invertPhysicalLayout(const triton::LinearLayout &layout,
                      StringAttr expandedDim = nullptr) {
   auto inDims = llvm::to_vector(layout.getInDimNames());
-  llvm::sort(inDims, [](StringAttr a, StringAttr b) {
-    return a.str() < b.str();
-  });
+  llvm::sort(inDims,
+             [](StringAttr a, StringAttr b) { return a.str() < b.str(); });
   auto outDims = llvm::to_vector(layout.getOutDimNames());
   unsigned rows = layout.getTotalOutDimSizeLog2();
   unsigned cols = layout.getTotalInDimSizeLog2();
@@ -140,8 +139,8 @@ invertPhysicalLayout(const triton::LinearLayout &layout,
         unsigned col = pivotColumns[pivotRow];
         unsigned dim = 0;
         unsigned inBit = col;
-        while (inBit >= static_cast<unsigned>(
-                            layout.getInDimSizeLog2(inDims[dim]))) {
+        while (inBit >=
+               static_cast<unsigned>(layout.getInDimSizeLog2(inDims[dim]))) {
           inBit -= layout.getInDimSizeLog2(inDims[dim]);
           ++dim;
         }
@@ -159,8 +158,8 @@ invertPhysicalLayout(const triton::LinearLayout &layout,
       size *= 2;
     logicalDims.push_back({inDim, size});
   }
-  auto inverted = triton::LinearLayout::tryCreate(
-      bases, logicalDims, /*requireSurjective=*/false);
+  auto inverted = triton::LinearLayout::tryCreate(bases, logicalDims,
+                                                  /*requireSurjective=*/false);
   if (!inverted)
     return invalidLayout("failed to construct inverted physical layout");
   return *inverted;
@@ -173,7 +172,8 @@ SharedPhysicalLayout::fromPlan(const PPUAIUPlan &plan, MLIRContext &context) {
   if (plan.getRootShape().size() != 2 ||
       !llvm::isPowerOf2_64(plan.getRootShape()[0]) ||
       !llvm::isPowerOf2_64(plan.getRootShape()[1]))
-    return invalidLayout("AIU physical LinearLayout requires power-of-two roots");
+    return invalidLayout(
+        "AIU physical LinearLayout requires power-of-two roots");
   if (plan.getPhysicalStageElems() > std::numeric_limits<int32_t>::max())
     return invalidLayout("AIU physical stage exceeds LinearLayout int32 range");
   auto finalLayout = buildLayout(plan, context, /*bulkBase=*/false);
@@ -207,7 +207,8 @@ PPUAIUPlan::toCanonicalSwizzledSharedEncoding(MemDescType memDescTy) const {
   MLIRContext &context = *memDescTy.getContext();
   if (getStorageFactor() != 1 ||
       getPhysicalStageElems() != getXElems() * getChannelElems())
-    return invalidLayout("AIU canonical shared encoding requires dense factor-1 storage");
+    return invalidLayout(
+        "AIU canonical shared encoding requires dense factor-1 storage");
 
   auto shape = getShapePerCTA(memDescTy);
   auto allocShape = memDescTy.getAllocShape();
@@ -216,13 +217,16 @@ PPUAIUPlan::toCanonicalSwizzledSharedEncoding(MemDescType memDescTy) const {
                   ArrayRef<int64_t>(shape).take_back(2).begin()) ||
       !std::equal(getRootShape().begin(), getRootShape().end(),
                   ArrayRef<int64_t>(allocShape).take_back(2).begin()))
-    return invalidLayout("AIU canonical shared encoding requires matching root shapes");
+    return invalidLayout(
+        "AIU canonical shared encoding requires matching root shapes");
   if (memDescTy.getElementTypeBitWidth() != getElementBitWidth())
     return invalidLayout("AIU canonical shared encoding element type mismatch");
 
   auto cgaLayout = getCGALayout(memDescTy.getEncoding());
-  if (cgaLayout != CGAEncodingAttr::get1CTALayout(&context, cgaLayout.getRank()))
-    return invalidLayout("AIU canonical shared encoding currently requires one CTA");
+  if (cgaLayout !=
+      CGAEncodingAttr::get1CTALayout(&context, cgaLayout.getRank()))
+    return invalidLayout(
+        "AIU canonical shared encoding currently requires one CTA");
 
   auto physical = toSharedPhysicalLayout(context);
   if (!physical)
@@ -230,32 +234,37 @@ PPUAIUPlan::toCanonicalSwizzledSharedEncoding(MemDescType memDescTy) const {
   unsigned perPhase = getSwizzledBytes() == 64 ? 2 : 1;
   unsigned maxPhase = getSwizzledBytes() == 64 ? 4 : 8;
   auto rootCGA = CGAEncodingAttr::get1CTALayout(&context, 2);
-  auto rootEncoding = SwizzledSharedEncodingAttr::get(
-      &context, 128 / getElementBitWidth(), perPhase, maxPhase, getOrder(),
-      rootCGA);
+  auto rootEncoding =
+      SwizzledSharedEncodingAttr::get(&context, 128 / getElementBitWidth(),
+                                      perPhase, maxPhase, getOrder(), rootCGA);
   auto standardLayout = rootEncoding.toLinearLayout(getRootShape());
-  standardLayout = standardLayout.squeezeIns(StringAttr::get(&context, "block"));
+  standardLayout =
+      standardLayout.squeezeIns(StringAttr::get(&context, "block"));
   auto dim0 = StringAttr::get(&context, "dim0");
   auto dim1 = StringAttr::get(&context, "dim1");
-  auto normalizedPhysical = physical->logicalToPhysical.transposeIns({dim0, dim1});
+  auto normalizedPhysical =
+      physical->logicalToPhysical.transposeIns({dim0, dim1});
   auto normalizedStandard = standardLayout.invert().transposeIns({dim0, dim1});
-  if (!standardLayout.isInvertible() || normalizedPhysical != normalizedStandard)
-    return invalidLayout("AIU physical layout is not canonical swizzled shared");
+  if (!standardLayout.isInvertible() ||
+      normalizedPhysical != normalizedStandard)
+    return invalidLayout(
+        "AIU physical layout is not canonical swizzled shared");
 
   auto bulkEncoding = SwizzledSharedEncodingAttr::get(
       &context, 128 / getElementBitWidth(), 1, 1, getOrder(), rootCGA);
   auto bulkLayout = bulkEncoding.toLinearLayout(getRootShape());
   bulkLayout = bulkLayout.squeezeIns(StringAttr::get(&context, "block"));
-  auto normalizedBulkPhysical = physical->logicalToBulkBase.transposeIns({dim0, dim1});
+  auto normalizedBulkPhysical =
+      physical->logicalToBulkBase.transposeIns({dim0, dim1});
   auto normalizedBulkStandard = bulkLayout.invert().transposeIns({dim0, dim1});
   if (!bulkLayout.isInvertible() ||
       normalizedBulkPhysical != normalizedBulkStandard)
     return invalidLayout("AIU bulk base layout is not canonical shared");
 
   auto fullOrder = mlir::triton::gpu::getOrder(memDescTy);
-  auto encoding = SwizzledSharedEncodingAttr::get(
-      &context, 128 / getElementBitWidth(), perPhase, maxPhase, fullOrder,
-      cgaLayout);
+  auto encoding =
+      SwizzledSharedEncodingAttr::get(&context, 128 / getElementBitWidth(),
+                                      perPhase, maxPhase, fullOrder, cgaLayout);
   if (getAllocationElems(encoding, allocShape) != mlir::product(allocShape) ||
       mlir::product(allocShape) % getPhysicalStageElems() != 0)
     return invalidLayout("AIU canonical shared encoding allocation mismatch");
@@ -275,15 +284,16 @@ PPUAIUPlan::toSharedEncoding(MemDescType memDescTy) const {
     return physical.takeError();
   StringAttr expandedDim;
   if (getStorageFactor() == 2)
-    expandedDim = StringAttr::get(&context, getOrder()[1] == 0 ? "dim1" : "dim0");
+    expandedDim =
+        StringAttr::get(&context, getOrder()[1] == 0 ? "dim1" : "dim0");
   auto logical = invertPhysicalLayout(physical->logicalToPhysical, expandedDim);
   if (!logical)
     return logical.takeError();
   auto block = StringAttr::get(&context, "block");
   auto bases = logical->getBases();
   bases[block] = {};
-  auto shared = triton::LinearLayout::tryCreate(
-      bases, logical->getOutDims(), /*requireSurjective=*/false);
+  auto shared = triton::LinearLayout::tryCreate(bases, logical->getOutDims(),
+                                                /*requireSurjective=*/false);
   if (!shared)
     return invalidLayout("failed to construct shared linear layout");
   return Attribute(SharedLinearEncodingAttr::get(&context, *shared,
@@ -330,7 +340,8 @@ llvm::Expected<PPUAIUPlan>
 PPUAIUPlan::fromCanonicalSwizzled(MemDescType memDescTy, unsigned numWarps,
                                   ArrayRef<unsigned> strategy) {
   if (!isa<SwizzledSharedEncodingAttr>(memDescTy.getEncoding()))
-    return invalidLayout("canonical AIU plan requires swizzled shared encoding");
+    return invalidLayout(
+        "canonical AIU plan requires swizzled shared encoding");
   auto shape = getShapePerCTA(memDescTy);
   auto order = mlir::triton::gpu::getOrder(memDescTy);
   if (shape.size() < 2 || order.size() < 2)
@@ -349,16 +360,16 @@ PPUAIUPlan::fromCanonicalSwizzled(MemDescType memDescTy, unsigned numWarps,
   uint64_t tileC = rootShape[1];
   if (rootOrder[1] != 0)
     std::swap(tileW, tileC);
-  auto plan = create(numWarps, tileW, tileC,
-                     memDescTy.getElementTypeBitWidth(), rootShape, rootOrder,
-                     strategy);
+  auto plan = create(numWarps, tileW, tileC, memDescTy.getElementTypeBitWidth(),
+                     rootShape, rootOrder, strategy);
   if (!plan)
     return plan.takeError();
   auto expected = plan->toCanonicalSwizzledSharedEncoding(memDescTy);
   if (!expected)
     return expected.takeError();
   if (*expected != memDescTy.getEncoding())
-    return invalidLayout("AIU writer strategy does not match standard shared encoding");
+    return invalidLayout(
+        "AIU writer strategy does not match standard shared encoding");
   return plan;
 }
 

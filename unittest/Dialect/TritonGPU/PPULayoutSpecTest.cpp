@@ -11,8 +11,8 @@ namespace {
 PPULayoutSpec canonical(MLIRContext &context, unsigned bits,
                         ArrayRef<int64_t> shape, ArrayRef<unsigned> order,
                         unsigned perPhase, unsigned maxPhase) {
-  auto spec = PPULayoutSpec::createCanonical(
-      context, bits, shape, order, 128 / bits, perPhase, maxPhase);
+  auto spec = PPULayoutSpec::createCanonical(context, bits, shape, order,
+                                             128 / bits, perPhase, maxPhase);
   if (!spec)
     report_fatal_error(Twine(toString(spec.takeError())));
   return *spec;
@@ -23,8 +23,8 @@ PPUAIUPlan defaultPlan(unsigned warps, uint64_t x, uint64_t channel,
   SmallVector<int64_t> shape{static_cast<int64_t>(x),
                              static_cast<int64_t>(channel)};
   SmallVector<unsigned> order{1, 0};
-  auto plan = PPUAIUPlan::createLegacyDefault(warps, x, channel, bits, shape,
-                                              order);
+  auto plan =
+      PPUAIUPlan::createLegacyDefault(warps, x, channel, bits, shape, order);
   if (!plan)
     report_fatal_error(Twine(toString(plan.takeError())));
   return *plan;
@@ -35,8 +35,8 @@ PPUAIUPlan explicitPlan(unsigned warps, uint64_t x, uint64_t channel,
   SmallVector<int64_t> shape{static_cast<int64_t>(x),
                              static_cast<int64_t>(channel)};
   SmallVector<unsigned> order{1, 0};
-  auto plan = PPUAIUPlan::fromLegacy(warps, x, channel, bits, shape, order,
-                                     strategy);
+  auto plan =
+      PPUAIUPlan::fromLegacy(warps, x, channel, bits, shape, order, strategy);
   if (!plan)
     report_fatal_error(Twine(toString(plan.takeError())));
   return *plan;
@@ -46,7 +46,8 @@ MemDescType aiuType(const PPUAIUPlan &plan, MLIRContext &context) {
   auto cga = CGAEncodingAttr::get1CTALayout(&context, 2);
   auto encoding = PPUAIUSharedEncodingAttr::get(
       &context, 2, plan.toLegacyStrategy(), plan.getOrder(), cga);
-  auto elementType = mlir::IntegerType::get(&context, plan.getElementBitWidth());
+  auto elementType =
+      mlir::IntegerType::get(&context, plan.getElementBitWidth());
   return MemDescType::get(plan.getRootShape(), elementType, encoding,
                           SharedMemorySpaceAttr::get(&context), true,
                           plan.getRootShape());
@@ -95,8 +96,8 @@ TEST(PPULayoutSpec, EnumeratesIndependentCanonicalParameters) {
   context.loadDialect<TritonGPUDialect>();
   SmallVector<int64_t> shape{64, 64};
   SmallVector<unsigned> order{1, 0};
-  auto specs = PPULayoutSpec::enumerateCanonicalCandidates(context, 16, shape,
-                                                           order);
+  auto specs =
+      PPULayoutSpec::enumerateCanonicalCandidates(context, 16, shape, order);
   ASSERT_TRUE(!!specs);
   ASSERT_GT(specs->size(), 3);
   EXPECT_TRUE(hasParameters(*specs, 1, 1, 1));
@@ -109,7 +110,8 @@ TEST(PPULayoutSpec, EnumeratesIndependentCanonicalParameters) {
   EXPECT_EQ(staged->getOrder(), ArrayRef<unsigned>({2, 1, 0}));
 }
 
-TEST(PPULayoutSpec, UsesTileAndReaderConstraintsAndDeduplicatesPhysicalLayouts) {
+TEST(PPULayoutSpec,
+     UsesTileAndReaderConstraintsAndDeduplicatesPhysicalLayouts) {
   MLIRContext context;
   context.loadDialect<TritonGPUDialect>();
   PPULayoutConstraints constraints;
@@ -118,7 +120,8 @@ TEST(PPULayoutSpec, UsesTileAndReaderConstraintsAndDeduplicatesPhysicalLayouts) 
   constraints.allowedOrders = {{1, 0}, {0, 1}};
   constraints.maxVectorBits = 64;
   constraints.maxPhase = 4;
-  auto specs = PPULayoutSpec::enumerateCanonicalCandidates(context, constraints);
+  auto specs =
+      PPULayoutSpec::enumerateCanonicalCandidates(context, constraints);
   ASSERT_TRUE(!!specs);
   ASSERT_FALSE(specs->empty());
   size_t rowMajor = 0;
@@ -136,7 +139,8 @@ TEST(PPULayoutSpec, UsesTileAndReaderConstraintsAndDeduplicatesPhysicalLayouts) 
               constraints.rootShape[order[1]]);
     for (size_t j = 0; j < i; ++j) {
       if ((*specs)[j].getOrder() == spec.getOrder())
-        EXPECT_NE((*specs)[j].getLogicalToPhysical(), spec.getLogicalToPhysical());
+        EXPECT_NE((*specs)[j].getLogicalToPhysical(),
+                  spec.getLogicalToPhysical());
     }
   }
   EXPECT_GT(rowMajor, 0);
@@ -158,8 +162,8 @@ TEST(PPUAIUWriterSolver, SolvesMultipleWritersForOneLayout) {
   bool foundSerialWriter = false;
   for (const auto &writer : solution128->writers) {
     expectMatches(spec128, writer);
-    foundSerialWriter |= writer.toLegacyStrategy() ==
-                         SmallVector<unsigned>{64, 64, 1, 1, 128};
+    foundSerialWriter |=
+        writer.toLegacyStrategy() == SmallVector<unsigned>{64, 64, 1, 1, 128};
   }
   EXPECT_TRUE(foundSerialWriter);
 
@@ -192,8 +196,9 @@ TEST(PPUAIUWriterSolver, SupportsNonCanonicalPhysicalLayoutAndDefault) {
   auto physical = legacy.toSharedPhysicalLayout(context);
   ASSERT_TRUE(!!physical);
   auto spec = PPULayoutSpec::createPhysical(
-      16, legacy.getRootShape(), legacy.getOrder(), physical->physicalStageElems,
-      physical->alignmentBytes, physical->logicalToPhysical);
+      16, legacy.getRootShape(), legacy.getOrder(),
+      physical->physicalStageElems, physical->alignmentBytes,
+      physical->logicalToPhysical);
   ASSERT_TRUE(!!spec);
   EXPECT_FALSE(spec->getCanonicalParameters().has_value());
   auto solution = PPUAIUWriterSolver::solve(*spec, 1);
@@ -238,11 +243,11 @@ TEST(PPUAIUWriterSolver, UsesExistingSharedEncodingsForAllPhysicalClasses) {
   auto multiCube = defaultPlan(2, 64, 128, 16);
   auto factorTwo = defaultPlan(1, 16, 16, 16);
   auto factorTwo8Bit = defaultPlan(1, 16, 32, 8);
-  auto transposed = PPUAIUPlan::createLegacyDefault(1, 16, 16, 16, {16, 16},
-                                                    {0, 1});
+  auto transposed =
+      PPUAIUPlan::createLegacyDefault(1, 16, 16, 16, {16, 16}, {0, 1});
   ASSERT_TRUE(!!transposed);
-  for (auto plan : {canonicalPlan, multiCube, factorTwo, factorTwo8Bit,
-                    *transposed}) {
+  for (auto plan :
+       {canonicalPlan, multiCube, factorTwo, factorTwo8Bit, *transposed}) {
     auto type = aiuType(plan, context);
     auto encoding = plan.toSharedEncoding(type);
     ASSERT_TRUE(!!encoding);
@@ -259,13 +264,13 @@ TEST(PPUAIUWriterSolver, UsesExistingSharedEncodingsForAllPhysicalClasses) {
     int32_t maxPhysicalOffset = 0;
     for (int32_t row = 0; row < plan.getRootShape()[0]; ++row) {
       for (int32_t col = 0; col < plan.getRootShape()[1]; ++col) {
-        auto physicalCoordinates = physical->logicalToPhysical.apply(
-            {{dim0, row}, {dim1, col}});
+        auto physicalCoordinates =
+            physical->logicalToPhysical.apply({{dim0, row}, {dim1, col}});
         ASSERT_EQ(physicalCoordinates.size(), 1);
         int32_t physicalOffset = physicalCoordinates[0].second;
         maxPhysicalOffset = std::max(maxPhysicalOffset, physicalOffset);
-        auto logicalCoordinates = sharedLayout.apply(
-            {{offset, physicalOffset}, {block, 0}});
+        auto logicalCoordinates =
+            sharedLayout.apply({{offset, physicalOffset}, {block, 0}});
         ASSERT_EQ(logicalCoordinates.size(), 2);
         EXPECT_EQ(logicalCoordinates[0].second, row);
         EXPECT_EQ(logicalCoordinates[1].second, col);
@@ -274,8 +279,8 @@ TEST(PPUAIUWriterSolver, UsesExistingSharedEncodingsForAllPhysicalClasses) {
     EXPECT_GT(getAllocationElems(*encoding, sharedType.getShape(),
                                  sharedType.getAllocShape()),
               maxPhysicalOffset);
-    auto writer = PPUAIUPlan::fromSharedEncoding(
-        sharedType, plan.getNumWarps(), plan.toLegacyStrategy());
+    auto writer = PPUAIUPlan::fromSharedEncoding(sharedType, plan.getNumWarps(),
+                                                 plan.toLegacyStrategy());
     ASSERT_TRUE(!!writer);
     EXPECT_EQ(writer->toLegacyStrategy(), plan.toLegacyStrategy());
   }

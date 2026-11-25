@@ -10,7 +10,6 @@ from triton_kernels.matmul import matmul, PrecisionConfig
 from triton_kernels.matmul_details.opt_flags import scoped_opt_flags_constraints
 from triton_kernels.tensor import make_ragged_tensor_metadata
 
-
 CASES = [
     {'name': 'ragged-small', 'experts': 4, 'tokens': 64, 'k': 128, 'n': 128},
     {'name': 'ragged-medium', 'experts': 8, 'tokens': 128, 'k': 256, 'n': 256},
@@ -20,10 +19,12 @@ CASES = [
 
 def _inputs(case):
     torch.manual_seed(0)
-    x = torch.randn((case['experts'] * case['tokens'], case['k']), device='cuda', dtype=torch.float16).to(torch.float8_e5m2)
-    w_enk = torch.randn((case['experts'], case['n'], case['k']), device='cuda', dtype=torch.float16).to(torch.float8_e5m2)
+    x = torch.randn((case['experts'] * case['tokens'], case['k']), device='cuda',
+                    dtype=torch.float16).to(torch.float8_e5m2)
+    w_enk = torch.randn((case['experts'], case['n'], case['k']), device='cuda',
+                        dtype=torch.float16).to(torch.float8_e5m2)
     metadata = make_ragged_tensor_metadata(
-        torch.full((case['experts'],), case['tokens'], device='cuda', dtype=torch.int32), x.shape[0])
+        torch.full((case['experts'], ), case['tokens'], device='cuda', dtype=torch.int32), x.shape[0])
     return x, w_enk, w_enk.transpose(1, 2), metadata
 
 
@@ -50,8 +51,7 @@ def _execute(case, inputs, enabled, capture=False):
         'num_stages': 1,
     }
     with scoped_opt_flags_constraints(flags), patch.object(JITFunction, 'run', run_with_option):
-        y = matmul(x, w, None, a_ragged_metadata=metadata,
-                   precision_config=PrecisionConfig(out_dtype=torch.float16))
+        y = matmul(x, w, None, a_ragged_metadata=metadata, precision_config=PrecisionConfig(out_dtype=torch.float16))
     return y, artifacts[-1] if capture else None
 
 

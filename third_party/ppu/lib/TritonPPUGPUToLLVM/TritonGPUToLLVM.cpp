@@ -23,8 +23,8 @@
 
 #include "Dialect/PPUGPU/IR/Dialect.h"
 #include "Dialect/TritonPPUGPU/IR/Dialect.h"
-#include "TritonPPUGPUToLLVM/Passes.h"
 #include "TritonPPUGPUToLLVM/AIUUtility.h"
+#include "TritonPPUGPUToLLVM/Passes.h"
 #include "TritonPPUGPUToLLVM/Utility.h"
 #include "Utility.h"
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
@@ -371,7 +371,7 @@ std::unique_ptr<OperationPass<ModuleOp>>
 createConvertTritonGPUToLLVMPPUPass(int32_t computeCapability,
                                     bool enableTixLdMatrixSwzl) {
   return std::make_unique<ConvertTritonGPUToLLVMPPU>(computeCapability,
-                                                      enableTixLdMatrixSwzl);
+                                                     enableTixLdMatrixSwzl);
 }
 
 } // namespace triton

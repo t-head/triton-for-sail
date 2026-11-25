@@ -29,8 +29,8 @@
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/TypeUtilities.h"
 
-#include "TritonPPUGPUToLLVM/TIXAsmFormat.h"
 #include "TritonPPUGPUToLLVM/AIUUtility.h"
+#include "TritonPPUGPUToLLVM/TIXAsmFormat.h"
 
 #include "Dialect/TritonPPUGPU/IR/Dialect.h"
 #include "PatternTritonGPUOpToLLVM.h"
@@ -723,15 +723,17 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
     /* AIU splite strategy
      */
     auto tensorType = op.getResult().getType();
-    llvm::Expected<ttg::PPUAIUPlan> plan = [&]() -> llvm::Expected<ttg::PPUAIUPlan> {
+    llvm::Expected<ttg::PPUAIUPlan> plan =
+        [&]() -> llvm::Expected<ttg::PPUAIUPlan> {
       if (isa<ttg::PPUAIUSharedEncodingAttr>(tensorType.getEncoding()))
         return ttg::PPUAIUPlan::fromLegacy(tensorType, numWarps);
       if (!isa<ttg::SwizzledSharedEncodingAttr, ttg::SharedLinearEncodingAttr>(
               tensorType.getEncoding()))
-        return llvm::createStringError(std::make_error_code(std::errc::invalid_argument),
-                                       "unsupported AIU destination encoding");
-      auto strategyAttr = op->getAttrOfType<ArrayAttr>(
-          LLVM::PPU::kAIUWriterStrategyAttr);
+        return llvm::createStringError(
+            std::make_error_code(std::errc::invalid_argument),
+            "unsupported AIU destination encoding");
+      auto strategyAttr =
+          op->getAttrOfType<ArrayAttr>(LLVM::PPU::kAIUWriterStrategyAttr);
       if (!strategyAttr)
         return llvm::createStringError(
             std::make_error_code(std::errc::invalid_argument),
@@ -743,8 +745,8 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
                                                  strategy);
     }();
     if (!plan)
-      return op.emitError() << "invalid AIU plan: "
-                            << llvm::toString(plan.takeError());
+      return op.emitError()
+             << "invalid AIU plan: " << llvm::toString(plan.takeError());
     unsigned cubeCElems = plan->getCubeC();
     unsigned cubeWElems = plan->getCubeW();
     unsigned swizzledBytes = plan->getSwizzledBytes();
@@ -762,8 +764,8 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
     }
 
     SmallVector<unsigned> order;
-    if (auto aiuLayout = dyn_cast<ttg::PPUAIUSharedEncodingAttr>(
-            tensorType.getEncoding())) {
+    if (auto aiuLayout =
+            dyn_cast<ttg::PPUAIUSharedEncodingAttr>(tensorType.getEncoding())) {
       order.assign(aiuLayout.getOrder().begin(), aiuLayout.getOrder().end());
     } else {
       order = ttg::getOrder(tensorType);

@@ -11,9 +11,8 @@ from triton._internal_testing import is_ppu
 
 
 @triton.jit
-def _attn_inner(acc, l_i, m_i, q, K_block_ptr, V_block_ptr, qk_scale, lo, hi,
-                BLOCK_M: tl.constexpr, HEAD_DIM: tl.constexpr, BLOCK_N: tl.constexpr,
-                MASKED: tl.constexpr, causal_offset, offs_m, offs_n):
+def _attn_inner(acc, l_i, m_i, q, K_block_ptr, V_block_ptr, qk_scale, lo, hi, BLOCK_M: tl.constexpr,
+                HEAD_DIM: tl.constexpr, BLOCK_N: tl.constexpr, MASKED: tl.constexpr, causal_offset, offs_m, offs_n):
     K_block_ptr = tl.advance(K_block_ptr, (0, lo))
     V_block_ptr = tl.advance(V_block_ptr, (lo, 0))
     for start_n in range(lo, hi, BLOCK_N):
@@ -43,13 +42,9 @@ def _attn_inner(acc, l_i, m_i, q, K_block_ptr, V_block_ptr, qk_scale, lo, hi,
 
 
 @triton.jit
-def _attn_fwd(Q, K, V, sm_scale, M, L, Out,
-              stride_qz, stride_qh, stride_qm, stride_qk,
-              stride_kz, stride_kh, stride_kn, stride_kk,
-              stride_vz, stride_vh, stride_vk, stride_vn,
-              stride_oz, stride_oh, stride_os, stride_om, stride_on,
-              Z, H_Q, H_KV, N_CTX_Q, N_CTX_KV,
-              HEAD_DIM: tl.constexpr, BLOCK_M: tl.constexpr,
+def _attn_fwd(Q, K, V, sm_scale, M, L, Out, stride_qz, stride_qh, stride_qm, stride_qk, stride_kz, stride_kh, stride_kn,
+              stride_kk, stride_vz, stride_vh, stride_vk, stride_vn, stride_oz, stride_oh, stride_os, stride_om,
+              stride_on, Z, H_Q, H_KV, N_CTX_Q, N_CTX_KV, HEAD_DIM: tl.constexpr, BLOCK_M: tl.constexpr,
               BLOCK_N: tl.constexpr, STAGE: tl.constexpr, NUM_SPLITS: tl.constexpr):
     tl.static_assert(BLOCK_N <= HEAD_DIM)
     start_m = tl.program_id(0)
@@ -61,23 +56,18 @@ def _attn_fwd(Q, K, V, sm_scale, M, L, Out,
     q_offset = off_z.to(tl.int64) * stride_qz + off_h.to(tl.int64) * stride_qh
     k_offset = off_z.to(tl.int64) * stride_kz + off_kh.to(tl.int64) * stride_kh
     v_offset = off_z.to(tl.int64) * stride_vz + off_kh.to(tl.int64) * stride_vh
-    out_offset = (off_z.to(tl.int64) * stride_oz + off_h.to(tl.int64) * stride_oh +
-                  split_id.to(tl.int64) * stride_os)
+    out_offset = (off_z.to(tl.int64) * stride_oz + off_h.to(tl.int64) * stride_oh + split_id.to(tl.int64) * stride_os)
 
-    Q_block_ptr = tl.make_block_ptr(base=Q + q_offset, shape=(N_CTX_Q, HEAD_DIM),
-                                    strides=(stride_qm, stride_qk), offsets=(start_m * BLOCK_M, 0),
-                                    block_shape=(BLOCK_M, HEAD_DIM), order=(1, 0))
+    Q_block_ptr = tl.make_block_ptr(base=Q + q_offset, shape=(N_CTX_Q, HEAD_DIM), strides=(stride_qm, stride_qk),
+                                    offsets=(start_m * BLOCK_M, 0), block_shape=(BLOCK_M, HEAD_DIM), order=(1, 0))
     fp8_v: tl.constexpr = V.dtype.element_ty == tl.float8e5 or V.dtype.element_ty == tl.float8e4nv
     v_order: tl.constexpr = (0, 1) if fp8_v else (1, 0)
-    V_block_ptr = tl.make_block_ptr(base=V + v_offset, shape=(N_CTX_KV, HEAD_DIM),
-                                    strides=(stride_vk, stride_vn), offsets=(0, 0),
-                                    block_shape=(BLOCK_N, HEAD_DIM), order=v_order)
-    K_block_ptr = tl.make_block_ptr(base=K + k_offset, shape=(HEAD_DIM, N_CTX_KV),
-                                    strides=(stride_kk, stride_kn), offsets=(0, 0),
-                                    block_shape=(HEAD_DIM, BLOCK_N), order=(0, 1))
-    O_block_ptr = tl.make_block_ptr(base=Out + out_offset, shape=(N_CTX_Q, HEAD_DIM),
-                                    strides=(stride_om, stride_on), offsets=(start_m * BLOCK_M, 0),
-                                    block_shape=(BLOCK_M, HEAD_DIM), order=(1, 0))
+    V_block_ptr = tl.make_block_ptr(base=V + v_offset, shape=(N_CTX_KV, HEAD_DIM), strides=(stride_vk, stride_vn),
+                                    offsets=(0, 0), block_shape=(BLOCK_N, HEAD_DIM), order=v_order)
+    K_block_ptr = tl.make_block_ptr(base=K + k_offset, shape=(HEAD_DIM, N_CTX_KV), strides=(stride_kk, stride_kn),
+                                    offsets=(0, 0), block_shape=(HEAD_DIM, BLOCK_N), order=(0, 1))
+    O_block_ptr = tl.make_block_ptr(base=Out + out_offset, shape=(N_CTX_Q, HEAD_DIM), strides=(stride_om, stride_on),
+                                    offsets=(start_m * BLOCK_M, 0), block_shape=(BLOCK_M, HEAD_DIM), order=(1, 0))
 
     offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
     offs_n = tl.arange(0, BLOCK_N)
@@ -91,18 +81,18 @@ def _attn_fwd(Q, K, V, sm_scale, M, L, Out,
         split_size = N_CTX_KV // NUM_SPLITS
         lo = split_id * split_size
         hi = lo + split_size
-        acc, l_i, m_i = _attn_inner(acc, l_i, m_i, q, K_block_ptr, V_block_ptr, qk_scale,
-                                    lo, hi, BLOCK_M, HEAD_DIM, BLOCK_N, False, N_CTX_KV - N_CTX_Q, offs_m, offs_n)
+        acc, l_i, m_i = _attn_inner(acc, l_i, m_i, q, K_block_ptr, V_block_ptr, qk_scale, lo, hi, BLOCK_M, HEAD_DIM,
+                                    BLOCK_N, False, N_CTX_KV - N_CTX_Q, offs_m, offs_n)
     else:
         if STAGE & 1:
             hi = start_m * BLOCK_M if STAGE == 3 else N_CTX_KV
-            acc, l_i, m_i = _attn_inner(acc, l_i, m_i, q, K_block_ptr, V_block_ptr, qk_scale,
-                                        0, hi, BLOCK_M, HEAD_DIM, BLOCK_N, False, N_CTX_KV - N_CTX_Q, offs_m, offs_n)
+            acc, l_i, m_i = _attn_inner(acc, l_i, m_i, q, K_block_ptr, V_block_ptr, qk_scale, 0, hi, BLOCK_M, HEAD_DIM,
+                                        BLOCK_N, False, N_CTX_KV - N_CTX_Q, offs_m, offs_n)
         if STAGE & 2:
             lo = start_m * BLOCK_M
             hi = (start_m + 1) * BLOCK_M
-            acc, l_i, m_i = _attn_inner(acc, l_i, m_i, q, K_block_ptr, V_block_ptr, qk_scale,
-                                        lo, hi, BLOCK_M, HEAD_DIM, BLOCK_N, True, N_CTX_KV - N_CTX_Q, offs_m, offs_n)
+            acc, l_i, m_i = _attn_inner(acc, l_i, m_i, q, K_block_ptr, V_block_ptr, qk_scale, lo, hi, BLOCK_M, HEAD_DIM,
+                                        BLOCK_N, True, N_CTX_KV - N_CTX_Q, offs_m, offs_n)
 
     partial_index = (off_hz * NUM_SPLITS + split_id) * N_CTX_Q + offs_m
     if NUM_SPLITS == 1:
@@ -115,8 +105,8 @@ def _attn_fwd(Q, K, V, sm_scale, M, L, Out,
 
 
 @triton.jit
-def _attn_split_reduce(M, L, Partial, Out, N_CTX_Q,
-                       HEAD_DIM: tl.constexpr, BLOCK_M: tl.constexpr, NUM_SPLITS: tl.constexpr):
+def _attn_split_reduce(M, L, Partial, Out, N_CTX_Q, HEAD_DIM: tl.constexpr, BLOCK_M: tl.constexpr,
+                       NUM_SPLITS: tl.constexpr):
     start_m = tl.program_id(0)
     off_hz = tl.program_id(1)
     offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
@@ -132,21 +122,46 @@ def _attn_split_reduce(M, L, Partial, Out, N_CTX_Q,
         alpha = tl.math.exp2(m - m_global)
         l = tl.load(L + (off_hz * NUM_SPLITS + split) * N_CTX_Q + offs_m)
         denominator += l * alpha
-        partial = tl.load(Partial + ((off_hz * NUM_SPLITS + split) * N_CTX_Q + offs_m)[:, None] * HEAD_DIM + offs_d[None, :])
+        partial = tl.load(Partial + ((off_hz * NUM_SPLITS + split) * N_CTX_Q + offs_m)[:, None] * HEAD_DIM +
+                          offs_d[None, :])
         acc += partial * alpha[:, None]
     acc = acc / denominator[:, None]
     tl.store(Out + (off_hz * N_CTX_Q + offs_m)[:, None] * HEAD_DIM + offs_d[None, :], acc.to(Out.type.element_ty))
 
 
 CASES = [
-    {'name': 'fp16-mha-short-causal', 'dtype': 'fp16', 'z': 1, 'hq': 2, 'hkv': 2, 'sq': 128, 'skv': 128, 'd': 64, 'splits': 1, 'causal': True},
-    {'name': 'fp16-gqa-causal', 'dtype': 'fp16', 'z': 1, 'hq': 4, 'hkv': 2, 'sq': 256, 'skv': 256, 'd': 64, 'splits': 1, 'causal': True},
-    {'name': 'fp16-gqa-long-causal', 'dtype': 'fp16', 'z': 1, 'hq': 4, 'hkv': 2, 'sq': 1024, 'skv': 1024, 'd': 64, 'splits': 1, 'causal': True},
-    {'name': 'e5m2-gqa-causal', 'dtype': 'e5m2', 'z': 1, 'hq': 4, 'hkv': 2, 'sq': 256, 'skv': 256, 'd': 64, 'splits': 1, 'causal': True},
-    {'name': 'e4m3-gqa-causal', 'dtype': 'e4m3', 'z': 1, 'hq': 4, 'hkv': 2, 'sq': 256, 'skv': 256, 'd': 64, 'splits': 1, 'causal': True},
-    {'name': 'fp16-gqa-split-short', 'dtype': 'fp16', 'z': 1, 'hq': 4, 'hkv': 2, 'sq': 128, 'skv': 256, 'd': 64, 'splits': 4, 'causal': False},
-    {'name': 'fp16-gqa-split-long', 'dtype': 'fp16', 'z': 1, 'hq': 4, 'hkv': 2, 'sq': 256, 'skv': 1024, 'd': 64, 'splits': 4, 'causal': False},
-    {'name': 'e5m2-gqa-split-long', 'dtype': 'e5m2', 'z': 1, 'hq': 4, 'hkv': 2, 'sq': 128, 'skv': 1024, 'd': 64, 'splits': 4, 'causal': False},
+    {
+        'name': 'fp16-mha-short-causal', 'dtype': 'fp16', 'z': 1, 'hq': 2, 'hkv': 2, 'sq': 128, 'skv': 128, 'd': 64,
+        'splits': 1, 'causal': True
+    },
+    {
+        'name': 'fp16-gqa-causal', 'dtype': 'fp16', 'z': 1, 'hq': 4, 'hkv': 2, 'sq': 256, 'skv': 256, 'd': 64, 'splits':
+        1, 'causal': True
+    },
+    {
+        'name': 'fp16-gqa-long-causal', 'dtype': 'fp16', 'z': 1, 'hq': 4, 'hkv': 2, 'sq': 1024, 'skv': 1024, 'd': 64,
+        'splits': 1, 'causal': True
+    },
+    {
+        'name': 'e5m2-gqa-causal', 'dtype': 'e5m2', 'z': 1, 'hq': 4, 'hkv': 2, 'sq': 256, 'skv': 256, 'd': 64, 'splits':
+        1, 'causal': True
+    },
+    {
+        'name': 'e4m3-gqa-causal', 'dtype': 'e4m3', 'z': 1, 'hq': 4, 'hkv': 2, 'sq': 256, 'skv': 256, 'd': 64, 'splits':
+        1, 'causal': True
+    },
+    {
+        'name': 'fp16-gqa-split-short', 'dtype': 'fp16', 'z': 1, 'hq': 4, 'hkv': 2, 'sq': 128, 'skv': 256, 'd': 64,
+        'splits': 4, 'causal': False
+    },
+    {
+        'name': 'fp16-gqa-split-long', 'dtype': 'fp16', 'z': 1, 'hq': 4, 'hkv': 2, 'sq': 256, 'skv': 1024, 'd': 64,
+        'splits': 4, 'causal': False
+    },
+    {
+        'name': 'e5m2-gqa-split-long', 'dtype': 'e5m2', 'z': 1, 'hq': 4, 'hkv': 2, 'sq': 128, 'skv': 1024, 'd': 64,
+        'splits': 4, 'causal': False
+    },
 ]
 
 
@@ -176,12 +191,10 @@ def _prepare(case, inputs, enabled):
     l = torch.empty_like(m)
     out = torch.empty((case['z'], case['hq'], case['sq'], case['d']), device='cuda', dtype=q.dtype)
     grid = (triton.cdiv(case['sq'], 64), case['z'] * case['hq'], splits)
-    args = (q, k, v, 0.5, m, l, partial,
-            *q.stride(), *k.stride(), *v.stride(),
-            partial.stride(0), partial.stride(1), partial.stride(2), partial.stride(3), partial.stride(4),
-            case['z'], case['hq'], case['hkv'], case['sq'], case['skv'])
-    kwargs = dict(HEAD_DIM=case['d'], BLOCK_M=64, BLOCK_N=64,
-                  STAGE=3 if case['causal'] else 1, NUM_SPLITS=splits,
+    args = (q, k, v, 0.5, m, l, partial, *q.stride(), *k.stride(), *v.stride(), partial.stride(0), partial.stride(1),
+            partial.stride(2), partial.stride(3), partial.stride(4), case['z'], case['hq'], case['hkv'], case['sq'],
+            case['skv'])
+    kwargs = dict(HEAD_DIM=case['d'], BLOCK_M=64, BLOCK_N=64, STAGE=3 if case['causal'] else 1, NUM_SPLITS=splits,
                   num_warps=4, num_stages=1, enable_tix_ldmatrix_swzl=enabled)
     compiled = _attn_fwd[grid](*args, **kwargs)
     reduce_compiled = None
@@ -189,9 +202,9 @@ def _prepare(case, inputs, enabled):
     if splits > 1:
         reduce_grid = (triton.cdiv(case['sq'], 64), case['z'] * case['hq'], 1)
         reduce_args = (m, l, partial, out, case['sq'])
-        reduce_compiled = _attn_split_reduce[reduce_grid](
-            *reduce_args, HEAD_DIM=case['d'], BLOCK_M=64, NUM_SPLITS=splits,
-            num_warps=4, num_stages=1, enable_tix_ldmatrix_swzl=enabled)
+        reduce_compiled = _attn_split_reduce[reduce_grid](*reduce_args, HEAD_DIM=case['d'], BLOCK_M=64,
+                                                          NUM_SPLITS=splits, num_warps=4, num_stages=1,
+                                                          enable_tix_ldmatrix_swzl=enabled)
     return {
         'compiled': compiled,
         'grid': grid,
@@ -209,8 +222,8 @@ def _launch(prepared):
     constexpr = (kwargs['HEAD_DIM'], kwargs['BLOCK_M'], kwargs['BLOCK_N'], kwargs['STAGE'], kwargs['NUM_SPLITS'])
     prepared['compiled'][prepared['grid']](*prepared['args'], *constexpr)
     if prepared['reduce_compiled'] is not None:
-        prepared['reduce_compiled'][prepared['reduce_grid']](
-            *prepared['reduce_args'], kwargs['HEAD_DIM'], kwargs['BLOCK_M'], kwargs['NUM_SPLITS'])
+        prepared['reduce_compiled'][prepared['reduce_grid']](*prepared['reduce_args'], kwargs['HEAD_DIM'],
+                                                             kwargs['BLOCK_M'], kwargs['NUM_SPLITS'])
 
 
 def _reference(case, inputs):
@@ -247,13 +260,10 @@ def _legacy_reference(case, inputs):
     out = torch.empty_like(q_ref)
     m = torch.empty((case['z'], case['hq'], case['skv']), device='cuda', dtype=torch.float32)
     grid = (triton.cdiv(case['skv'], 64), case['z'] * case['hq'], 1)
-    module._attn_fwd.fn[grid](
-        q_ref, k, v, 0.5, m, out,
-        *q_ref.stride(), *k.stride(), *v.stride(), *out.stride(),
-        case['z'], case['hq'], case['skv'],
-        HEAD_DIM=case['d'], BLOCK_M=64, BLOCK_N=64,
-        STAGE=3 if case['causal'] else 1,
-        num_warps=4, num_stages=1, enable_tix_ldmatrix_swzl=False)
+    module._attn_fwd.fn[grid](q_ref, k, v, 0.5, m, out, *q_ref.stride(), *k.stride(), *v.stride(), *out.stride(),
+                              case['z'], case['hq'], case['skv'], HEAD_DIM=case['d'], BLOCK_M=64, BLOCK_N=64,
+                              STAGE=3 if case['causal'] else 1, num_warps=4, num_stages=1,
+                              enable_tix_ldmatrix_swzl=False)
     return out[:, :, :case['sq']].float()
 
 
@@ -285,7 +295,7 @@ def _check_numerics(case, inputs, enabled, ordinary):
     assert enabled_route['bulk_count'] > 0
     assert not ordinary_route['used_swzl']
     assert torch.equal(enabled['output'], ordinary['output'])
-    if case['dtype'] in ('e5m2',):
+    if case['dtype'] in ('e5m2', ):
         reference = _legacy_reference(case, inputs)
     else:
         reference = _reference(case, inputs)
@@ -302,8 +312,10 @@ def test_attention_swzl_correctness(case):
 
 
 def test_attention_wide_b8_fallback():
-    case = {'name': 'wide-b8-fallback', 'dtype': 'e4m3', 'z': 1, 'hq': 8, 'hkv': 1,
-            'sq': 256, 'skv': 256, 'd': 256, 'splits': 1, 'causal': True}
+    case = {
+        'name': 'wide-b8-fallback', 'dtype': 'e4m3', 'z': 1, 'hq': 8, 'hkv': 1, 'sq': 256, 'skv': 256, 'd': 256,
+        'splits': 1, 'causal': True
+    }
     inputs = _inputs(case)
     enabled = _prepare(case, inputs, True)
     ordinary = _prepare(case, inputs, False)

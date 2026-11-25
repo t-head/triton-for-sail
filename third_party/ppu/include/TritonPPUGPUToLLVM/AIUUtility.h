@@ -31,7 +31,8 @@
 namespace mlir {
 namespace LLVM {
 namespace PPU {
-inline constexpr llvm::StringLiteral kAIUWriterStrategyAttr = "ppu.aiu_strategy";
+inline constexpr llvm::StringLiteral kAIUWriterStrategyAttr =
+    "ppu.aiu_strategy";
 inline constexpr llvm::StringLiteral kAIUSourceAttr = "ppu.aiu_source";
 inline constexpr llvm::StringLiteral kDisableChainedDotAttr =
     "ppu.disable_chained_dot";
@@ -56,8 +57,9 @@ Value getSliceKOffset(ConversionPatternRewriter &rewriter, Location loc,
                       Value tensor, int opIdx);
 
 Value getPPUAIUV2SwizzledSharedPtr(
-    Location loc, const triton::gpu::SharedPhysicalLayout &layout, Type resElemTy,
-    Value dstPtrBase, Value idxRow, Value idxCol, RewriterBase &rewriter);
+    Location loc, const triton::gpu::SharedPhysicalLayout &layout,
+    Type resElemTy, Value dstPtrBase, Value idxRow, Value idxCol,
+    RewriterBase &rewriter);
 
 DenseMap<unsigned, Value> getAIUSwizzledSharedPtrs(
     Location loc, const TargetInfoBase &target, unsigned inVec,

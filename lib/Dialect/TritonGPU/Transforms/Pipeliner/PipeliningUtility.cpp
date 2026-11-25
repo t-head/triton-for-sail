@@ -598,8 +598,7 @@ ttg::SharedEncodingTrait mlir::triton::getSharedEncoding(Operation *op) {
                                                      elemBytes, version);
       if (failed(legacy)) {
         op->emitError() << "unsupported AIU load tile for PPU AIU version "
-                        << version << ": channel width is "
-                        << tileC * elemBytes
+                        << version << ": channel width is " << tileC * elemBytes
                         << " bytes and contiguous width is " << tileW
                         << " elements";
         return {};
@@ -607,8 +606,8 @@ ttg::SharedEncodingTrait mlir::triton::getSharedEncoding(Operation *op) {
       aiuLoad = *legacy;
     }
 
-    return ttg::PPUAIUSharedEncodingAttr::get(
-        ty.getContext(), version, aiuLoad, aiuOrder, cgaLayout);
+    return ttg::PPUAIUSharedEncodingAttr::get(ty.getContext(), version, aiuLoad,
+                                              aiuOrder, cgaLayout);
   }
 
   if (localAllocEnc)

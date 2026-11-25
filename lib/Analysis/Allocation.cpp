@@ -298,12 +298,14 @@ private:
         auto plan = triton::gpu::PPUAIUPlan::fromLegacy(
             allocType, triton::gpu::lookupNumWarps(alloc));
         if (!plan)
-          llvm::report_fatal_error(llvm::Twine(llvm::toString(plan.takeError())));
+          llvm::report_fatal_error(
+              llvm::Twine(llvm::toString(plan.takeError())));
         auto physical = plan->toSharedPhysicalLayout(*alloc.getContext());
         if (!physical)
           llvm::report_fatal_error(
               llvm::Twine(llvm::toString(physical.takeError())));
-        int64_t logicalStageElems = plan->getRootShape()[0] * plan->getRootShape()[1];
+        int64_t logicalStageElems =
+            plan->getRootShape()[0] * plan->getRootShape()[1];
         assert(logicalStageElems > 0 && numElems % logicalStageElems == 0);
         int64_t stageCount = numElems / logicalStageElems;
         bytes = stageCount * physical->physicalStageElems *

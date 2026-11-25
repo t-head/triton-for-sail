@@ -41,22 +41,26 @@ namespace py = nanobind;
 
 void init_triton_ppu_passes_ttgpuir(py::module_ &m) {
   using namespace mlir::triton;
-  m.def("add_allocate_shared_memory_ppu",
-        [](mlir::PassManager &pm, int32_t capability,
-           bool enableTixLdMatrixSwzl) {
-          pm.addPass(mlir::triton::createAllocateSharedMemoryPPUPass(
-              capability, enableTixLdMatrixSwzl));
-        },
-        py::arg("pm"), py::arg("capability"),
-        py::arg("enable_tix_ldmatrix_swzl") = false);
-  m.def("add_to_llvmir",
-        [](mlir::PassManager &pm, int32_t capability, bool enableTixLdMatrixSwzl) {
-          pm.addPass(mlir::triton::createConvertTritonGPUToLLVMPPUPass(
-              capability, enableTixLdMatrixSwzl));
-        },
-        py::arg("pm"), py::arg("capability"),
-        py::arg("enable_tix_ldmatrix_swzl") = false);
-  ADD_PASS_WRAPPER_0("add_accelerate_matmul", mlir::createTritonPPUGPUAccelerateMatmul);
+  m.def(
+      "add_allocate_shared_memory_ppu",
+      [](mlir::PassManager &pm, int32_t capability,
+         bool enableTixLdMatrixSwzl) {
+        pm.addPass(mlir::triton::createAllocateSharedMemoryPPUPass(
+            capability, enableTixLdMatrixSwzl));
+      },
+      py::arg("pm"), py::arg("capability"),
+      py::arg("enable_tix_ldmatrix_swzl") = false);
+  m.def(
+      "add_to_llvmir",
+      [](mlir::PassManager &pm, int32_t capability,
+         bool enableTixLdMatrixSwzl) {
+        pm.addPass(mlir::triton::createConvertTritonGPUToLLVMPPUPass(
+            capability, enableTixLdMatrixSwzl));
+      },
+      py::arg("pm"), py::arg("capability"),
+      py::arg("enable_tix_ldmatrix_swzl") = false);
+  ADD_PASS_WRAPPER_0("add_accelerate_matmul",
+                     mlir::createTritonPPUGPUAccelerateMatmul);
   ADD_PASS_WRAPPER_0("add_convert_libdevice_func_to_ppu",
                      mlir::triton::createConvertLibdeviceFuncToPPUPass);
   ADD_PASS_WRAPPER_0("add_ppu_reorder_instructions",
@@ -128,56 +132,60 @@ void init_triton_ppu(py::module_ &m) {
   auto ttppugpuir_m = passes.def_submodule("ttppugpuir");
   init_triton_ppu_passes_ttppugpuir(ttppugpuir_m);
 
-  m.def("enumerate_aiu_plans", [](unsigned numWarps, uint64_t xElems,
-                                 uint64_t channelElems,
-                                 unsigned elementBitWidth,
-                                 std::vector<int64_t> rootShape,
-                                 std::vector<unsigned> order) {
-    auto plans = mlir::triton::gpu::PPUAIUPlan::enumerateProvenCandidates(
-        numWarps, xElems, channelElems, elementBitWidth, rootShape, order);
-    if (!plans)
-      throw std::runtime_error(llvm::toString(plans.takeError()));
-    std::vector<std::vector<unsigned>> result;
-    for (const auto &plan : *plans) {
-      auto strategy = plan.toLegacyStrategy();
-      result.emplace_back(strategy.begin(), strategy.end());
-    }
-    return result;
-  });
+  m.def("enumerate_aiu_plans",
+        [](unsigned numWarps, uint64_t xElems, uint64_t channelElems,
+           unsigned elementBitWidth, std::vector<int64_t> rootShape,
+           std::vector<unsigned> order) {
+          auto plans = mlir::triton::gpu::PPUAIUPlan::enumerateProvenCandidates(
+              numWarps, xElems, channelElems, elementBitWidth, rootShape,
+              order);
+          if (!plans)
+            throw std::runtime_error(llvm::toString(plans.takeError()));
+          std::vector<std::vector<unsigned>> result;
+          for (const auto &plan : *plans) {
+            auto strategy = plan.toLegacyStrategy();
+            result.emplace_back(strategy.begin(), strategy.end());
+          }
+          return result;
+        });
 
-  m.def("enumerate_layouts", [](unsigned elementBitWidth,
-                               std::vector<int64_t> rootShape,
-                               std::vector<unsigned> order,
-                               unsigned maxVectorBits, unsigned maxPhase) {
-    mlir::MLIRContext context;
-    context.loadDialect<mlir::triton::gpu::TritonGPUDialect>();
-    mlir::triton::gpu::PPULayoutConstraints constraints;
-    constraints.elementBitWidth = elementBitWidth;
-    constraints.rootShape.assign(rootShape.begin(), rootShape.end());
-    constraints.allowedOrders.emplace_back(order.begin(), order.end());
-    constraints.maxVectorBits = maxVectorBits;
-    constraints.maxPhase = maxPhase;
-    auto layouts = mlir::triton::gpu::PPULayoutSpec::enumerateCanonicalCandidates(
-        context, constraints);
-    if (!layouts)
-      throw std::runtime_error(llvm::toString(layouts.takeError()));
-    std::vector<std::vector<unsigned>> result;
-    for (const auto &layout : *layouts) {
-      const auto &parameters = *layout.getCanonicalParameters();
-      result.push_back({parameters.vec, parameters.perPhase,
-                        parameters.maxPhase, order[0], order[1]});
-    }
-    return result;
-  }, py::arg("element_bit_width"), py::arg("root_shape"), py::arg("order"),
-     py::arg("max_vector_bits") = 128, py::arg("max_phase") = 8);
+  m.def(
+      "enumerate_layouts",
+      [](unsigned elementBitWidth, std::vector<int64_t> rootShape,
+         std::vector<unsigned> order, unsigned maxVectorBits,
+         unsigned maxPhase) {
+        mlir::MLIRContext context;
+        context.loadDialect<mlir::triton::gpu::TritonGPUDialect>();
+        mlir::triton::gpu::PPULayoutConstraints constraints;
+        constraints.elementBitWidth = elementBitWidth;
+        constraints.rootShape.assign(rootShape.begin(), rootShape.end());
+        constraints.allowedOrders.emplace_back(order.begin(), order.end());
+        constraints.maxVectorBits = maxVectorBits;
+        constraints.maxPhase = maxPhase;
+        auto layouts =
+            mlir::triton::gpu::PPULayoutSpec::enumerateCanonicalCandidates(
+                context, constraints);
+        if (!layouts)
+          throw std::runtime_error(llvm::toString(layouts.takeError()));
+        std::vector<std::vector<unsigned>> result;
+        for (const auto &layout : *layouts) {
+          const auto &parameters = *layout.getCanonicalParameters();
+          result.push_back({parameters.vec, parameters.perPhase,
+                            parameters.maxPhase, order[0], order[1]});
+        }
+        return result;
+      },
+      py::arg("element_bit_width"), py::arg("root_shape"), py::arg("order"),
+      py::arg("max_vector_bits") = 128, py::arg("max_phase") = 8);
 
   m.def("solve_aiu_writers", [](unsigned numWarps, unsigned elementBitWidth,
-                               std::vector<int64_t> rootShape,
-                               std::vector<unsigned> order,
-                               std::vector<unsigned> layoutParameters) {
+                                std::vector<int64_t> rootShape,
+                                std::vector<unsigned> order,
+                                std::vector<unsigned> layoutParameters) {
     if (order.size() != 2 || layoutParameters.size() != 5 ||
         layoutParameters[3] != order[0] || layoutParameters[4] != order[1])
-      throw std::runtime_error("layout parameters must be vec/perPhase/maxPhase/order");
+      throw std::runtime_error(
+          "layout parameters must be vec/perPhase/maxPhase/order");
     mlir::MLIRContext context;
     context.loadDialect<mlir::triton::gpu::TritonGPUDialect>();
     auto layout = mlir::triton::gpu::PPULayoutSpec::createCanonical(
@@ -185,7 +193,8 @@ void init_triton_ppu(py::module_ &m) {
         layoutParameters[1], layoutParameters[2]);
     if (!layout)
       throw std::runtime_error(llvm::toString(layout.takeError()));
-    auto solution = mlir::triton::gpu::PPUAIUWriterSolver::solve(*layout, numWarps);
+    auto solution =
+        mlir::triton::gpu::PPUAIUWriterSolver::solve(*layout, numWarps);
     if (!solution)
       throw std::runtime_error(llvm::toString(solution.takeError()));
     std::vector<std::vector<unsigned>> result;
@@ -196,18 +205,18 @@ void init_triton_ppu(py::module_ &m) {
     return result;
   });
 
-  m.def("legacy_aiu_default", [](unsigned numWarps, uint64_t xElems,
-                                uint64_t channelElems,
-                                unsigned elementBitWidth,
-                                std::vector<int64_t> rootShape,
-                                std::vector<unsigned> order) {
-    auto plan = mlir::triton::gpu::PPUAIUPlan::createLegacyDefault(
-        numWarps, xElems, channelElems, elementBitWidth, rootShape, order);
-    if (!plan)
-      throw std::runtime_error(llvm::toString(plan.takeError()));
-    auto strategy = plan->toLegacyStrategy();
-    return std::vector<unsigned>(strategy.begin(), strategy.end());
-  });
+  m.def("legacy_aiu_default",
+        [](unsigned numWarps, uint64_t xElems, uint64_t channelElems,
+           unsigned elementBitWidth, std::vector<int64_t> rootShape,
+           std::vector<unsigned> order) {
+          auto plan = mlir::triton::gpu::PPUAIUPlan::createLegacyDefault(
+              numWarps, xElems, channelElems, elementBitWidth, rootShape,
+              order);
+          if (!plan)
+            throw std::runtime_error(llvm::toString(plan.takeError()));
+          auto strategy = plan->toLegacyStrategy();
+          return std::vector<unsigned>(strategy.begin(), strategy.end());
+        });
 
   // load dialects
   m.def("load_dialects", [](mlir::MLIRContext &context) {

@@ -50,7 +50,8 @@ def _compile_dot(name, mode, warps, enable, tmp_path, artifact, shape=None):
     per_phase, max_phase = (1, 8) if mode == 0 else (2, 4)
     vec = 128 // dtype.itemsize // 8
     expected = f'vec = {vec}, perPhase = {per_phase}, maxPhase = {max_phase}'
-    ttgir = compiled.asm['ttgir'].replace('perPhase = 4, maxPhase = 2', f'perPhase = {per_phase}, maxPhase = {max_phase}')
+    ttgir = compiled.asm['ttgir'].replace('perPhase = 4, maxPhase = 2',
+                                          f'perPhase = {per_phase}, maxPhase = {max_phase}')
     assert ttgir.count(expected) == 1
     override = tmp_path / f'{artifact}.ttgir'
     override.write_text(ttgir)

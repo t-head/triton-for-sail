@@ -12,9 +12,9 @@ namespace mlir::triton::gpu {
 class PPUAIUPlan {
 public:
   static llvm::Expected<PPUAIUPlan>
-  createLegacyDefault(unsigned numWarps, uint64_t xElems,
-                      uint64_t channelElems, unsigned elementBitWidth,
-                      ArrayRef<int64_t> rootShape, ArrayRef<unsigned> order);
+  createLegacyDefault(unsigned numWarps, uint64_t xElems, uint64_t channelElems,
+                      unsigned elementBitWidth, ArrayRef<int64_t> rootShape,
+                      ArrayRef<unsigned> order);
 
   static llvm::Expected<PPUAIUPlan>
   createLegacyDefault(RankedTensorType tensorTy, unsigned numWarps,
@@ -29,7 +29,8 @@ public:
                                                unsigned numWarps);
 
   // Enumerate every scalar-valid strategy in the current finite AIU model.
-  // Canonical standard-layout candidates are a subset; legacy-only plans remain included.
+  // Canonical standard-layout candidates are a subset; legacy-only plans remain
+  // included.
   static llvm::Expected<std::vector<PPUAIUPlan>>
   enumerateProvenCandidates(unsigned numWarps, uint64_t xElems,
                             uint64_t channelElems, unsigned elementBitWidth,

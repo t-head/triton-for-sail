@@ -7,8 +7,8 @@ namespace mlir::triton::gpu {
 namespace {
 
 llvm::Error invalidPlan(llvm::Twine message) {
-  return llvm::createStringError(std::make_error_code(std::errc::invalid_argument),
-                                 message);
+  return llvm::createStringError(
+      std::make_error_code(std::errc::invalid_argument), message);
 }
 
 bool checkedMul(uint64_t lhs, uint64_t rhs, uint64_t &result) {
@@ -43,10 +43,11 @@ PPUAIUPlan::create(unsigned numWarps, uint64_t xElems, uint64_t channelElems,
   return plan;
 }
 
-llvm::Expected<PPUAIUPlan> PPUAIUPlan::createLegacyDefault(
-    unsigned numWarps, uint64_t xElems, uint64_t channelElems,
-    unsigned elementBitWidth, ArrayRef<int64_t> rootShape,
-    ArrayRef<unsigned> order) {
+llvm::Expected<PPUAIUPlan>
+PPUAIUPlan::createLegacyDefault(unsigned numWarps, uint64_t xElems,
+                                uint64_t channelElems, unsigned elementBitWidth,
+                                ArrayRef<int64_t> rootShape,
+                                ArrayRef<unsigned> order) {
   if (!numWarps || xElems < 16 || !channelElems ||
       (elementBitWidth != 8 && elementBitWidth != 16 && elementBitWidth != 32))
     return invalidPlan("unsupported AIU tile geometry or element type");
@@ -55,9 +56,8 @@ llvm::Expected<PPUAIUPlan> PPUAIUPlan::createLegacyDefault(
   unsigned elementBytes = elementBitWidth / 8;
   unsigned swizzledBytes = channelElems * elementBytes <= 64 ? 64 : 128;
   unsigned channelBytes = channelElems * elementBytes;
-  unsigned cubeC = channelBytes < swizzledBytes
-                       ? channelElems
-                       : swizzledBytes / elementBytes;
+  unsigned cubeC = channelBytes < swizzledBytes ? channelElems
+                                                : swizzledBytes / elementBytes;
   unsigned warpCMax = (channelElems + cubeC - 1) / cubeC;
   unsigned warpC = std::min<unsigned>(numWarps, warpCMax);
   unsigned warpWMax = xElems / 16;
@@ -82,10 +82,11 @@ PPUAIUPlan::createLegacyDefault(RankedTensorType tensorTy, unsigned numWarps,
                              tensorTy.getElementTypeBitWidth(), shape, order);
 }
 
-llvm::Expected<PPUAIUPlan> PPUAIUPlan::fromLegacy(
-    unsigned numWarps, uint64_t xElems, uint64_t channelElems,
-    unsigned elementBitWidth, ArrayRef<int64_t> rootShape,
-    ArrayRef<unsigned> order, ArrayRef<unsigned> strategy) {
+llvm::Expected<PPUAIUPlan>
+PPUAIUPlan::fromLegacy(unsigned numWarps, uint64_t xElems,
+                       uint64_t channelElems, unsigned elementBitWidth,
+                       ArrayRef<int64_t> rootShape, ArrayRef<unsigned> order,
+                       ArrayRef<unsigned> strategy) {
   return create(numWarps, xElems, channelElems, elementBitWidth, rootShape,
                 order, strategy);
 }
@@ -117,8 +118,7 @@ llvm::Expected<PPUAIUPlan> PPUAIUPlan::fromLegacy(MemDescType memDescTy,
                 rootShape, rootOrder, encoding.getAIUStrategy());
 }
 
-llvm::Expected<std::vector<PPUAIUPlan>>
-PPUAIUPlan::enumerateProvenCandidates(
+llvm::Expected<std::vector<PPUAIUPlan>> PPUAIUPlan::enumerateProvenCandidates(
     unsigned numWarps, uint64_t xElems, uint64_t channelElems,
     unsigned elementBitWidth, ArrayRef<int64_t> rootShape,
     ArrayRef<unsigned> order) {
@@ -135,8 +135,8 @@ PPUAIUPlan::enumerateProvenCandidates(
                                 strategy[3], strategy[4]};
     if (!seen.insert(key).second)
       return;
-    auto candidate = fromLegacy(numWarps, xElems, channelElems,
-                                elementBitWidth, rootShape, order, strategy);
+    auto candidate = fromLegacy(numWarps, xElems, channelElems, elementBitWidth,
+                                rootShape, order, strategy);
     if (!candidate) {
       llvm::consumeError(candidate.takeError());
       return;
@@ -175,8 +175,8 @@ PPUAIUPlan::enumerateProvenCandidates(
           if (cubeW < 16 || cubeW > 2048)
             continue;
           SmallVector<unsigned> strategy{factorTwoCubeC,
-                                         static_cast<unsigned>(cubeW), 1,
-                                         warpW, swizzledBytes};
+                                         static_cast<unsigned>(cubeW), 1, warpW,
+                                         swizzledBytes};
           appendCandidate(strategy);
         }
       }
@@ -193,11 +193,11 @@ PPUAIUPlan::enumerateProvenCandidates(
 llvm::Error PPUAIUPlan::validate() {
   if (rootShape.size() != 2 || order.size() != 2)
     return invalidPlan("AIUPlan requires rank-2 root layout geometry");
-  if (!((order[0] == 1 && order[1] == 0) ||
-        (order[0] == 0 && order[1] == 1)))
+  if (!((order[0] == 1 && order[1] == 0) || (order[0] == 0 && order[1] == 1)))
     return invalidPlan("unsupported AIU memory order");
   if (rootShape[0] <= 0 || rootShape[1] <= 0 || xElems < 16 || !channelElems)
-    return invalidPlan("AIUPlan requires positive root dimensions and at least 16 rows");
+    return invalidPlan(
+        "AIUPlan requires positive root dimensions and at least 16 rows");
   uint64_t expectedX = rootShape[0];
   uint64_t expectedChannel = rootShape[1];
   if (order[1] != 0)
@@ -236,8 +236,7 @@ llvm::Error PPUAIUPlan::validate() {
     if (warpCopyC > (channelElems + cubeC - 1) / cubeC)
       return invalidPlan("AIU warpCopyC exceeds available channel cubes");
     if (channelElems % (static_cast<uint64_t>(cubeC) * warpCopyC) != 0)
-      return invalidPlan(
-          "AIU factor-1 requires complete channel copy groups");
+      return invalidPlan("AIU factor-1 requires complete channel copy groups");
   }
 
   copyWarps = warpCopyC * warpCopyW;
@@ -278,8 +277,8 @@ AIULoadStrategy(unsigned numWarps, unsigned xElems, unsigned channelElems,
 
   constexpr unsigned minXElems = 16;
   constexpr unsigned maxCubeW = 2048;
-  if (version != 1 || numWarps == 0 || xElems < minXElems || channelElems == 0 ||
-      (elemBytes != 1 && elemBytes != 2 && elemBytes != 4))
+  if (version != 1 || numWarps == 0 || xElems < minXElems ||
+      channelElems == 0 || (elemBytes != 1 && elemBytes != 2 && elemBytes != 4))
     return failure();
   constexpr unsigned sliceByte = 32;
   constexpr unsigned maxSliceBytes = 128;

@@ -82,8 +82,8 @@ public:
       }
       loadStrategy = plan->toLegacyStrategy();
     } else {
-      auto legacy =
-          LLVM::PPU::AIULoadStrategy(numWarps, tileW, tileC, elemBytes, version);
+      auto legacy = LLVM::PPU::AIULoadStrategy(numWarps, tileW, tileC,
+                                               elemBytes, version);
       if (failed(legacy)) {
         *encounteredInvalidLoad = true;
         return op.emitError()
@@ -118,8 +118,7 @@ private:
   bool *encounteredInvalidLoad;
 };
 
-std::optional<MemDescType>
-sharedType(MemDescType type, unsigned numWarps) {
+std::optional<MemDescType> sharedType(MemDescType type, unsigned numWarps) {
   auto plan = PPUAIUPlan::fromLegacy(type, numWarps);
   if (!plan) {
     llvm::consumeError(plan.takeError());
@@ -171,9 +170,8 @@ void invalidateMixedConversions(
         for (Block &block : region)
           for (BlockArgument argument : block.getArguments())
             appendType(argument.getType());
-      bool hasConverted = llvm::any_of(types, [&](MemDescType type) {
-        return conversions.contains(type);
-      });
+      bool hasConverted = llvm::any_of(
+          types, [&](MemDescType type) { return conversions.contains(type); });
       bool hasLegacy = llvm::any_of(types, [&](MemDescType type) {
         return isa<PPUAIUSharedEncodingAttr>(type.getEncoding()) &&
                !conversions.contains(type);
@@ -278,8 +276,8 @@ public:
       if (!oldType || !conversions.contains(oldType))
         return;
       int32_t alignment = std::max<int32_t>(op.getAlignmentOrDefault(), 128);
-      op->setAttr("alignment", IntegerAttr::get(IntegerType::get(context, 32),
-                                                alignment));
+      op->setAttr("alignment",
+                  IntegerAttr::get(IntegerType::get(context, 32), alignment));
     });
 
     module.walk([&](Operation *op) {
@@ -305,9 +303,9 @@ public:
             converted.getEncoding(), converted.getMemorySpace(),
             converted.getMutableMemory(), converted.getAllocShape());
         result.setType(allocationType);
-        if (alloc && dropPipeliningDim(converted.getShape(),
-                                       converted.getEncoding())
-                             .size() != converted.getRank())
+        if (alloc &&
+            dropPipeliningDim(converted.getShape(), converted.getEncoding())
+                    .size() != converted.getRank())
           continue;
         OpBuilder builder(op->getContext());
         builder.setInsertionPointAfter(op);

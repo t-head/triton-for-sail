@@ -86,7 +86,8 @@ def _compile(case, enable, tmp_path, route):
     per_phase, max_phase = (1, 8) if mode == 0 else (2, 4)
     vec = 128 // dtype.itemsize // 8
     expected = f'vec = {vec}, perPhase = {per_phase}, maxPhase = {max_phase}'
-    ttgir = compiled.asm['ttgir'].replace('perPhase = 4, maxPhase = 2', f'perPhase = {per_phase}, maxPhase = {max_phase}')
+    ttgir = compiled.asm['ttgir'].replace('perPhase = 4, maxPhase = 2',
+                                          f'perPhase = {per_phase}, maxPhase = {max_phase}')
     assert ttgir.count(expected) == 1
     override = tmp_path / f"{case['name']}-{route}.ttgir"
     override.write_text(ttgir)
@@ -138,7 +139,10 @@ def _timed_launch(compiled, case, inputs):
 CASES = [
     {'name': 'fp16-small-full', 'dtype': 'fp16', 'bm': 64, 'bn': 64, 'bk': 64, 'repeat': 1, 'mode': 0, 'warps': 1},
     {'name': 'fp16-medium-full', 'dtype': 'fp16', 'bm': 128, 'bn': 128, 'bk': 64, 'repeat': 1, 'mode': 0, 'warps': 4},
-    {'name': 'fp16-large-192-tiled', 'dtype': 'fp16', 'M': 192, 'N': 192, 'K': 192, 'bm': 64, 'bn': 64, 'bk': 64, 'repeat': 3, 'mode': 0, 'warps': 4, 'tiled': True},
+    {
+        'name': 'fp16-large-192-tiled', 'dtype': 'fp16', 'M': 192, 'N': 192, 'K': 192, 'bm': 64, 'bn': 64, 'bk': 64,
+        'repeat': 3, 'mode': 0, 'warps': 4, 'tiled': True
+    },
     {'name': 'fp16-medium-half', 'dtype': 'fp16', 'bm': 64, 'bn': 64, 'bk': 32, 'repeat': 1, 'mode': 1, 'warps': 4},
     {'name': 'bf16-medium-full', 'dtype': 'bf16', 'bm': 128, 'bn': 128, 'bk': 64, 'repeat': 1, 'mode': 0, 'warps': 4},
     {'name': 'fp8-medium-full', 'dtype': 'e4m3', 'bm': 128, 'bn': 128, 'bk': 128, 'repeat': 1, 'mode': 0, 'warps': 4},

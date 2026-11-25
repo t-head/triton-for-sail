@@ -297,8 +297,9 @@ DenseMap<unsigned, Value> getPPUAIUV1SwizzledSharedPtrs(
 }
 
 Value getPPUAIUV2SwizzledSharedPtr(
-    Location loc, const triton::gpu::SharedPhysicalLayout &layout, Type resElemTy,
-    Value dstPtrBase, Value idxRow, Value idxCol, RewriterBase &rewriter) {
+    Location loc, const triton::gpu::SharedPhysicalLayout &layout,
+    Type resElemTy, Value dstPtrBase, Value idxRow, Value idxCol,
+    RewriterBase &rewriter) {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   auto *ctx = rewriter.getContext();
   auto dim0 = StringAttr::get(ctx, "dim0");
@@ -363,8 +364,8 @@ DenseMap<unsigned, Value> getAIUSwizzledSharedPtrs(
   } else {
     assert(resSharedLayout.isPPU0015() && layout);
     return getPPUAIUV2SwizzledSharedPtrs(loc, target, inVec, srcTy, memTy,
-                                      resSharedLayout, *layout, resElemTy, smemObj,
-                                      rewriter, offsetVals);
+                                         resSharedLayout, *layout, resElemTy,
+                                         smemObj, rewriter, offsetVals);
   }
 }
 

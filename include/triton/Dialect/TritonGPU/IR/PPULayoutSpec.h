@@ -57,7 +57,8 @@ public:
   const triton::LinearLayout &getLogicalToPhysical() const {
     return logicalToPhysical;
   }
-  const std::optional<CanonicalLayoutParameters> &getCanonicalParameters() const {
+  const std::optional<CanonicalLayoutParameters> &
+  getCanonicalParameters() const {
     return canonicalParameters;
   }
 

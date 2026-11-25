@@ -107,10 +107,20 @@ def test_desc_k_negative_prefetch(num_stages):
     a = a_cpu.to(device="cuda", dtype=torch.float16)
     b = b_cpu.to(device="cuda", dtype=torch.float16)
     c = torch.empty((M, N), dtype=torch.float16, device="cuda")
-    kernel = matmul_desc_kernel[(1,)](
-        a, b, c, M, N, K, *c.stride(),
-        BLOCK_SIZE_M=64, BLOCK_SIZE_N=64, BLOCK_SIZE_K=64, GROUP_SIZE_M=8,
-        num_warps=4, num_stages=num_stages,
+    kernel = matmul_desc_kernel[(1, )](
+        a,
+        b,
+        c,
+        M,
+        N,
+        K,
+        *c.stride(),
+        BLOCK_SIZE_M=64,
+        BLOCK_SIZE_N=64,
+        BLOCK_SIZE_K=64,
+        GROUP_SIZE_M=8,
+        num_warps=4,
+        num_stages=num_stages,
     )
     assert kernel.asm["ttir"].count("tt.aiu_load") == 2
     assert "cp.async.aiu" in kernel.asm["llir"]

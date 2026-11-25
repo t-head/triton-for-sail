@@ -20,8 +20,8 @@ struct SharedPhysicalLayout {
     return stage * physicalStageElems;
   }
 
-  static llvm::Expected<SharedPhysicalLayout>
-  fromPlan(const PPUAIUPlan &plan, MLIRContext &context);
+  static llvm::Expected<SharedPhysicalLayout> fromPlan(const PPUAIUPlan &plan,
+                                                       MLIRContext &context);
 };
 
 } // namespace mlir::triton::gpu

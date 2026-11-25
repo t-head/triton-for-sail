@@ -16,8 +16,8 @@ PPUAIUPlan validPlan(unsigned warps, uint64_t x, uint64_t channel,
   SmallVector<int64_t> shape{static_cast<int64_t>(x),
                              static_cast<int64_t>(channel)};
   SmallVector<unsigned> order{1, 0};
-  auto plan = PPUAIUPlan::fromLegacy(warps, x, channel, bits, shape, order,
-                                     strategy);
+  auto plan =
+      PPUAIUPlan::fromLegacy(warps, x, channel, bits, shape, order, strategy);
   if (!plan)
     llvm::report_fatal_error(llvm::Twine(llvm::toString(plan.takeError())));
   return *plan;
@@ -28,8 +28,8 @@ PPUAIUPlan defaultPlan(unsigned warps, uint64_t x, uint64_t channel,
   SmallVector<int64_t> shape{static_cast<int64_t>(x),
                              static_cast<int64_t>(channel)};
   SmallVector<unsigned> order{1, 0};
-  auto plan = PPUAIUPlan::createLegacyDefault(warps, x, channel, bits, shape,
-                                              order);
+  auto plan =
+      PPUAIUPlan::createLegacyDefault(warps, x, channel, bits, shape, order);
   if (!plan)
     llvm::report_fatal_error(llvm::Twine(llvm::toString(plan.takeError())));
   return *plan;
@@ -68,7 +68,8 @@ MemDescType aiuMemDesc(const PPUAIUPlan &plan, MLIRContext &context,
   auto cga = CGAEncodingAttr::get1CTALayout(&context, order.size());
   auto encoding = PPUAIUSharedEncodingAttr::get(
       &context, 2, plan.toLegacyStrategy(), order, cga);
-  auto elementType = mlir::IntegerType::get(&context, plan.getElementBitWidth());
+  auto elementType =
+      mlir::IntegerType::get(&context, plan.getElementBitWidth());
   return MemDescType::get(shape, elementType, encoding,
                           SharedMemorySpaceAttr::get(&context),
                           /*mutableMemory=*/true, shape);
@@ -89,8 +90,8 @@ unsigned outVec(const PPUAIUPlan &plan) {
   return 128 / plan.getElementBitWidth();
 }
 
-uint64_t withinCubeOffset(const PPUAIUPlan &plan, uint64_t row,
-                          uint64_t col, bool swizzle) {
+uint64_t withinCubeOffset(const PPUAIUPlan &plan, uint64_t row, uint64_t col,
+                          bool swizzle) {
   unsigned perPhase = plan.getSwizzledBytes() == 64 ? 2 : 1;
   unsigned maxPhase = plan.getSwizzledBytes() == 64 ? 4 : 8;
   uint64_t phase = (row / perPhase) % maxPhase;
@@ -100,8 +101,7 @@ uint64_t withinCubeOffset(const PPUAIUPlan &plan, uint64_t row,
          swizzledChunk * outVec(plan) + col % outVec(plan);
 }
 
-uint64_t distributedOffset(const PPUAIUPlan &plan, uint64_t row,
-                           uint64_t col) {
+uint64_t distributedOffset(const PPUAIUPlan &plan, uint64_t row, uint64_t col) {
   uint64_t rowCube = row / plan.getCubeW();
   uint64_t colCube = col / plan.getCubeC();
   uint64_t warpC = colCube % plan.getWarpCopyC();
@@ -147,8 +147,7 @@ uint64_t bulkReaderBase(const PPUAIUPlan &plan, uint64_t row, uint64_t col) {
          warpW * plan.getBulkCubeElems() * plan.getWarpCopyC() *
              plan.getStorageFactor() +
          warpC * plan.getBulkCubeElems() * plan.getStorageFactor() +
-         (row % plan.getCubeW()) * plan.getCubeC() *
-             plan.getStorageFactor() +
+         (row % plan.getCubeW()) * plan.getCubeC() * plan.getStorageFactor() +
          col % plan.getCubeC();
 }
 
@@ -169,7 +168,8 @@ void proveLinearLayout(const PPUAIUPlan &plan) {
   EXPECT_EQ(physical->alignmentBytes, 128);
   for (uint64_t row = 0; row < plan.getXElems(); ++row) {
     for (uint64_t col = 0; col < plan.getChannelElems(); ++col) {
-      auto result = physical->logicalToPhysical.apply({{dim0, row}, {dim1, col}});
+      auto result =
+          physical->logicalToPhysical.apply({{dim0, row}, {dim1, col}});
       ASSERT_EQ(result.size(), 1);
       EXPECT_EQ(result[0].second, distributedOffset(plan, row, col));
       auto bulk = physical->logicalToBulkBase.apply({{dim0, row}, {dim1, col}});
@@ -193,8 +193,8 @@ void provePlan(const PPUAIUPlan &plan) {
       if (warpW >= plan.getWarpCopyW())
         continue;
       uint64_t startW = warpW * plan.getCubeW();
-      uint64_t startC = copy * plan.getWriterChannelAdvance() +
-                        warpC * plan.getCubeC();
+      uint64_t startC =
+          copy * plan.getWriterChannelAdvance() + warpC * plan.getCubeC();
       if (startC >= plan.getChannelElems())
         continue;
       for (uint64_t r = 0; r < plan.getCubeW(); ++r) {
@@ -267,12 +267,16 @@ TEST(PPUAIUPlan, EnumeratesAllProvenCandidates) {
   EXPECT_EQ(factorOne.size(), 11);
   EXPECT_EQ(factorOne.front().toLegacyStrategy(),
             defaultPlan(4, 64, 128, 16).toLegacyStrategy());
-  EXPECT_EQ(llvm::count_if(factorOne, [](const PPUAIUPlan &plan) {
-              return plan.getSwizzledBytes() == 64;
-            }), 6);
-  EXPECT_EQ(llvm::count_if(factorOne, [](const PPUAIUPlan &plan) {
-              return plan.getSwizzledBytes() == 128;
-            }), 5);
+  EXPECT_EQ(llvm::count_if(factorOne,
+                           [](const PPUAIUPlan &plan) {
+                             return plan.getSwizzledBytes() == 64;
+                           }),
+            6);
+  EXPECT_EQ(llvm::count_if(factorOne,
+                           [](const PPUAIUPlan &plan) {
+                             return plan.getSwizzledBytes() == 128;
+                           }),
+            5);
   for (const auto &plan : factorOne)
     provePlan(plan);
 
@@ -295,8 +299,8 @@ TEST(PPUAIUPlan, RejectsUnprovenGeometry) {
   SmallVector<unsigned> badRows{16, 15, 1, 1, 64};
   expectInvalid(PPUAIUPlan::fromLegacy(1, 16, 16, 16, shape, order, badRows));
   SmallVector<int64_t> nonDivisibleShape{33, 64};
-  expectInvalid(PPUAIUPlan::createLegacyDefault(2, 33, 64, 16,
-                                                nonDivisibleShape, order));
+  expectInvalid(
+      PPUAIUPlan::createLegacyDefault(2, 33, 64, 16, nonDivisibleShape, order));
   SmallVector<int64_t> partialChannelShape{32, 80};
   expectInvalid(PPUAIUPlan::createLegacyDefault(2, 32, 80, 16,
                                                 partialChannelShape, order));
@@ -334,8 +338,8 @@ TEST(PPUAIUPlan, CanonicalSharedEncodingMatchesPhysicalLayout) {
   EXPECT_EQ(reconstructed->toLegacyStrategy(), plan.toLegacyStrategy());
 
   auto warpVariant = validPlan(4, 64, 64, 16, {64, 64, 1, 1, 128});
-  auto variantEncoding =
-      warpVariant.toCanonicalSwizzledSharedEncoding(aiuMemDesc(warpVariant, context));
+  auto variantEncoding = warpVariant.toCanonicalSwizzledSharedEncoding(
+      aiuMemDesc(warpVariant, context));
   ASSERT_TRUE(!!variantEncoding);
   EXPECT_EQ(*variantEncoding, *encoding);
   auto variantReconstructed = PPUAIUPlan::fromCanonicalSwizzled(
@@ -352,8 +356,8 @@ TEST(PPUAIUPlan, CanonicalSharedEncodingSupportsTypesOrdersAndStages) {
   for (auto bits : {8, 16, 32}) {
     uint64_t channel = bits == 32 ? 16 : 64;
     auto plan = defaultPlan(4, 64, channel, bits);
-    auto encoding = plan.toCanonicalSwizzledSharedEncoding(
-        aiuMemDesc(plan, context));
+    auto encoding =
+        plan.toCanonicalSwizzledSharedEncoding(aiuMemDesc(plan, context));
     ASSERT_TRUE(!!encoding);
     EXPECT_EQ(encoding->getVec(), 128 / bits);
     EXPECT_EQ(encoding->getPerPhase(), plan.getSwizzledBytes() == 64 ? 2 : 1);
@@ -362,7 +366,8 @@ TEST(PPUAIUPlan, CanonicalSharedEncodingSupportsTypesOrdersAndStages) {
 
   SmallVector<int64_t> shape{64, 64};
   SmallVector<unsigned> order{0, 1};
-  auto transposed = PPUAIUPlan::createLegacyDefault(4, 64, 64, 16, shape, order);
+  auto transposed =
+      PPUAIUPlan::createLegacyDefault(4, 64, 64, 16, shape, order);
   ASSERT_TRUE(!!transposed);
   auto transposedEncoding = transposed->toCanonicalSwizzledSharedEncoding(
       aiuMemDesc(*transposed, context));
@@ -386,8 +391,8 @@ TEST(PPUAIUPlan, RejectsNonCanonicalSharedEncoding) {
   MLIRContext context;
   context.loadDialect<TritonGPUDialect>();
   auto factorTwo = defaultPlan(1, 16, 16, 16);
-  expectInvalidEncoding(
-      factorTwo.toCanonicalSwizzledSharedEncoding(aiuMemDesc(factorTwo, context)));
+  expectInvalidEncoding(factorTwo.toCanonicalSwizzledSharedEncoding(
+      aiuMemDesc(factorTwo, context)));
 
   auto channelCopies = defaultPlan(2, 64, 128, 16);
   expectInvalidEncoding(channelCopies.toCanonicalSwizzledSharedEncoding(

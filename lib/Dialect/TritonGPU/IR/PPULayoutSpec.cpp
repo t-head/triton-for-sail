@@ -7,18 +7,18 @@ namespace mlir::triton::gpu {
 namespace {
 
 llvm::Error invalidLayout(llvm::Twine message) {
-  return llvm::createStringError(std::make_error_code(std::errc::invalid_argument),
-                                 message);
+  return llvm::createStringError(
+      std::make_error_code(std::errc::invalid_argument), message);
 }
 
-llvm::Error validateGeometry(unsigned elementBitWidth, ArrayRef<int64_t> rootShape,
+llvm::Error validateGeometry(unsigned elementBitWidth,
+                             ArrayRef<int64_t> rootShape,
                              ArrayRef<unsigned> order) {
   if (elementBitWidth != 8 && elementBitWidth != 16 && elementBitWidth != 32)
     return invalidLayout("PPU layout supports only 8/16/32-bit elements");
   if (rootShape.size() != 2 || order.size() != 2)
     return invalidLayout("PPU layout requires rank-2 root geometry");
-  if (!((order[0] == 1 && order[1] == 0) ||
-        (order[0] == 0 && order[1] == 1)))
+  if (!((order[0] == 1 && order[1] == 0) || (order[0] == 0 && order[1] == 1)))
     return invalidLayout("unsupported PPU layout order");
   for (int64_t dim : rootShape) {
     if (dim <= 0 || !llvm::isPowerOf2_64(dim))
@@ -46,25 +46,30 @@ llvm::Expected<PPULayoutSpec> PPULayoutSpec::createPhysical(
     unsigned alignmentBytes, triton::LinearLayout logicalToPhysical) {
   if (auto error = validateGeometry(elementBitWidth, rootShape, order))
     return std::move(error);
-  if (!physicalStageElems || physicalStageElems > std::numeric_limits<int32_t>::max())
+  if (!physicalStageElems ||
+      physicalStageElems > std::numeric_limits<int32_t>::max())
     return invalidLayout("PPU layout physical stage exceeds int32 range");
   if (!alignmentBytes || !llvm::isPowerOf2_32(alignmentBytes))
     return invalidLayout("PPU layout alignment must be a nonzero power of two");
 
   auto inDimNames = logicalToPhysical.getInDimNames();
   if (inDimNames.empty())
-    return invalidLayout("PPU layout requires dim0/dim1 inputs and offset output");
+    return invalidLayout(
+        "PPU layout requires dim0/dim1 inputs and offset output");
   MLIRContext *context = (*inDimNames.begin()).getContext();
   auto dim0 = StringAttr::get(context, "dim0");
   auto dim1 = StringAttr::get(context, "dim1");
   auto offset = StringAttr::get(context, "offset");
   if (!logicalToPhysical.hasInDim(dim0) || !logicalToPhysical.hasInDim(dim1) ||
-      !logicalToPhysical.hasOutDim(offset) || logicalToPhysical.getOutDims().size() != 1)
-    return invalidLayout("PPU layout requires dim0/dim1 inputs and offset output");
+      !logicalToPhysical.hasOutDim(offset) ||
+      logicalToPhysical.getOutDims().size() != 1)
+    return invalidLayout(
+        "PPU layout requires dim0/dim1 inputs and offset output");
   auto normalized = logicalToPhysical.transposeIns({dim0, dim1});
   if (normalized.getInDimSize(dim0) != rootShape[0] ||
       normalized.getInDimSize(dim1) != rootShape[1] ||
-      static_cast<uint64_t>(normalized.getOutDimSize(offset)) != physicalStageElems)
+      static_cast<uint64_t>(normalized.getOutDimSize(offset)) !=
+          physicalStageElems)
     return invalidLayout("PPU layout dimensions do not match root geometry");
   if (!normalized.isInjective())
     return invalidLayout("PPU layout physical mapping must be collision-free");
@@ -72,10 +77,11 @@ llvm::Expected<PPULayoutSpec> PPULayoutSpec::createPhysical(
                        alignmentBytes, std::move(normalized));
 }
 
-llvm::Expected<PPULayoutSpec> PPULayoutSpec::createCanonical(
-    MLIRContext &context, unsigned elementBitWidth,
-    ArrayRef<int64_t> rootShape, ArrayRef<unsigned> order, unsigned vec,
-    unsigned perPhase, unsigned maxPhase) {
+llvm::Expected<PPULayoutSpec>
+PPULayoutSpec::createCanonical(MLIRContext &context, unsigned elementBitWidth,
+                               ArrayRef<int64_t> rootShape,
+                               ArrayRef<unsigned> order, unsigned vec,
+                               unsigned perPhase, unsigned maxPhase) {
   if (auto error = validateGeometry(elementBitWidth, rootShape, order))
     return std::move(error);
   if (!vec || !perPhase || !maxPhase || !llvm::isPowerOf2_32(vec) ||
@@ -92,11 +98,13 @@ llvm::Expected<PPULayoutSpec> PPULayoutSpec::createCanonical(
   auto dim0 = StringAttr::get(&context, "dim0");
   auto dim1 = StringAttr::get(&context, "dim1");
   auto physical = standard.invert().transposeIns({dim0, dim1});
-  auto result = createPhysical(elementBitWidth, rootShape, order,
-                               mlir::product(rootShape), 128, std::move(physical));
+  auto result =
+      createPhysical(elementBitWidth, rootShape, order,
+                     mlir::product(rootShape), 128, std::move(physical));
   if (!result)
     return result.takeError();
-  result->canonicalParameters = CanonicalLayoutParameters{vec, perPhase, maxPhase};
+  result->canonicalParameters =
+      CanonicalLayoutParameters{vec, perPhase, maxPhase};
   return result;
 }
 
@@ -125,7 +133,8 @@ PPULayoutSpec::enumerateCanonicalCandidates(
                                       constraints.rootShape, order))
       return std::move(error);
   }
-  if (!constraints.maxVectorBits || !llvm::isPowerOf2_32(constraints.maxVectorBits) ||
+  if (!constraints.maxVectorBits ||
+      !llvm::isPowerOf2_32(constraints.maxVectorBits) ||
       !constraints.maxPhase || !llvm::isPowerOf2_32(constraints.maxPhase))
     return invalidLayout("PPU layout reader limits must be powers of two");
 
@@ -133,25 +142,28 @@ PPULayoutSpec::enumerateCanonicalCandidates(
   for (const auto &order : constraints.allowedOrders) {
     uint64_t contiguousElems = constraints.rootShape[order[0]];
     uint64_t rows = constraints.rootShape[order[1]];
-    unsigned maxVec = std::min<uint64_t>(
-        constraints.maxVectorBits / constraints.elementBitWidth, contiguousElems);
+    unsigned maxVec = std::min<uint64_t>(constraints.maxVectorBits /
+                                             constraints.elementBitWidth,
+                                         contiguousElems);
     unsigned maxPhase = std::min<uint64_t>(constraints.maxPhase, rows);
     for (unsigned vec = 1; vec <= maxVec; vec <<= 1) {
       for (unsigned perPhase = 1; perPhase <= rows; perPhase <<= 1) {
         for (unsigned phases = 1; phases <= maxPhase; phases <<= 1) {
           if (static_cast<uint64_t>(perPhase) * phases > rows)
             continue;
-          auto candidate = createCanonical(
-              context, constraints.elementBitWidth, constraints.rootShape,
-              order, vec, perPhase, phases);
+          auto candidate = createCanonical(context, constraints.elementBitWidth,
+                                           constraints.rootShape, order, vec,
+                                           perPhase, phases);
           if (!candidate) {
             llvm::consumeError(candidate.takeError());
             continue;
           }
-          bool duplicate = llvm::any_of(result, [&](const PPULayoutSpec &existing) {
-            return existing.getOrder() == candidate->getOrder() &&
-                   existing.getLogicalToPhysical() == candidate->getLogicalToPhysical();
-          });
+          bool duplicate =
+              llvm::any_of(result, [&](const PPULayoutSpec &existing) {
+                return existing.getOrder() == candidate->getOrder() &&
+                       existing.getLogicalToPhysical() ==
+                           candidate->getLogicalToPhysical();
+              });
           if (!duplicate)
             result.push_back(std::move(*candidate));
         }
@@ -181,7 +193,8 @@ PPULayoutSpec::toCanonicalEncoding(MLIRContext &context,
   }
   if (!cgaLayout)
     cgaLayout = CGAEncodingAttr::get1CTALayout(&context, fullOrder.size());
-  if (cgaLayout != CGAEncodingAttr::get1CTALayout(&context, cgaLayout.getRank()))
+  if (cgaLayout !=
+      CGAEncodingAttr::get1CTALayout(&context, cgaLayout.getRank()))
     return invalidLayout("canonical PPU layout currently requires one CTA");
   return SwizzledSharedEncodingAttr::get(
       &context, canonicalParameters->vec, canonicalParameters->perPhase,

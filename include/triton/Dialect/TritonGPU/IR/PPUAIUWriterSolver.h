@@ -15,8 +15,8 @@ struct PPUAIUWriterSolution {
 
 class PPUAIUWriterSolver {
 public:
-  static llvm::Expected<PPUAIUWriterSolution>
-  solve(const PPULayoutSpec &layout, unsigned numWarps);
+  static llvm::Expected<PPUAIUWriterSolution> solve(const PPULayoutSpec &layout,
+                                                    unsigned numWarps);
 };
 
 } // namespace mlir::triton::gpu
