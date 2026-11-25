@@ -49,10 +49,7 @@ def ConvertTritonGPUToLLVMPPU : Pass<"convert-triton-gpu-to-llvm-ppu", "mlir::Mo
                "device compute capability">,
         Option<"enableTixLdMatrixSwzl", "enable-tix-ldmatrix-swzl",
                "bool", /*default*/"false",
-               "enable TIX ldmatrix swizzled shared memory lowering">,
-        Option<"enableAIULdMatrixOrdinary", "enable-aiu-ldmatrix-ordinary",
-               "bool", /*default*/"false",
-               "enable ordinary ldmatrix lowering for AIU shared memory">,
+               "enable TIX ldmatrix swizzled shared memory lowering">
     ];
 }
 

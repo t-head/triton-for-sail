@@ -62,6 +62,110 @@ buildLayout(const PPUAIUPlan &plan, MLIRContext &context, bool bulkBase) {
   return *layout;
 }
 
+llvm::Expected<triton::LinearLayout>
+invertPhysicalLayout(const triton::LinearLayout &layout,
+                     StringAttr expandedDim = nullptr) {
+  auto inDims = llvm::to_vector(layout.getInDimNames());
+  llvm::sort(inDims, [](StringAttr a, StringAttr b) {
+    return a.str() < b.str();
+  });
+  auto outDims = llvm::to_vector(layout.getOutDimNames());
+  unsigned rows = layout.getTotalOutDimSizeLog2();
+  unsigned cols = layout.getTotalInDimSizeLog2();
+  if (rows > 64 || cols > 64)
+    return invalidLayout("physical layout inversion supports at most 64 bits");
+
+  std::vector<uint64_t> matrix(rows, 0);
+  std::vector<uint64_t> transform(rows, 0);
+  unsigned row = 0;
+  for (StringAttr outDim : outDims) {
+    for (int bit = 0; bit < layout.getOutDimSizeLog2(outDim); ++bit, ++row) {
+      transform[row] = uint64_t{1} << row;
+      unsigned col = 0;
+      for (StringAttr inDim : inDims) {
+        for (int inBit = 0; inBit < layout.getInDimSizeLog2(inDim);
+             ++inBit, ++col) {
+          if ((layout.getBasis(inDim, inBit, outDim) >> bit) & 1)
+            matrix[row] |= uint64_t{1} << col;
+        }
+      }
+    }
+  }
+
+  unsigned rank = 0;
+  SmallVector<int> pivotColumns(rows, -1);
+  for (unsigned col = 0; col < cols; ++col) {
+    unsigned pivot = rank;
+    while (pivot < rows && !((matrix[pivot] >> col) & 1))
+      ++pivot;
+    if (pivot == rows)
+      continue;
+    std::swap(matrix[rank], matrix[pivot]);
+    std::swap(transform[rank], transform[pivot]);
+    for (unsigned other = 0; other < rows; ++other) {
+      if (other != rank && ((matrix[other] >> col) & 1)) {
+        matrix[other] ^= matrix[rank];
+        transform[other] ^= transform[rank];
+      }
+    }
+    pivotColumns[rank] = col;
+    ++rank;
+  }
+
+  if (rank != cols)
+    return invalidLayout("physical layout is not injective");
+
+  uint64_t paddingParity = 0;
+  unsigned expandedDimIndex = 0;
+  if (expandedDim) {
+    if (rows != rank + 1 || matrix[rank] != 0)
+      return invalidLayout("physical padding has no unique parity row");
+    paddingParity = transform[rank];
+    auto dim = llvm::find(inDims, expandedDim);
+    if (dim == inDims.end())
+      return invalidLayout("expanded physical dimension is missing");
+    expandedDimIndex = dim - inDims.begin();
+  }
+
+  triton::LinearLayout::BasesT bases;
+  unsigned outputBit = 0;
+  for (StringAttr outDim : outDims) {
+    auto &basis = bases[outDim];
+    for (int bit = 0; bit < layout.getOutDimSizeLog2(outDim);
+         ++bit, ++outputBit) {
+      std::vector<int32_t> values(inDims.size(), 0);
+      for (unsigned pivotRow = 0; pivotRow < rank; ++pivotRow) {
+        if (!((transform[pivotRow] >> outputBit) & 1))
+          continue;
+        unsigned col = pivotColumns[pivotRow];
+        unsigned dim = 0;
+        unsigned inBit = col;
+        while (inBit >= static_cast<unsigned>(
+                            layout.getInDimSizeLog2(inDims[dim]))) {
+          inBit -= layout.getInDimSizeLog2(inDims[dim]);
+          ++dim;
+        }
+        values[dim] |= 1 << inBit;
+      }
+      if (expandedDim && ((paddingParity >> outputBit) & 1))
+        values[expandedDimIndex] |= layout.getInDimSize(expandedDim);
+      basis.push_back(std::move(values));
+    }
+  }
+  SmallVector<std::pair<StringAttr, int32_t>> logicalDims;
+  for (StringAttr inDim : inDims) {
+    int32_t size = layout.getInDimSize(inDim);
+    if (inDim == expandedDim)
+      size *= 2;
+    logicalDims.push_back({inDim, size});
+  }
+  auto inverted = triton::LinearLayout::tryCreate(
+      bases, logicalDims, /*requireSurjective=*/false);
+  if (!inverted)
+    return invalidLayout("failed to construct inverted physical layout");
+  return *inverted;
+}
+
 } // namespace
 
 llvm::Expected<SharedPhysicalLayout>
@@ -156,6 +260,70 @@ PPUAIUPlan::toCanonicalSwizzledSharedEncoding(MemDescType memDescTy) const {
       mlir::product(allocShape) % getPhysicalStageElems() != 0)
     return invalidLayout("AIU canonical shared encoding allocation mismatch");
   return encoding;
+}
+
+llvm::Expected<Attribute>
+PPUAIUPlan::toSharedEncoding(MemDescType memDescTy) const {
+  auto canonical = toCanonicalSwizzledSharedEncoding(memDescTy);
+  if (canonical)
+    return Attribute(*canonical);
+  llvm::consumeError(canonical.takeError());
+
+  MLIRContext &context = *memDescTy.getContext();
+  auto physical = toSharedPhysicalLayout(context);
+  if (!physical)
+    return physical.takeError();
+  StringAttr expandedDim;
+  if (getStorageFactor() == 2)
+    expandedDim = StringAttr::get(&context, getOrder()[1] == 0 ? "dim1" : "dim0");
+  auto logical = invertPhysicalLayout(physical->logicalToPhysical, expandedDim);
+  if (!logical)
+    return logical.takeError();
+  auto block = StringAttr::get(&context, "block");
+  auto bases = logical->getBases();
+  bases[block] = {};
+  auto shared = triton::LinearLayout::tryCreate(
+      bases, logical->getOutDims(), /*requireSurjective=*/false);
+  if (!shared)
+    return invalidLayout("failed to construct shared linear layout");
+  return Attribute(SharedLinearEncodingAttr::get(&context, *shared,
+                                                 physical->alignmentBytes));
+}
+
+llvm::Expected<PPUAIUPlan>
+PPUAIUPlan::fromSharedEncoding(MemDescType memDescTy, unsigned numWarps,
+                               ArrayRef<unsigned> strategy) {
+  if (!isa<SwizzledSharedEncodingAttr, SharedLinearEncodingAttr>(
+          memDescTy.getEncoding()))
+    return invalidLayout("AIU writer requires a supported shared encoding");
+  auto shape = getShapePerCTA(memDescTy);
+  auto order = mlir::triton::gpu::getOrder(memDescTy);
+  if (shape.size() < 2 || order.size() < 2)
+    return invalidLayout("AIU writer requires rank-2 root geometry");
+  auto rootShape = ArrayRef<int64_t>(shape).take_back(2);
+  SmallVector<unsigned> rootOrder;
+  if (order.size() == 2) {
+    rootOrder.assign(order.begin(), order.end());
+  } else if (order.size() == 3 && order[2] == 0 && order[0] > 0 &&
+             order[1] > 0) {
+    rootOrder = {order[0] - 1, order[1] - 1};
+  } else {
+    return invalidLayout("unsupported shared pipelined memory order");
+  }
+  uint64_t tileW = rootShape[0];
+  uint64_t tileC = rootShape[1];
+  if (rootOrder[1] != 0)
+    std::swap(tileW, tileC);
+  auto plan = create(numWarps, tileW, tileC, memDescTy.getElementTypeBitWidth(),
+                     rootShape, rootOrder, strategy);
+  if (!plan)
+    return plan.takeError();
+  auto expected = plan->toSharedEncoding(memDescTy);
+  if (!expected)
+    return expected.takeError();
+  if (*expected != memDescTy.getEncoding())
+    return invalidLayout("AIU writer strategy does not match shared encoding");
+  return plan;
 }
 
 llvm::Expected<PPUAIUPlan>

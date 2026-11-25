@@ -726,7 +726,8 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
     llvm::Expected<ttg::PPUAIUPlan> plan = [&]() -> llvm::Expected<ttg::PPUAIUPlan> {
       if (isa<ttg::PPUAIUSharedEncodingAttr>(tensorType.getEncoding()))
         return ttg::PPUAIUPlan::fromLegacy(tensorType, numWarps);
-      if (!isa<ttg::SwizzledSharedEncodingAttr>(tensorType.getEncoding()))
+      if (!isa<ttg::SwizzledSharedEncodingAttr, ttg::SharedLinearEncodingAttr>(
+              tensorType.getEncoding()))
         return llvm::createStringError(std::make_error_code(std::errc::invalid_argument),
                                        "unsupported AIU destination encoding");
       auto strategyAttr = op->getAttrOfType<ArrayAttr>(
@@ -738,8 +739,8 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
       SmallVector<unsigned> strategy;
       for (Attribute value : strategyAttr.getValue())
         strategy.push_back(cast<IntegerAttr>(value).getValue().getZExtValue());
-      return ttg::PPUAIUPlan::fromCanonicalSwizzled(tensorType, numWarps,
-                                                    strategy);
+      return ttg::PPUAIUPlan::fromSharedEncoding(tensorType, numWarps,
+                                                 strategy);
     }();
     if (!plan)
       return op.emitError() << "invalid AIU plan: "
@@ -899,7 +900,8 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
       } else {
         assert(false && "Unsuppored AIU Load");
       }
-    } else if (isa<ttg::SwizzledSharedEncodingAttr>(tensorType.getEncoding())) {
+    } else if (isa<ttg::SwizzledSharedEncodingAttr,
+                   ttg::SharedLinearEncodingAttr>(tensorType.getEncoding())) {
       if (getPPUComputeCapability(op->getParentOfType<ModuleOp>()) == 89)
         return PPUAIUV2Conversion(op, adaptor, rewriter);
       return op.emitError() << "standard AIU shared encoding requires PPU0015";

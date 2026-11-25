@@ -127,7 +127,8 @@ static void MarkChainedDot(ModuleOp mod) {
         if (!isa<mlir::triton::gpu::LocalLoadOp>(BOp))
           continue;
         auto cvtBOp = cast<mlir::triton::gpu::LocalLoadOp>(BOp);
-        if (cvtBOp->hasAttr(LLVM::PPU::kAIUSourceAttr))
+        if (cvtBOp->hasAttr(LLVM::PPU::kAIUSourceAttr) ||
+            cvtBOp->hasAttr(LLVM::PPU::kDisableChainedDotAttr))
           continue;
         Value src = cvtBOp.getSrc();
         auto descTy = cast<mlir::triton::gpu::MemDescType>(src.getType());
@@ -197,11 +198,9 @@ struct ConvertTritonGPUToLLVMPPU
   using ConvertTritonGPUToLLVMPPUBase::ConvertTritonGPUToLLVMPPUBase;
 
   ConvertTritonGPUToLLVMPPU(int32_t computeCapability,
-                            bool enableTixLdMatrixSwzl,
-                            bool enableAIULdMatrixOrdinary)
+                            bool enableTixLdMatrixSwzl)
       : ConvertTritonGPUToLLVMPPUBase(
-            {computeCapability, enableTixLdMatrixSwzl,
-             enableAIULdMatrixOrdinary}) {}
+            {computeCapability, enableTixLdMatrixSwzl}) {}
 
   void runOnOperation() override {
     MLIRContext *context = &getContext();
@@ -289,7 +288,7 @@ struct ConvertTritonGPUToLLVMPPU
                                                 targetInfo, benefit);
     mlir::triton::ppu::populateMemoryOpToLLVMPatterns(
         typeConverter, targetInfo, patterns, axisInfoAnalysis, benefit,
-        enableTixLdMatrixSwzl, enableAIULdMatrixOrdinary);
+        enableTixLdMatrixSwzl);
     mlir::triton::populateMakeRangeOpToLLVMPattern(typeConverter, targetInfo,
                                                    patterns, benefit);
     mlir::triton::ppu::populateFp4ToFpToLLVMPatterns(typeConverter, patterns,
@@ -340,7 +339,7 @@ private:
     //
     bool needsTixAlignment = false;
     mod.walk([&](triton::gpu::LocalAllocOp op) {
-      if (enableAIULdMatrixOrdinary && op.getAlignmentOrDefault() >= 128)
+      if (op.getAlignmentOrDefault() >= 128)
         needsTixAlignment = true;
       if (!enableTixLdMatrixSwzl)
         return;
@@ -370,10 +369,9 @@ std::unique_ptr<OperationPass<ModuleOp>> createConvertTritonGPUToLLVMPPUPass() {
 }
 std::unique_ptr<OperationPass<ModuleOp>>
 createConvertTritonGPUToLLVMPPUPass(int32_t computeCapability,
-                                    bool enableTixLdMatrixSwzl,
-                                    bool enableAIULdMatrixOrdinary) {
-  return std::make_unique<ConvertTritonGPUToLLVMPPU>(
-      computeCapability, enableTixLdMatrixSwzl, enableAIULdMatrixOrdinary);
+                                    bool enableTixLdMatrixSwzl) {
+  return std::make_unique<ConvertTritonGPUToLLVMPPU>(computeCapability,
+                                                      enableTixLdMatrixSwzl);
 }
 
 } // namespace triton

@@ -119,20 +119,27 @@ private:
 };
 
 std::optional<MemDescType>
-canonicalSharedType(MemDescType type, unsigned numWarps) {
+sharedType(MemDescType type, unsigned numWarps) {
   auto plan = PPUAIUPlan::fromLegacy(type, numWarps);
   if (!plan) {
     llvm::consumeError(plan.takeError());
     return std::nullopt;
   }
-  auto encoding = plan->toCanonicalSwizzledSharedEncoding(type);
+  auto encoding = plan->toSharedEncoding(type);
   if (!encoding) {
     llvm::consumeError(encoding.takeError());
     return std::nullopt;
   }
+  SmallVector<int64_t> allocShape(type.getAllocShape());
+  if (auto linear = dyn_cast<SharedLinearEncodingAttr>(*encoding)) {
+    auto rootShape = linear.getLinearLayout().getOutDimSizes();
+    auto rank = linear.getLinearLayout().getNumOutDims();
+    for (auto [index, size] : llvm::enumerate(rootShape))
+      allocShape[allocShape.size() - rank + index] = size;
+  }
   return MemDescType::get(type.getShape(), type.getElementType(), *encoding,
                           type.getMemorySpace(), type.getMutableMemory(),
-                          type.getAllocShape());
+                          allocShape);
 }
 
 void collectSharedTypes(Type type, unsigned numWarps,
@@ -141,7 +148,7 @@ void collectSharedTypes(Type type, unsigned numWarps,
   if (!memDescTy || conversions.contains(memDescTy) ||
       !isa<PPUAIUSharedEncodingAttr>(memDescTy.getEncoding()))
     return;
-  if (auto converted = canonicalSharedType(memDescTy, numWarps))
+  if (auto converted = sharedType(memDescTy, numWarps))
     conversions.insert({memDescTy, *converted});
 }
 
@@ -264,7 +271,7 @@ public:
     module.walk([&](LocalLoadOp op) {
       auto sourceType = dyn_cast<MemDescType>(op.getSrc().getType());
       if (sourceType && conversions.contains(sourceType))
-        op->setAttr(LLVM::PPU::kAIUSourceAttr, UnitAttr::get(context));
+        op->setAttr(LLVM::PPU::kDisableChainedDotAttr, UnitAttr::get(context));
     });
     module.walk([&](LocalAllocOp op) {
       auto oldType = dyn_cast<MemDescType>(op.getType());
@@ -278,8 +285,36 @@ public:
     module.walk([&](Operation *op) {
       for (Value result : op->getResults()) {
         auto type = dyn_cast<MemDescType>(result.getType());
-        if (type && conversions.contains(type))
-          result.setType(conversions.lookup(type));
+        if (!type || !conversions.contains(type))
+          continue;
+        auto converted = conversions.lookup(type);
+        auto alloc = dyn_cast<LocalAllocOp>(op);
+        auto index = dyn_cast<MemDescIndexOp>(op);
+        if ((!alloc && !index) ||
+            converted.getShape() == converted.getAllocShape()) {
+          result.setType(converted);
+          continue;
+        }
+        if (alloc && alloc.getSrc()) {
+          op->emitError() << "expanded AIU local_alloc cannot have a source";
+          failed = true;
+          continue;
+        }
+        auto allocationType = MemDescType::get(
+            converted.getAllocShape(), converted.getElementType(),
+            converted.getEncoding(), converted.getMemorySpace(),
+            converted.getMutableMemory(), converted.getAllocShape());
+        result.setType(allocationType);
+        if (alloc && dropPipeliningDim(converted.getShape(),
+                                       converted.getEncoding())
+                             .size() != converted.getRank())
+          continue;
+        OpBuilder builder(op->getContext());
+        builder.setInsertionPointAfter(op);
+        SmallVector<int32_t> offsets(converted.getRank(), 0);
+        auto view = MemDescSubsliceOp::create(builder, op->getLoc(), converted,
+                                              result, offsets);
+        result.replaceAllUsesExcept(view.getResult(), view.getOperation());
       }
       for (Region &region : op->getRegions())
         for (Block &block : region)

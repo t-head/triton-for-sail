@@ -33,6 +33,8 @@ namespace LLVM {
 namespace PPU {
 inline constexpr llvm::StringLiteral kAIUWriterStrategyAttr = "ppu.aiu_strategy";
 inline constexpr llvm::StringLiteral kAIUSourceAttr = "ppu.aiu_source";
+inline constexpr llvm::StringLiteral kDisableChainedDotAttr =
+    "ppu.disable_chained_dot";
 
 SmallVector<Value> getStrides(const SharedMemoryObject &smemObj,
                               triton::gpu::MemDescType memDesc, Location loc,

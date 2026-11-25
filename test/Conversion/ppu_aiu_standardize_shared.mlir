@@ -1,12 +1,7 @@
 // RUN: triton-opt %s -split-input-file --tritonppu-standardize-aiu-shared | FileCheck %s
-// RUN: triton-opt %s -split-input-file --tritonppu-standardize-aiu-shared --allocate-shared-memory-ppu='compute-capability=89 enable-tix-ldmatrix-swzl=false' --convert-triton-gpu-to-llvm-ppu='compute-capability=89 enable-tix-ldmatrix-swzl=false enable-aiu-ldmatrix-ordinary=true' | FileCheck %s --check-prefix=ORDINARY
-// RUN: triton-opt %s -split-input-file --tritonppu-standardize-aiu-shared --allocate-shared-memory-ppu='compute-capability=89 enable-tix-ldmatrix-swzl=true' --convert-triton-gpu-to-llvm-ppu='compute-capability=89 enable-tix-ldmatrix-swzl=true enable-aiu-ldmatrix-ordinary=true' | FileCheck %s --check-prefix=TIX
-// RUN: triton-opt %s -split-input-file --allocate-shared-memory-ppu='compute-capability=89 enable-tix-ldmatrix-swzl=false' --convert-triton-gpu-to-llvm-ppu='compute-capability=89 enable-tix-ldmatrix-swzl=false enable-aiu-ldmatrix-ordinary=false' | FileCheck %s --check-prefix=OFF
+// RUN: triton-opt %s -split-input-file --tritonppu-standardize-aiu-shared --allocate-shared-memory-ppu='compute-capability=89 enable-tix-ldmatrix-swzl=false' --convert-triton-gpu-to-llvm-ppu='compute-capability=89 enable-tix-ldmatrix-swzl=false' | FileCheck %s --check-prefix=ORDINARY
+// RUN: triton-opt %s -split-input-file --tritonppu-standardize-aiu-shared --allocate-shared-memory-ppu='compute-capability=89 enable-tix-ldmatrix-swzl=true' --convert-triton-gpu-to-llvm-ppu='compute-capability=89 enable-tix-ldmatrix-swzl=true' | FileCheck %s --check-prefix=TIX
 
-// OFF: ppu.cp.async.aiu
-// OFF: ppu.ldmatrix.swzl.sync.bulk.tensor
-// OFF-NOT: ppug.ppu_ldmatrix
-// OFF-COUNT-3: alignment = 16 : i64
 // ORDINARY: ppu.cp.async.aiu
 // ORDINARY: ppug.ppu_ldmatrix
 // ORDINARY-NOT: ppu.ldmatrix.swzl.sync.bulk.tensor
@@ -36,9 +31,9 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 // CHECK-LABEL: tt.func public @canonical
 // CHECK: alignment = 128 : i32
 // CHECK: ppu.aiu_strategy = [64 : i32, 16 : i32, 1 : i32, 4 : i32, 128 : i32]
-// CHECK: ppu.aiu_source
+// CHECK: ppu.disable_chained_dot
 // CHECK: ppu.aiu_strategy = [64 : i32, 64 : i32, 1 : i32, 1 : i32, 128 : i32]
-// CHECK: ppu.aiu_source
+// CHECK: ppu.disable_chained_dot
 
 // -----
 
@@ -59,7 +54,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 // CHECK: #shared = #ttg.swizzled_shared<{vec = 8, perPhase = 1, maxPhase = 8, order = [1, 0]}>
 // CHECK-LABEL: tt.func public @tuned
 // CHECK: ppu.aiu_strategy = [64 : i32, 64 : i32, 1 : i32, 1 : i32, 128 : i32]
-// CHECK: ppu.aiu_source
+// CHECK: ppu.disable_chained_dot
 
 // -----
 
@@ -67,15 +62,17 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 #aiu_legacy = #ttg.ppu_aiu_shared<{versionMajor = 2, AIUStrategy = [16, 16, 1, 1, 64], order = [1, 0]}>
 #smem_legacy = #ttg.shared_memory
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.target = "ppu:89", "ttg.threads-per-warp" = 32 : i32} {
-  tt.func public @noncanonical(%A: tensor<16x16xf16, #blocked_legacy>) {
-    %a = ttg.local_alloc %A : (tensor<16x16xf16, #blocked_legacy>) -> !ttg.memdesc<16x16xf16, #aiu_legacy, #smem_legacy>
+  tt.func public @noncanonical() {
+    %a = ttg.local_alloc : () -> !ttg.memdesc<16x16xf16, #aiu_legacy, #smem_legacy, mutable>
     tt.return
   }
 }
-// CHECK: #shared = #ttg.ppu_aiu_shared<{versionMajor = 2, AIUStrategy = [16, 16, 1, 1, 64], order = [1, 0]}>
+// CHECK: #shared = #ttg.shared_linear<
 // CHECK-LABEL: tt.func public @noncanonical
-// CHECK-NOT: ppu.aiu_strategy
-// CHECK-NOT: ppu.aiu_source
+// CHECK: alignment = 128 : i32
+// CHECK: ttg.memdesc_subslice
+// CHECK: !ttg.memdesc<16x16xf16, #shared, #smem, mutable, 16x32>
+// CHECK-NOT: #ttg.ppu_aiu_shared
 
 // -----
 

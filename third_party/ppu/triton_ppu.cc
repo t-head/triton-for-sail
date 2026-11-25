@@ -50,14 +50,12 @@ void init_triton_ppu_passes_ttgpuir(py::module_ &m) {
         py::arg("pm"), py::arg("capability"),
         py::arg("enable_tix_ldmatrix_swzl") = false);
   m.def("add_to_llvmir",
-        [](mlir::PassManager &pm, int32_t capability,
-           bool enableTixLdMatrixSwzl, bool enableAIULdMatrixOrdinary) {
+        [](mlir::PassManager &pm, int32_t capability, bool enableTixLdMatrixSwzl) {
           pm.addPass(mlir::triton::createConvertTritonGPUToLLVMPPUPass(
-              capability, enableTixLdMatrixSwzl, enableAIULdMatrixOrdinary));
+              capability, enableTixLdMatrixSwzl));
         },
         py::arg("pm"), py::arg("capability"),
-        py::arg("enable_tix_ldmatrix_swzl") = false,
-        py::arg("enable_aiu_ldmatrix_ordinary") = false);
+        py::arg("enable_tix_ldmatrix_swzl") = false);
   ADD_PASS_WRAPPER_0("add_accelerate_matmul", mlir::createTritonPPUGPUAccelerateMatmul);
   ADD_PASS_WRAPPER_0("add_convert_libdevice_func_to_ppu",
                      mlir::triton::createConvertLibdeviceFuncToPPUPass);

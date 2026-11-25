@@ -42,6 +42,29 @@ PPUAIUPlan explicitPlan(unsigned warps, uint64_t x, uint64_t channel,
   return *plan;
 }
 
+MemDescType aiuType(const PPUAIUPlan &plan, MLIRContext &context) {
+  auto cga = CGAEncodingAttr::get1CTALayout(&context, 2);
+  auto encoding = PPUAIUSharedEncodingAttr::get(
+      &context, 2, plan.toLegacyStrategy(), plan.getOrder(), cga);
+  auto elementType = mlir::IntegerType::get(&context, plan.getElementBitWidth());
+  return MemDescType::get(plan.getRootShape(), elementType, encoding,
+                          SharedMemorySpaceAttr::get(&context), true,
+                          plan.getRootShape());
+}
+
+MemDescType existingSharedType(MemDescType type, mlir::Attribute encoding) {
+  SmallVector<int64_t> allocShape(type.getAllocShape());
+  if (auto linear = dyn_cast<SharedLinearEncodingAttr>(encoding)) {
+    auto rootShape = linear.getLinearLayout().getOutDimSizes();
+    auto rank = linear.getLinearLayout().getNumOutDims();
+    for (auto [index, size] : llvm::enumerate(rootShape))
+      allocShape[allocShape.size() - rank + index] = size;
+  }
+  return MemDescType::get(type.getShape(), type.getElementType(), encoding,
+                          type.getMemorySpace(), type.getMutableMemory(),
+                          allocShape);
+}
+
 void expectMatches(const PPULayoutSpec &spec, const PPUAIUPlan &plan) {
   auto inDimNames = spec.getLogicalToPhysical().getInDimNames();
   MLIRContext *context = (*inDimNames.begin()).getContext();
@@ -206,4 +229,54 @@ TEST(PPUAIUWriterSolver, SupportsLegacyOnlyPhysicalLayout) {
     found |= writer.toLegacyStrategy() == expected.toLegacyStrategy();
   }
   EXPECT_TRUE(found);
+}
+
+TEST(PPUAIUWriterSolver, UsesExistingSharedEncodingsForAllPhysicalClasses) {
+  MLIRContext context;
+  context.loadDialect<TritonGPUDialect>();
+  auto canonicalPlan = defaultPlan(4, 64, 64, 16);
+  auto multiCube = defaultPlan(2, 64, 128, 16);
+  auto factorTwo = defaultPlan(1, 16, 16, 16);
+  auto factorTwo8Bit = defaultPlan(1, 16, 32, 8);
+  auto transposed = PPUAIUPlan::createLegacyDefault(1, 16, 16, 16, {16, 16},
+                                                    {0, 1});
+  ASSERT_TRUE(!!transposed);
+  for (auto plan : {canonicalPlan, multiCube, factorTwo, factorTwo8Bit,
+                    *transposed}) {
+    auto type = aiuType(plan, context);
+    auto encoding = plan.toSharedEncoding(type);
+    ASSERT_TRUE(!!encoding);
+    EXPECT_TRUE(isa<SwizzledSharedEncodingAttr>(*encoding) ||
+                isa<SharedLinearEncodingAttr>(*encoding));
+    auto sharedType = existingSharedType(type, *encoding);
+    auto physical = plan.toSharedPhysicalLayout(context);
+    ASSERT_TRUE(!!physical);
+    auto sharedLayout = toLinearLayout(sharedType);
+    auto dim0 = StringAttr::get(&context, "dim0");
+    auto dim1 = StringAttr::get(&context, "dim1");
+    auto offset = StringAttr::get(&context, "offset");
+    auto block = StringAttr::get(&context, "block");
+    int32_t maxPhysicalOffset = 0;
+    for (int32_t row = 0; row < plan.getRootShape()[0]; ++row) {
+      for (int32_t col = 0; col < plan.getRootShape()[1]; ++col) {
+        auto physicalCoordinates = physical->logicalToPhysical.apply(
+            {{dim0, row}, {dim1, col}});
+        ASSERT_EQ(physicalCoordinates.size(), 1);
+        int32_t physicalOffset = physicalCoordinates[0].second;
+        maxPhysicalOffset = std::max(maxPhysicalOffset, physicalOffset);
+        auto logicalCoordinates = sharedLayout.apply(
+            {{offset, physicalOffset}, {block, 0}});
+        ASSERT_EQ(logicalCoordinates.size(), 2);
+        EXPECT_EQ(logicalCoordinates[0].second, row);
+        EXPECT_EQ(logicalCoordinates[1].second, col);
+      }
+    }
+    EXPECT_GT(getAllocationElems(*encoding, sharedType.getShape(),
+                                 sharedType.getAllocShape()),
+              maxPhysicalOffset);
+    auto writer = PPUAIUPlan::fromSharedEncoding(
+        sharedType, plan.getNumWarps(), plan.toLegacyStrategy());
+    ASSERT_TRUE(!!writer);
+    EXPECT_EQ(writer->toLegacyStrategy(), plan.toLegacyStrategy());
+  }
 }

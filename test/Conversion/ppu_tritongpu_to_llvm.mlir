@@ -1,8 +1,6 @@
 // RUN: triton-opt %s -split-input-file --allocate-shared-memory-ppu='compute-capability=89 enable-tix-ldmatrix-swzl=true' --convert-triton-gpu-to-llvm-ppu='compute-capability=89 enable-tix-ldmatrix-swzl=true' | FileCheck %s --check-prefix=SWZL
 // RUN: triton-opt %s -split-input-file --allocate-shared-memory-ppu='compute-capability=89 enable-tix-ldmatrix-swzl=false' --convert-triton-gpu-to-llvm-ppu='compute-capability=89 enable-tix-ldmatrix-swzl=false' | FileCheck %s --check-prefix=OFF
 // RUN: triton-opt %s -split-input-file --allocate-shared-memory-ppu='compute-capability=89 enable-tix-ldmatrix-swzl=true' | FileCheck %s --check-prefix=ALLOC
-// RUN: triton-opt %s -split-input-file --allocate-shared-memory-ppu='compute-capability=89' --convert-triton-gpu-to-llvm-ppu='compute-capability=89 enable-aiu-ldmatrix-ordinary=true' | FileCheck %s --check-prefix=AIU
-// RUN: triton-opt %s -split-input-file --allocate-shared-memory-ppu='compute-capability=89' --convert-triton-gpu-to-llvm-ppu='compute-capability=89 enable-aiu-ldmatrix-ordinary=false' | FileCheck %s --check-prefix=AIUOFF
 
 #blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [1, 1], order = [1, 0]}>
 #mma = #ttg.ppu_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 16], vecSize = 2}>
@@ -146,49 +144,3 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.targ
 // SWZL-NOT: ppu.ldmatrix.swzl.sync.bulk.tensor
 // OFF: llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64}
 // OFF-NOT: ppu.ldmatrix.swzl.sync.bulk.tensor
-
-// -----
-
-#blocked_aiu = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [1, 1], order = [1, 0]}>
-#mma_aiu = #ttg.ppu_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 16], vecSize = 2}>
-#shared_aiu = #ttg.ppu_aiu_shared<{versionMajor = 2, AIUStrategy = [16, 16, 1, 1, 64], order = [1, 0]}>
-#shared_aiu_fallback = #ttg.ppu_aiu_shared<{versionMajor = 2, AIUStrategy = [16, 16, 1, 1, 64], order = [0, 1]}>
-#smem_aiu = #ttg.shared_memory
-module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.target = "ppu:89", "ttg.threads-per-warp" = 32 : i32} {
-  tt.func public @aiu_dot(%A: tensor<16x16xf16, #blocked_aiu>, %B: tensor<16x16xf16, #blocked_aiu>) {
-    %zero = arith.constant dense<0.000000e+00> : tensor<16x16xf32, #mma_aiu>
-    %a = ttg.local_alloc %A : (tensor<16x16xf16, #blocked_aiu>) -> !ttg.memdesc<16x16xf16, #shared_aiu, #smem_aiu>
-    %b = ttg.local_alloc %B : (tensor<16x16xf16, #blocked_aiu>) -> !ttg.memdesc<16x16xf16, #shared_aiu, #smem_aiu>
-    %a_dot = ttg.local_load %a : !ttg.memdesc<16x16xf16, #shared_aiu, #smem_aiu> -> tensor<16x16xf16, #ttg.dot_op<{opIdx = 0, parent = #mma_aiu, kWidth = 2}>>
-    %b_dot = ttg.local_load %b : !ttg.memdesc<16x16xf16, #shared_aiu, #smem_aiu> -> tensor<16x16xf16, #ttg.dot_op<{opIdx = 1, parent = #mma_aiu, kWidth = 2}>>
-    %dot = tt.dot %a_dot, %b_dot, %zero, inputPrecision = tf32 : tensor<16x16xf16, #ttg.dot_op<{opIdx = 0, parent = #mma_aiu, kWidth = 2}>> * tensor<16x16xf16, #ttg.dot_op<{opIdx = 1, parent = #mma_aiu, kWidth = 2}>> -> tensor<16x16xf32, #mma_aiu>
-    tt.return
-  }
-
-  tt.func public @aiu_dot_fallback(%A: tensor<16x16xf16, #blocked_aiu>, %B: tensor<16x16xf16, #blocked_aiu>) {
-    %zero = arith.constant dense<0.000000e+00> : tensor<16x16xf32, #mma_aiu>
-    %a = ttg.local_alloc %A : (tensor<16x16xf16, #blocked_aiu>) -> !ttg.memdesc<16x16xf16, #shared_aiu_fallback, #smem_aiu>
-    %b = ttg.local_alloc %B : (tensor<16x16xf16, #blocked_aiu>) -> !ttg.memdesc<16x16xf16, #shared_aiu_fallback, #smem_aiu>
-    %a_dot = ttg.local_load %a : !ttg.memdesc<16x16xf16, #shared_aiu_fallback, #smem_aiu> -> tensor<16x16xf16, #ttg.dot_op<{opIdx = 0, parent = #mma_aiu, kWidth = 2}>>
-    %b_dot = ttg.local_load %b : !ttg.memdesc<16x16xf16, #shared_aiu_fallback, #smem_aiu> -> tensor<16x16xf16, #ttg.dot_op<{opIdx = 1, parent = #mma_aiu, kWidth = 2}>>
-    %dot = tt.dot %a_dot, %b_dot, %zero, inputPrecision = tf32 : tensor<16x16xf16, #ttg.dot_op<{opIdx = 0, parent = #mma_aiu, kWidth = 2}>> * tensor<16x16xf16, #ttg.dot_op<{opIdx = 1, parent = #mma_aiu, kWidth = 2}>> -> tensor<16x16xf32, #mma_aiu>
-    tt.return
-  }
-}
-
-// SWZL-LABEL: llvm.func @aiu_dot(
-// OFF-LABEL: llvm.func @aiu_dot(
-// AIU-LABEL: llvm.func @aiu_dot(
-// AIU-COUNT-2: ppug.ppu_ldmatrix
-// AIU-NOT: ppu.ldmatrix.swzl.sync.bulk.tensor
-// AIU-LABEL: llvm.func @aiu_dot_fallback(
-// AIU: ppu.ldmatrix.swzl.sync.bulk.tensor
-// AIU-NOT: ppug.ppu_ldmatrix
-// AIUOFF-LABEL: llvm.func @aiu_dot(
-// AIUOFF: ppu.ldmatrix.swzl.sync.bulk.tensor
-// AIUOFF-NOT: ppug.ppu_ldmatrix
-// AIUOFF-LABEL: llvm.func @aiu_dot_fallback(
-// AIUOFF: ppu.ldmatrix.swzl.sync.bulk.tensor
-// AIUOFF-NOT: ppug.ppu_ldmatrix
-// ALLOC: ttg.local_alloc {{.*}}allocation.offset = 0
-// ALLOC: ttg.local_alloc {{.*}}allocation.offset = 1024

@@ -42,9 +42,8 @@ namespace triton {
 
 std::unique_ptr<OperationPass<ModuleOp>> createConvertTritonGPUToLLVMPPUPass();
 std::unique_ptr<OperationPass<ModuleOp>>
-createConvertTritonGPUToLLVMPPUPass(
-    int32_t computeCapability, bool enableTixLdMatrixSwzl = false,
-    bool enableAIULdMatrixOrdinary = false);
+createConvertTritonGPUToLLVMPPUPass(int32_t computeCapability,
+                                    bool enableTixLdMatrixSwzl = false);
 std::unique_ptr<OperationPass<ModuleOp>>
 createAllocateSharedMemoryPPUPass(int32_t computeCapability,
                                   bool enableTixLdMatrixSwzl = false);

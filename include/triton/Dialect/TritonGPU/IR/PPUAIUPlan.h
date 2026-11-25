@@ -42,6 +42,12 @@ public:
   llvm::Expected<SwizzledSharedEncodingAttr>
   toCanonicalSwizzledSharedEncoding(MemDescType memDescTy) const;
 
+  llvm::Expected<Attribute> toSharedEncoding(MemDescType memDescTy) const;
+
+  static llvm::Expected<PPUAIUPlan>
+  fromSharedEncoding(MemDescType memDescTy, unsigned numWarps,
+                     ArrayRef<unsigned> strategy);
+
   static llvm::Expected<PPUAIUPlan>
   fromCanonicalSwizzled(MemDescType memDescTy, unsigned numWarps,
                         ArrayRef<unsigned> strategy);
