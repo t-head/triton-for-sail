@@ -665,7 +665,7 @@ jobs:
       matrix: ${{ steps.compose.outputs.matrix }}
     steps:
       - name: Download build source metadata
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           # Omit the attempt from metadata names so failed-job reruns can reuse previously successful entries.
           pattern: triton-build-source-${{ github.run_id }}-*
@@ -745,7 +745,7 @@ jobs:
         source: ${{ fromJson(needs.prepare-publish.outputs.matrix) }}
     steps:
       - name: Download wheel artifacts with the same source
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           artifact-ids: ${{ matrix.source.artifact_ids }}
           path: ${{ runner.temp }}/wheels
