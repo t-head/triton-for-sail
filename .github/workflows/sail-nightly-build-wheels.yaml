@@ -1,0 +1,127 @@
+name: sail nightly build triton
+
+on:
+  push:
+    branches:
+      - 'ci/add_nightly_build_fj'
+  schedule:
+    # Daily at 13:00 UTC (21:00 Beijing time), after the FA2/FA3 nightlies.
+    - cron: '0 13 * * *'
+  workflow_dispatch:
+    inputs:
+      package_name:
+        description: 'Name of the package to build and upload'
+        required: true
+        type: string
+        default: triton
+      framework:
+        description: 'Name of the dependent framework, e.g. torch'
+        required: true
+        type: string
+        default: torch
+      python_versions:
+        description: 'JSON array; allowed values: 38, 310, 312'
+        required: true
+        type: string
+        default: '["312"]'
+      os_versions:
+        description: 'JSON array; allowed values: ubuntu2004, ubuntu2204, ubuntu2404, alios7u2'
+        required: true
+        type: string
+        default: '["ubuntu2404"]'
+      runtime_versions:
+        description: 'JSON array; allowed HGGCRT versions: 2, 3'
+        required: true
+        type: string
+        default: '["3"]'
+      torch_versions:
+        description: 'JSON array; allowed values: 2.10.0, 2.13.0; [""] skips Torch installation'
+        required: true
+        type: string
+        default: '[""]'
+      sdk_versions:
+        description: 'JSON array; allowed values: 2.1.1, 2.2.0, 2.2.1'
+        required: true
+        type: string
+        default: '["2.2.1"]'
+      branch:
+        description: 'Source branch, tag, or full commit SHA; leave empty to use the commit that triggered the workflow'
+        required: false
+        type: string
+        default: ''
+      package_version:
+        description: 'Artifactory package version and automatic upload directory prefix; must track the version in setup.py'
+        required: true
+        type: string
+        default: 'main'
+      package_edition:
+        description: 'Artifactory package edition; defaults to oe, matching the release workflow'
+        required: true
+        type: string
+        default: oe
+      package_type:
+        description: 'Artifactory package type; defaults to pypi'
+        required: false
+        type: string
+        default: pypi
+      build_command:
+        description: 'Custom Bash build command; leave empty to build Triton from the repository root; only trusted configuration is accepted'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: nightly-build-${{ inputs.package_name || 'triton' }}-${{ inputs.branch || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    uses: t-head/ci-infra/.github/workflows/nightly-build.yml@main
+    secrets:
+      template_token: ${{ secrets.TEMPLATE_TOKEN }}
+      release_username: ${{ secrets.RELEASE_USERNAME }}
+      release_token: ${{ secrets.RELEASE_TOKEN }}
+    with:
+      # Scheduled runs carry no inputs; the pinned defaults below still apply.
+      # Keep them aligned with the PPU CI image: sdk2.2.1 / torch2.13.0 /
+      # hggcrt3 / ubuntu24.04 / py312.
+      package_name: ${{ inputs.package_name || 'triton' }}
+      framework: ${{ inputs.framework || 'torch' }}
+      template_repository: t-head/ci-infra
+      template_ref: main
+      # Triton links the full LLVM/MLIR toolchain, so the build needs far more
+      # memory and disk than the 16 GB hosted runner provides.
+      #runs_on: ${{ inputs.runs_on || 'x86-ubuntu2404-64-256' }}
+      python_versions: ${{ inputs.python_versions || '["312"]' }}
+      os_versions: ${{ inputs.os_versions || '["ubuntu2404"]' }}
+      runtime_versions: ${{ inputs.runtime_versions || '["3"]' }}
+      # Triton does not build against Torch; the empty entry skips the install.
+      torch_versions: ${{ inputs.torch_versions || '[""]' }}
+      sdk_versions: ${{ inputs.sdk_versions || '["2.2.1"]' }}
+      branch: ${{ inputs.branch || '' }}
+      package_version: ${{ inputs.package_version || 'main' }}
+      package_edition: ${{ inputs.package_edition || 'oe' }}
+      package_type: ${{ inputs.package_type || 'pypi' }}
+      build_command: |
+        ${{ inputs.build_command || 'unset PIP_INDEX_URL
+        source /usr/local/PPU_SDK/envsetup.sh || true
+        which hgcc || true
+        echo "$PPU_SDK"
+        # Drop any image-bundled triton so the fresh wheel is the only candidate.
+        pip uninstall -y triton pytorch-triton triton-nightly || true
+        # Build deps come from the repository requirements (nanobind, cmake, ninja).
+        pip install -r python/requirements.txt
+        # setup.py copies the PPU IR formatter into the wheel; resolve it from the SDK.
+        export TRITON_IR_FORMATTER_PATH="$PPU_SDK/bin/llvm-irformatter"
+        # Keep the CI-proven parallelism; higher values OOM while linking LLVM.
+        export MAX_JOBS=16
+        # Knobs from the internal build recipe; older refs still read them.
+        export BUILD_PLATFORM=ubuntu
+        export BUILD_DEVICE_PPU=1
+        rm -rf build python/build dist
+        python3 setup.py bdist_wheel
+        ls -lh dist/*.whl' }}
