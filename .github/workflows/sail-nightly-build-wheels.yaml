@@ -1,9 +1,6 @@
 name: sail nightly build triton
 
 on:
-  push:
-    branches:
-      - 'ci/add_nightly_build_fj'
   schedule:
     # Daily at 13:00 UTC (21:00 Beijing time), after the FA2/FA3 nightlies.
     - cron: '0 13 * * *'
