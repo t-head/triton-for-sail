@@ -49,6 +49,10 @@ def min_dot_size(target: GPUTarget):
         # For small M/N the input we can still use tensorcores with padding.
         if lhs_bitwidth == 8:
             return (1, 1, 32)
+        elif lhs_bitwidth == 64:
+            return (1, 1, 4)
+        elif lhs_bitwidth == 32:
+            return (1, 1, 8)
         else:
             return (1, 1, 16)
 
@@ -232,6 +236,9 @@ class PPUBackend(BaseBackend):
 
         args = {'arch': knobs.runtime.override_arch or f"sm{self.target.arch}"}
         args.update({k: opts[k] for k in HGGCOptions.__dataclass_fields__.keys() if k in opts if opts[k] is not None})
+        if args.get("instrumentation_mode", ""):
+            # Instrumentation can require more registers than the user-specified limit.
+            args["maxnreg"] = None
         capability = int(self._parse_arch(args["arch"]))
 
         if args.get("num_ctas", 1) > 1 and capability < 90:
@@ -337,6 +344,11 @@ class PPUBackend(BaseBackend):
         passes.common.add_sccp(pm)
         passes.common.add_cse(pm)
         passes.common.add_canonicalizer(pm)
+        if is_enabled(opt, "fpsan"):
+            passes.ttgpuir.add_fp_sanitizer(pm, opt.fpsan_homomorphic_casts)
+            passes.ttgpuir.add_remove_layout_conversions(pm, True)
+            passes.common.add_canonicalizer(pm)
+            passes.common.add_cse(pm)
 
         pm.run(mod, 'make_ttgir')
         metadata["tensordesc_meta"] = mod.get_tensordesc_metadata()
@@ -356,6 +368,13 @@ class PPUBackend(BaseBackend):
         passes.ttir.add_loop_aware_cse(pm)
         passes.gluon.add_canonicalizer(pm)
         passes.ttgpuir.add_combine_tensor_select_and_if(pm)
+
+        if is_enabled(options, "fpsan"):
+            passes.ttgpuir.add_fp_sanitizer(pm, options.fpsan_homomorphic_casts)
+        if any(is_enabled(options, mode) for mode in ["consan", "fpsan"]):
+            passes.ttgpuir.add_remove_layout_conversions(pm, True)
+            passes.common.add_canonicalizer(pm)
+            passes.common.add_cse(pm)
 
         pm.run(mod, 'gluon_to_ttgir')
         metadata["tensordesc_meta"] = mod.get_tensordesc_metadata()

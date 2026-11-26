@@ -8,7 +8,8 @@ import triton
 from triton.experimental import gluon
 from triton.experimental.gluon import language as gl
 from triton import language as tl
-from triton._internal_testing import is_blackwell, is_cuda, is_hip, is_hip_cdna3, is_hip_cdna4, is_hip_gfx1250, is_hopper, is_interpreter
+from triton._internal_testing import is_blackwell, is_cuda, is_hip, is_hip_cdna3, is_hip_cdna4, is_hip_gfx1250, is_hopper, is_interpreter, is_ppu
+from triton._internal_testing import is_ppu_0010, is_ppu_0015
 from triton._internal_testing import is_blackwell_ultra
 from triton.experimental.gluon.language.nvidia.ampere import mma_v2
 from triton.experimental.gluon.language.nvidia import hopper
@@ -36,8 +37,8 @@ def _require_cuda_backend(device: str):
         pytest.skip("fpsan tests require torch device 'cuda'")
     if is_interpreter():
         pytest.skip("fpsan tests require a real backend (not the interpreter)")
-    if not (is_cuda() or is_hip()):
-        pytest.skip("fpsan tests require CUDA or HIP")
+    if not (is_cuda() or is_hip() or is_ppu()):
+        pytest.skip("fpsan tests require CUDA or HIP or PPU")
     if is_hip() and not _hip_device_supports_fpsan():
         pytest.skip("fpsan is not supported on this HIP device")
     if not torch.cuda.is_available():
@@ -511,6 +512,13 @@ UNARY_EXTERN_SYMBOLS = {
         ("log1p", "__ocml_log1p_f32"),
         ("round", "__ocml_round_f32"),
     ],
+    "ppu": [
+        ("tan", "__ppu_tanf"),
+        ("tanh", "__ppu_tanhf"),
+        ("log1p", "__ppu_log1pf"),
+        ("cbrt", "__ppu_cbrtf"),
+        ("round", "__ppu_roundf"),
+    ],
 }
 
 BINARY_EXTERN_SYMBOLS = {
@@ -524,6 +532,11 @@ BINARY_EXTERN_SYMBOLS = {
         ("hypot", "__ocml_hypot_f32"),
         ("pow", "__ocml_pow_f32"),
     ],
+    "ppu": [
+        ("atan2", "__ppu_atan2f"),
+        ("hypot", "__ppu_hypotf"),
+        ("pow", "__ppu_powf"),
+    ],
 }
 
 TERNARY_EXTERN_SYMBOLS = {
@@ -532,6 +545,9 @@ TERNARY_EXTERN_SYMBOLS = {
     ],
     "hip": [
         ("fma", "__ocml_fma_f32"),
+    ],
+    "ppu": [
+        ("fma", "__ppu_fmaf"),
     ],
 }
 
@@ -542,12 +558,17 @@ MIXED_EXTERN_SYMBOLS = {
     "hip": [
         ("ldexp", "__ocml_ldexp_f32"),
     ],
+    "ppu": [
+        ("ldexp", "__ppu_ldexpf"),
+    ],
 }
 
 
 def _extern_backend_name() -> str:
     if is_hip():
         return "hip"
+    if is_ppu():
+        return "ppu"
     return "cuda"
 
 
@@ -1982,7 +2003,7 @@ _TCGEN05_MMA_SCALED_CASES = [
 @pytest.mark.parametrize(("type_a", "type_b", "acc_type", "m", "n", "k"), _DOT_FMA_CASES)
 def test_dot_fma(device, type_a, type_b, acc_type, m, n, k, fresh_knobs):
     _require_cuda_backend(device)
-    if is_cuda() and torch.cuda.get_device_capability()[0] < 9 and "e4m3" in (type_a, type_b):
+    if (is_cuda() or is_ppu()) and torch.cuda.get_device_capability()[0] < 9 and "e4m3" in (type_a, type_b):
         pytest.skip("E4M3 requires Hopper or newer")
 
     M = gl.constexpr(m)
@@ -2030,7 +2051,7 @@ def test_dot_fma(device, type_a, type_b, acc_type, m, n, k, fresh_knobs):
     _assert_payload_equal(out, exp_bits)
 
 
-@pytest.mark.skipif(not is_cuda(), reason="Requires NVIDIA dot acceleration")
+@pytest.mark.skipif(not (is_cuda() or is_ppu()), reason="Requires NVIDIA or PPU dot acceleration")
 @pytest.mark.parametrize(("src_type", "mid_type"), [
     pytest.param("f16", "f32", id="f16-f32"),
     pytest.param("e4m3", "bf16", id="e4m3-bf16"),
@@ -2086,7 +2107,7 @@ def test_dot_explicit_and_implicit_upcasts_match(device, src_type, mid_type, m, 
     _assert_payload_equal(explicit, explicit_expected)
 
 
-@pytest.mark.skipif(not is_cuda(), reason="Requires NVIDIA dot acceleration")
+@pytest.mark.skipif(not (is_cuda() or is_ppu()), reason="Requires NVIDIA or PPU dot acceleration")
 @pytest.mark.parametrize("homomorphic_casts", [
     pytest.param(False, id="non-homomorphic", marks=pytest.mark.xfail(
         strict=True, reason="FPSan downcasts are non-homomorphic by default")),
@@ -2254,6 +2275,7 @@ def test_dot_fma_batched(device, fresh_knobs):
     ttgir = compiled.asm["ttgir"]
     assert "ttng.tc_gen5_mma" not in ttgir
     assert "ttng.warp_group_dot" not in ttgir
+    assert "ppu.mma.sync" not in compiled.asm["llir"]
 
     _assert_payload_equal(out, exp_bits)
 
@@ -3442,5 +3464,126 @@ def test_wmma_dot(device, type_a, type_b, acc_type, m, n, k, instr_k, k_width, f
     out, outw = _as_float_bits_tensor(np.empty((m, n), dtype=_float_dtype_info(acc_type)[2]), acc_type)
 
     kernel[(1, )](aw, bw, cw, outw, BLOCK_M=m, BLOCK_N=n, BLOCK_K=k, INSTR_SHAPE_K=instr_k, K_WIDTH=k_width)
+
+    _assert_payload_equal(out, exp_bits)
+
+
+@pytest.mark.skipif(not (is_ppu_0010() or is_ppu_0015()), reason="Requires PPU0010 or PPU0015")
+@pytest.mark.parametrize(("type_a", "type_b", "acc_type", "m", "n", "k"), [
+    pytest.param("f16", "f16", "f32", 128, 64, 64, id="f16-f16-f32"),
+    pytest.param("bf16", "bf16", "f32", 128, 64, 64, id="bf16-bf16-f32"),
+    pytest.param("f16", "f16", "f32", 128, 32, 16, id="f16-f16-f32-minimum"),
+    pytest.param("bf16", "bf16", "f32", 256, 64, 32, id="bf16-bf16-f32-wide"),
+])
+@pytest.mark.parametrize("num_warps", [1, 4])
+def test_ppu_mma(device, type_a, type_b, acc_type, m, n, k, num_warps, fresh_knobs):
+    _require_cuda_backend(device)
+
+    fresh_knobs.compilation.instrumentation_mode = "fpsan"
+    version = 1 if is_ppu_0010() else 2
+
+    @gluon.jit
+    def kernel(a_ptr, b_ptr, c_ptr, out_ptr, M: gl.constexpr, N: gl.constexpr, K: gl.constexpr, VERSION: gl.constexpr,
+               NUM_WARPS: gl.constexpr, THREADS_PER_WARP: gl.constexpr):
+        blocked: gl.constexpr = gl.BlockedLayout([1, 1], [THREADS_PER_WARP, 1], [NUM_WARPS, 1], [1, 0])
+        mma_layout: gl.constexpr = gl.ppu.PPUMMADistributedLayout(version=[VERSION, 0], warps_per_cta=[NUM_WARPS, 1],
+                                                                  instr_shape=[16, 16])
+        offs_m = gl.arange(0, M, layout=gl.SliceLayout(1, blocked))[:, None]
+        offs_n = gl.arange(0, N, layout=gl.SliceLayout(0, blocked))[None, :]
+        offs_k_a = gl.arange(0, K, layout=gl.SliceLayout(0, blocked))[None, :]
+        offs_k_b = gl.arange(0, K, layout=gl.SliceLayout(1, blocked))[:, None]
+        a = gl.load(a_ptr + offs_m * K + offs_k_a)
+        b = gl.load(b_ptr + offs_k_b * N + offs_n)
+        c = gl.load(c_ptr + offs_m * N + offs_n)
+
+        k_width: gl.constexpr = max(
+            32 // min(a.type.element_ty.primitive_bitwidth, b.type.element_ty.primitive_bitwidth), 1)
+        a = gl.convert_layout(a, gl.DotOperandLayout(parent=mma_layout, operand_index=0, k_width=k_width))
+        b = gl.convert_layout(b, gl.DotOperandLayout(parent=mma_layout, operand_index=1, k_width=k_width))
+        acc = gl.convert_layout(c, mma_layout)
+        if VERSION == 1:
+            ret = gl.ppu.ppu0010.mma_v1(a, b, acc)
+        else:
+            ret = gl.ppu.ppu0015.mma_v2(a, b, acc)
+        ret = gl.convert_layout(ret, blocked)
+        gl.store(out_ptr + offs_m * N + offs_n, ret)
+
+    rs = np.random.RandomState(0)
+    a_bits = _random_float_bits(rs, (m, k), type_a)
+    b_bits = _random_float_bits(rs, (k, n), type_b)
+    c_bits = _random_float_bits(rs, (m, n), acc_type)
+    exp_bits = _mm_payload_bits(a_bits, b_bits, c_bits, type_a, type_b, acc_type)
+
+    _, aw = _as_float_bits_tensor(a_bits, type_a)
+    _, bw = _as_float_bits_tensor(b_bits, type_b)
+    _, cw = _as_float_bits_tensor(c_bits, acc_type)
+    out, outw = _as_float_bits_tensor(np.empty((m, n), dtype=_float_dtype_info(acc_type)[2]), acc_type)
+
+    kernel[(1, )](aw, bw, cw, outw, M=m, N=n, K=k, VERSION=version, NUM_WARPS=num_warps,
+                  THREADS_PER_WARP=THREADS_PER_WARP, num_warps=num_warps)
+
+    _assert_payload_equal(out, exp_bits)
+
+
+@pytest.mark.skipif(not is_ppu_0015(), reason="Requires PPU0015")
+@pytest.mark.parametrize(("m", "n", "k"), [(64, 64, 64), (128, 64, 128), (64, 128, 64), (128, 128, 128)])
+def test_ppu_mma_scaled(device, m, n, k, fresh_knobs):
+    _require_cuda_backend(device)
+
+    fresh_knobs.compilation.instrumentation_mode = "fpsan"
+
+    GROUP = 32
+    packed_k = k // 2
+    scale_k = k // GROUP
+
+    @gluon.jit
+    def kernel(a_ptr, b_ptr, as_ptr, bs_ptr, c_ptr, out_ptr, M: gl.constexpr, N: gl.constexpr, KPACK: gl.constexpr,
+               SCALE_K: gl.constexpr, NUM_WARPS: gl.constexpr, THREADS_PER_WARP: gl.constexpr):
+        blocked: gl.constexpr = gl.BlockedLayout([1, 1], [THREADS_PER_WARP, 1], [NUM_WARPS, 1], [1, 0])
+        mma_layout: gl.constexpr = gl.ppu.PPUMMADistributedLayout(version=[2, 0], warps_per_cta=[NUM_WARPS, 1],
+                                                                  instr_shape=[16, 16])
+        offs_m = gl.arange(0, M, layout=gl.SliceLayout(1, blocked))[:, None]
+        offs_n = gl.arange(0, N, layout=gl.SliceLayout(0, blocked))[None, :]
+        offs_kp_a = gl.arange(0, KPACK, layout=gl.SliceLayout(0, blocked))[None, :]
+        offs_kp_b = gl.arange(0, KPACK, layout=gl.SliceLayout(1, blocked))[:, None]
+        a = gl.load(a_ptr + offs_m * KPACK + offs_kp_a)
+        b = gl.load(b_ptr + offs_kp_b * N + offs_n)
+
+        offs_ks = gl.arange(0, SCALE_K, layout=gl.SliceLayout(0, blocked))[None, :]
+        offs_ms = gl.arange(0, M, layout=gl.SliceLayout(1, blocked))[:, None]
+        offs_ns = gl.arange(0, N, layout=gl.SliceLayout(1, blocked))[:, None]
+        a_scale = gl.load(as_ptr + offs_ms * SCALE_K + offs_ks)
+        b_scale = gl.load(bs_ptr + offs_ns * SCALE_K + offs_ks)
+        c = gl.load(c_ptr + offs_m * N + offs_n)
+
+        a = gl.convert_layout(a, blocked)
+        b = gl.convert_layout(b, blocked)
+        a_scale = gl.convert_layout(a_scale, blocked)
+        b_scale = gl.convert_layout(b_scale, blocked)
+        acc = gl.convert_layout(c, mma_layout)
+        ret = gl.ppu.ppu0015.mma_scaled(a, a_scale, "e2m1", b, b_scale, "e2m1", acc)
+        ret = gl.convert_layout(ret, blocked)
+        gl.store(out_ptr + offs_m * N + offs_n, ret)
+
+    rs = np.random.RandomState(0)
+    a_bits = rs.randint(0, 256, size=(m, packed_k), dtype=np.uint8)
+    b_bits = rs.randint(0, 256, size=(packed_k, n), dtype=np.uint8)
+    a_scale_bits = rs.randint(0, 256, size=(m, scale_k), dtype=np.uint8)
+    b_scale_bits = rs.randint(0, 256, size=(n, scale_k), dtype=np.uint8)
+    c_bits = rs.randint(-(2**31), 2**31 - 1, size=(m, n), dtype=np.int32)
+    exp_bits = _mm_scaled_payload_u32(a_bits, b_bits, a_scale_bits, b_scale_bits, c_bits, a_pack=2, b_pack=2,
+                                      type_a="e2m1", type_b="e2m1", scale_factor=GROUP, scale_type="e8m0")
+
+    a = torch.tensor(a_bits, device="cuda", dtype=torch.uint8)
+    b = torch.tensor(b_bits, device="cuda", dtype=torch.uint8)
+    a_scale = torch.tensor(a_scale_bits, device="cuda", dtype=torch.uint8)
+    b_scale = torch.tensor(b_scale_bits, device="cuda", dtype=torch.uint8)
+    c = torch.tensor(c_bits, device="cuda", dtype=torch.int32)
+    out = torch.empty((m, n), device="cuda", dtype=torch.int32)
+    cw = triton.TensorWrapper(c, dtype=torch.float32)
+    outw = triton.TensorWrapper(out, dtype=torch.float32)
+
+    kernel[(1, )](a, b, a_scale, b_scale, cw, outw, M=m, N=n, KPACK=packed_k, SCALE_K=scale_k, NUM_WARPS=4,
+                  THREADS_PER_WARP=THREADS_PER_WARP, num_warps=4)
 
     _assert_payload_equal(out, exp_bits)
