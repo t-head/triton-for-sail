@@ -159,6 +159,12 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::registerTritonPPUGPUAccelerateMatmul();
   mlir::registerTritonPPUGPUOptimizeNativeFp8DotB();
   mlir::registerTritonPPUGPUReorderInstructions();
+  mlir::registerTritonPPUAIULoweringPass();
+
+  // PPU conversion passes. Registering these is what lets lit cover the PPU
+  // lowering itself, including which local_load path an AIU shared layout takes.
+  mlir::triton::registerTritonPPUGPUToLLVMPasses();
+  mlir::triton::registerPPUGPUToLLVMPasses();
 
   // Proton passes
   mlir::test::proton::registerTestScopeIdAllocationPass();
