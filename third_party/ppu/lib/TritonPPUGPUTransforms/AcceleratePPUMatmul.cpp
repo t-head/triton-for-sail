@@ -736,7 +736,9 @@ public:
 
     int m = aShape[0];
     int k = aShape[1];
-    int n = aShape[1];
+    // B is [k, n], so N comes from bShape. aShape[1] is K, which `k` already
+    // holds, so reading it twice tested K against the N bound.
+    int n = bShape[1];
     if (m < 16 || n < 16 || k < 32)
       return failure();
 
