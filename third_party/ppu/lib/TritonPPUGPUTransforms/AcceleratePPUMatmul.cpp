@@ -677,9 +677,16 @@ public:
     auto oldAType = cast<RankedTensorType>(a.getType());
     auto oldBType = cast<RankedTensorType>(b.getType());
 
-    auto aScaleOrder = getOrder(aScale.getType());
-    auto bScaleOrder = getOrder(bScale.getType());
-    // ascale, bscale row major
+    // The scales must be row major. Ask for the memory order rather than
+    // `getOrder`: the latter reports the order the linear layout's element
+    // contiguity implies, and a scale layout carries one element per thread, so
+    // it has no element contiguity to report. For `sizePerThread = [1, 1]`,
+    // `getOrder` answers [0, 1] for a layout declared `order = [1, 0]`, which
+    // silently sent every MXFP4 scaled dot down the BF16 decomposition instead
+    // of the native path. `getOrderForMemory` falls back to the thread order in
+    // exactly that case.
+    auto aScaleOrder = getOrderForMemory(cast<RankedTensorType>(aScale.getType()));
+    auto bScaleOrder = getOrderForMemory(cast<RankedTensorType>(bScale.getType()));
     if (aScaleOrder[aScaleOrder.size() - 1] != 0 ||
         bScaleOrder[bScaleOrder.size() - 1] != 0)
       return failure();
