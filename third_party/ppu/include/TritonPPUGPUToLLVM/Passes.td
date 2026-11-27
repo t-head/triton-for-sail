@@ -47,6 +47,9 @@ def ConvertTritonGPUToLLVMPPU : Pass<"convert-triton-gpu-to-llvm-ppu", "mlir::Mo
         Option<"computeCapability", "compute-capability",
                "int32_t", /*default*/"80",
                "device compute capability">,
+        Option<"enableTixLdMatrixSwzl", "enable-tix-ldmatrix-swzl",
+               "bool", /*default*/"false",
+               "enable TIX ldmatrix swizzled shared memory lowering">
     ];
 }
 
@@ -61,6 +64,9 @@ def AllocateSharedMemoryPPU : Pass<"allocate-shared-memory-ppu", "mlir::ModuleOp
       Option<"computeCapability", "compute-capability",
              "int32_t", /*default*/"80",
              "device compute capability">,
+      Option<"enableTixLdMatrixSwzl", "enable-tix-ldmatrix-swzl",
+             "bool", /*default*/"false",
+             "enable TIX ldmatrix swizzled shared memory lowering">,
   ];
 }
 

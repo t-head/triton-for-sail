@@ -33,6 +33,7 @@
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/PPUAIUPlan.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/LayoutUtils.h"
 
@@ -47,15 +48,6 @@ Value convertLayout(int opIdx, ConversionPatternRewriter &rewriter,
 namespace SharedToDotOperandPPUAIUV1m8 {
 Value convertLayout(int opIdx, ConversionPatternRewriter &rewriter,
                     Location loc, Value tensor, DotOperandEncodingAttr encoding,
-                    const SharedMemoryObject &smemObj,
-                    const LLVMTypeConverter *typeConverter, Value thread,
-                    ArrayRef<unsigned> aiuLoad);
-}
-
-namespace SharedToDotOperandPPUAIUV2 {
-Value convertLayout(int opIdx, ConversionPatternRewriter &rewriter,
-                    Location loc, Value tensor,
-                    DotOperandEncodingAttr bEncoding,
                     const SharedMemoryObject &smemObj,
                     const LLVMTypeConverter *typeConverter, Value thread,
                     ArrayRef<unsigned> aiuLoad);
@@ -98,7 +90,7 @@ LogicalResult lowerLdStMatrix(
   if (isa<PaddedSharedEncodingAttr>(memDescType.getEncoding())) {
     return failure();
   }
-  auto memLayout = toLinearLayout(memDescType);
+  auto memLayout = toLinearLayoutIgnoringPadding(memDescType);
   auto cvt = regLayout.invertAndCompose(memLayout);
   auto kBlock = StringAttr::get(loc.getContext(), "block");
   auto maybeSublayout = cvt.quotient({kBlock});
@@ -121,12 +113,167 @@ LogicalResult lowerLdStMatrix(
   return failure();
 }
 
+std::optional<Value>
+lowerPPULdMatrixSwzl(Location loc, RankedTensorType tensorTy,
+                     MemDescType memDescType, bool transpose, Value smemBase,
+                     Type llvmElemTy, ConversionPatternRewriter &rewriter,
+                     const LLVMTypeConverter *typeConverter,
+                     DotOperandEncodingAttr dotEnc, bool isPPU0015,
+                     const LinearLayout &cvt, int nVecs) {
+  if (!isPPU0015 || nVecs != 4 ||
+      SharedMemoryObject::isAffineSharedMemoryAccess(memDescType))
+    return std::nullopt;
+  auto enc = dyn_cast<SwizzledSharedEncodingAttr>(memDescType.getEncoding());
+  if (!enc)
+    return std::nullopt;
+  int bitwidth = tensorTy.getElementTypeBitWidth();
+  if ((bitwidth != 8 && bitwidth != 16) || (transpose && bitwidth != 16))
+    return std::nullopt;
+  int rowElements = 128 / bitwidth;
+  int elementsPerReg = 32 / bitwidth;
+  if (enc.getVec() != rowElements || enc.getOrder() != ArrayRef<unsigned>{1, 0})
+    return std::nullopt;
+  int swizzledBytes;
+  if (enc.getMaxPhase() == 8 && enc.getPerPhase() == 1) {
+    swizzledBytes = 128;
+  } else if (enc.getMaxPhase() == 4 && enc.getPerPhase() == 2) {
+    swizzledBytes = 64;
+  } else {
+    return std::nullopt;
+  }
+  auto shape = tensorTy.getShape();
+  // Restrict the initial path to the full-panel geometry validated on PPU0015.
+  int panelCols = swizzledBytes * 8 / bitwidth;
+  if (shape.size() != 2 || shape[0] < 32 || shape[0] % 16 != 0 ||
+      shape[1] < panelCols || shape[1] % (2 * rowElements) != 0 ||
+      (transpose && dotEnc.getOpIdx() == 1 && shape[1] > 64) ||
+      // Wide B8 A operands have unproven packet organization.
+      (!transpose && bitwidth == 8 && dotEnc.getOpIdx() == 0 && shape[1] > 128))
+    return std::nullopt;
+
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  auto *ctx = tensorTy.getContext();
+  auto S = [ctx](StringRef value) { return StringAttr::get(ctx, value); };
+  auto kReg = S("register");
+  auto kLane = S("lane");
+  auto kWarp = S("warp");
+  auto kOffset = S("offset");
+  auto kBlock = S("block");
+  auto kDim0 = S("dim0");
+  auto kDim1 = S("dim1");
+  LinearLayout memLayout = triton::gpu::toLinearLayout(memDescType);
+  if (!memLayout.isInvertible())
+    return std::nullopt;
+  LinearLayout logicalToShared = memLayout.invert();
+  int step = 4 * elementsPerReg;
+  for (int i = 0; i < cvt.getInDimSize(kReg); i += step) {
+    for (int warp = 0; warp < cvt.getInDimSize(kWarp); ++warp) {
+      auto base = cvt.apply({{kReg, i}, {kLane, 0}, {kWarp, warp}});
+      auto origin = memLayout.apply({{kOffset, base[0].second}, {kBlock, 0}});
+      int originRow = origin[0].second;
+      int originCol = origin[1].second;
+      if (originRow % 16 != 0 || originCol % (2 * rowElements) != 0)
+        return std::nullopt;
+      for (int lane = 0; lane < 32; ++lane) {
+        for (int q = 0; q < 4; ++q) {
+          // Raw packets are TL, BL, TR, BR; operand B exchanges r1/r2 once.
+          int matrixQ = dotEnc.getOpIdx() == 1 && q == 1   ? 2
+                        : dotEnc.getOpIdx() == 1 && q == 2 ? 1
+                                                           : q;
+          for (int h = 0; h < elementsPerReg; ++h) {
+            int row = originRow + 8 * (matrixQ % 2) +
+                      (transpose ? 2 * (lane % 4) + h : lane / 4);
+            int col = originCol + rowElements * (matrixQ / 2) +
+                      (transpose ? lane / 4 : elementsPerReg * (lane % 4) + h);
+            auto expected = logicalToShared.apply({{kDim0, row}, {kDim1, col}});
+            auto actual = cvt.apply({{kReg, i + q * elementsPerReg + h},
+                                     {kLane, lane},
+                                     {kWarp, warp}});
+            if (actual[0].second != expected[0].second)
+              return std::nullopt;
+          }
+        }
+      }
+    }
+  }
+
+  auto removeBroadcast =
+      actionRemoveBroadcastedRegs(triton::gpu::toLinearLayout(tensorTy));
+  auto resultLayout =
+      removeBroadcast.apply(triton::gpu::toLinearLayout(tensorTy));
+  auto structTy = typeConverter->convertType(tensorTy);
+  if (cast<LLVM::LLVMStructType>(structTy).getBody().size() !=
+      resultLayout.getInDimSize(kReg))
+    return std::nullopt;
+
+  auto warpId = getLaneAndWarpId(rewriter, loc).second;
+  auto smemPtrTy = ptr_ty(ctx, 3);
+  SmallVector<Value> srcVals;
+  for (int i = 0; i < cvt.getInDimSize(kReg); i += step) {
+    Value offset =
+        applyLinearLayout(
+            loc, rewriter, cvt,
+            {{kReg, b.i32_val(i)}, {kLane, b.i32_val(0)}, {kWarp, warpId}})[0]
+            .second;
+    Value vecAddr = b.gep(smemPtrTy, llvmElemTy, smemBase, offset,
+                          LLVM::GEPNoWrapFlags::inbounds);
+    Value baseDiv16 = b.lshr(b.ptrtoint(i64_ty, vecAddr), b.i64_val(4));
+    auto builder = mlir::triton::ppu::TIXBuilder();
+    auto resArgs = builder.newListOperand(4, "=r");
+    auto sbase = builder.newAddrOperand(baseDiv16, "r");
+    auto lbo = builder.newOperand(b.i32_val(1), "r");
+    auto sbo =
+        builder.newOperand(b.i32_val(swizzledBytes == 128 ? 64 : 32), "r");
+    auto mode =
+        builder.newOperand(b.i32_val(swizzledBytes == 128 ? 0 : 1), "r");
+    auto ldmatrix =
+        builder.create("ppu.ldmatrix.swzl.sync.bulk.tensor.m8n8.x4")
+            ->o("trans", transpose)
+            .o("b16");
+    ldmatrix(resArgs, sbase, lbo, sbo, mode);
+    Type matTy =
+        LLVM::LLVMStructType::getLiteral(ctx, SmallVector<Type>(4, i32_ty));
+    Value res = builder.launch(rewriter, loc, matTy);
+
+    if (dotEnc.getOpIdx() == 1) {
+      SmallVector<Value> elemsI32;
+      elemsI32.push_back(b.extract_val(i32_ty, res, 0));
+      elemsI32.push_back(b.extract_val(i32_ty, res, 2));
+      elemsI32.push_back(b.extract_val(i32_ty, res, 1));
+      elemsI32.push_back(b.extract_val(i32_ty, res, 3));
+      for (int j = 0; j < 4; ++j) {
+        Value output =
+            b.bitcast(elemsI32[j], vec_ty(llvmElemTy, elementsPerReg));
+        for (int k = 0; k < elementsPerReg; ++k)
+          srcVals.push_back(
+              b.extract_element(llvmElemTy, output, b.i32_val(k)));
+      }
+    } else {
+      for (int j = 0; j < 4; ++j) {
+        Value output = b.extract_val(i32_ty, res, j);
+        output = b.bitcast(output, vec_ty(llvmElemTy, elementsPerReg));
+        for (int k = 0; k < elementsPerReg; ++k)
+          srcVals.push_back(
+              b.extract_element(llvmElemTy, output, b.i32_val(k)));
+      }
+    }
+  }
+
+  if (!removeBroadcast.isIdentity())
+    srcVals = removeBroadcast.apply(srcVals);
+  assert(cast<LLVM::LLVMStructType>(structTy).getBody().size() ==
+             srcVals.size() &&
+         "Unexpected SWZL result size");
+  return packLLElements(loc, typeConverter, srcVals, rewriter, structTy);
+}
+
 LogicalResult lowerPPULdMatrix(
     Location loc, RankedTensorType tensorTy, MemDescType memDescType,
     bool transpose, Value &src, // Output for ldmatrix
     Value smemBase, Type llvmElemTy, ConversionPatternRewriter &rewriter,
     const ppu::TargetInfo &targetInfo, const LLVMTypeConverter *typeConverter,
-    std::pair<size_t, Type> *const llvmOpCount = nullptr) {
+    std::pair<size_t, Type> *const llvmOpCount = nullptr,
+    bool enableTixSwzl = false) {
   // Lower load via ppu.ldmatrix
   if (!targetInfo.supportLdMatrix())
     return failure();
@@ -177,7 +324,8 @@ LogicalResult lowerPPULdMatrix(
   assert(llvmOpCount == nullptr && "NYI");
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   auto *ctx = tensorTy.getContext();
-  auto memL = toLinearLayout(memDescType.getShape(), memDescType.getEncoding());
+  auto memL = toLinearLayoutIgnoringPadding(memDescType.getAllocShape(),
+                                            memDescType.getEncoding());
   auto cvt = minimalCvtLayout(memDescType, tensorTy);
 
   auto S = [ctx](StringRef v) { return StringAttr::get(ctx, v); };
@@ -186,6 +334,8 @@ LogicalResult lowerPPULdMatrix(
   auto kWarp = S("warp");
   auto kBlock = S("block");
   auto kOffset = S("offset");
+  auto kDim0 = S("dim0");
+  auto kDim1 = S("dim1");
   auto smemPtrTy = ptr_ty(ctx, 3);
   // In the transpose case, consecutive elements are not stored contiguously
   // so we cannot split an fp32
@@ -286,17 +436,19 @@ LogicalResult lowerPPULdMatrix(
 
   LinearLayout addrLayout = choosePPULdMatrixLayout(dotEnc, shape, transpose,
                                                     bitwidth, Opb8bLdmatrix);
-  LinearLayout sharedLayout =
-      triton::gpu::toLinearLayout(shape, memDescType.getEncoding());
-  LinearLayout regToSharedLayout = addrLayout.invertAndCompose(sharedLayout);
+  LinearLayout regToSharedLayout;
   std::optional<int32_t> maxVecElems = 8 * 16 / bitwidth;
   auto [laneId, warpId] = getLaneAndWarpId(rewriter, loc);
-  Value regBase = applyLinearLayout(loc, rewriter, regToSharedLayout,
-                                    {{kReg, b.i32_val(0)},
-                                     {kLane, laneId},
-                                     {kWarp, warpId},
-                                     {kBlock, b.i32_val(0)}})[0]
-                      .second;
+  Value regBase;
+  LinearLayout sharedLayout = triton::gpu::toLinearLayoutIgnoringPadding(
+      memDescType.getAllocShape(), memDescType.getEncoding());
+  regToSharedLayout = addrLayout.invertAndCompose(sharedLayout);
+  regBase = applyLinearLayout(loc, rewriter, regToSharedLayout,
+                              {{kReg, b.i32_val(0)},
+                               {kLane, laneId},
+                               {kWarp, warpId},
+                               {kBlock, b.i32_val(0)}})[0]
+                .second;
 
   // Elements per op
   auto nVecs = 1 << vec;
@@ -312,14 +464,21 @@ LogicalResult lowerPPULdMatrix(
   }
   if ((useM8MMA && useLDmatx2) || (isPPU0010 && !useM8MMA && Opb8bLdmatrix))
     nVecs = 2;
+  if (enableTixSwzl) {
+    if (auto result = lowerPPULdMatrixSwzl(
+            loc, tensorTy, memDescType, transpose, smemBase, llvmElemTy,
+            rewriter, typeConverter, dotEnc, isPPU0015, cvt, nVecs)) {
+      src = result.value();
+      return success();
+    }
+  }
   auto elemsPerVec = 32 / bitwidth;
   auto step = nVecs * elemsPerVec;
   for (int i = 0; i < cvt.getInDimSize(kReg); i += step) {
     auto regIdx = reps.apply({{kReg, i}, {kLane, 0}, {kWarp, 0}})[0].second;
     Value offset = b.xor_(regBase, b.i32_val(regIdx));
-    auto vecAddr = b.gep(smemPtrTy, llvmElemTy, smemBase, offset,
-                         LLVM::GEPNoWrapFlags::inbounds);
-    Type packedTy = vec_ty(llvmElemTy, 32 / bitwidth);
+    Value vecAddr = b.gep(smemPtrTy, llvmElemTy, smemBase, offset,
+                          LLVM::GEPNoWrapFlags::inbounds);
     Type matTy = nVecs == 1
                      ? i32_ty
                      : static_cast<Type>(LLVM::LLVMStructType::getLiteral(
@@ -387,9 +546,9 @@ struct LocalLoadOpConversion
 public:
   LocalLoadOpConversion(const LLVMTypeConverter &converter,
                         const ppu::TargetInfo &targetInfo,
-                        PatternBenefit benefit = 1)
+                        PatternBenefit benefit = 1, bool enableTixSwzl = false)
       : ConvertOpToLLVMPattern<triton::gpu::LocalLoadOp>(converter, benefit),
-        targetInfo(targetInfo) {}
+        targetInfo(targetInfo), enableTixSwzl(enableTixSwzl) {}
 
   LogicalResult
   matchAndRewrite(triton::gpu::LocalLoadOp op, OpAdaptor adaptor,
@@ -404,28 +563,28 @@ public:
     Value smemBase = smemObj.getBase();
     Attribute srcLayout = memDescType.getEncoding();
 
-    // Try to lower to ppu.ldmatrix.swzl for AIU load
     if (auto sharedEnc = dyn_cast<PPUAIUSharedEncodingAttr>(srcLayout)) {
+      if (sharedEnc.isPPU0015())
+        return failure();
       Attribute dstLayout = dstTy.getEncoding();
       if (isa<DotOperandEncodingAttr>(dstLayout) &&
           isa<PPUMmaEncodingAttr>(
-              cast<DotOperandEncodingAttr>(dstLayout).getParent())) {
+              cast<DotOperandEncodingAttr>(dstLayout).getParent()))
         return lowerAIUSharedToPPUDotOperand(op, adaptor, getTypeConverter(),
                                              rewriter);
-      } else {
-        return lowerAIUSharedToDistributed(op, adaptor, getTypeConverter(),
-                                           rewriter);
-      }
+      return lowerAIUSharedToDistributed(op, adaptor, getTypeConverter(),
+                                         rewriter);
     }
 
     // Try to lower to ppu.ldmatrix
     bool lowered = false;
     Value val;
     for (bool transpose : {false, true}) {
-      lowered = lowerPPULdMatrix(op.getLoc(), dstTy, memDescType, transpose,
-                                 val, smemBase, llvmElemTy, rewriter,
-                                 targetInfo, getTypeConverter())
-                    .succeeded();
+      lowered =
+          lowerPPULdMatrix(op.getLoc(), dstTy, memDescType, transpose, val,
+                           smemBase, llvmElemTy, rewriter, targetInfo,
+                           getTypeConverter(), nullptr, enableTixSwzl)
+              .succeeded();
       if (lowered) {
         rewriter.replaceOp(op, val);
         return success();
@@ -488,10 +647,18 @@ public:
         LLVM::PPU::getStrides(smemObj, srcTy, loc, rewriter).size(),
         b.i32_val(0)};
 
+    auto plan = PPUAIUPlan::fromLegacy(srcTy, lookupNumWarps(op));
+    if (!plan)
+      return op.emitError()
+             << "invalid AIU plan: " << llvm::toString(plan.takeError());
+    auto layout = plan->toSharedPhysicalLayout(*op.getContext());
+    if (!layout)
+      return op.emitError() << "invalid AIU physical layout: "
+                            << llvm::toString(layout.takeError());
     DenseMap<unsigned, Value> sharedPtrs;
     sharedPtrs = LLVM::PPU::getAIUSwizzledSharedPtrs(
         loc, targetInfo, outVec, dstTy, srcTy, srcSharedLayout, elemTy, smemObj,
-        rewriter, offsetVals);
+        rewriter, offsetVals, &*layout);
 
     assert(outElems % minVec == 0 && "Unexpected number of elements");
     unsigned numVecs = outElems / minVec;
@@ -545,10 +712,6 @@ public:
         res = SharedToDotOperandPPUAIUV1m8::convertLayout(
             dotEnc.getOpIdx(), rewriter, loc, src, dotEnc, smemObj,
             getTypeConverter(), getThreadId(rewriter, loc), aiuLoad);
-      } else if (mmaEncoding.isPPU0015()) {
-        res = SharedToDotOperandPPUAIUV2::convertLayout(
-            dotEnc.getOpIdx(), rewriter, loc, src, dotEnc, smemObj,
-            getTypeConverter(), getThreadId(rewriter, loc), aiuLoad);
       } else {
         assert(false && "Unsupported mma layout found");
       }
@@ -591,6 +754,7 @@ public:
 
 private:
   const ppu::TargetInfo &targetInfo;
+  bool enableTixSwzl;
 };
 
 struct LocalAllocOpConversion
@@ -852,14 +1016,14 @@ private:
 void mlir::triton::ppu::populateMemoryOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, const TargetInfo &targetInfo,
     RewritePatternSet &patterns, ModuleAxisInfoAnalysis &axisInfoAnalysis,
-    PatternBenefit benefit) {
+    PatternBenefit benefit, bool enableTixSwzl) {
   // Backend optimized memory ops get higher benefit
   patterns.add<LocalAllocOpConversion>(typeConverter, targetInfo,
                                        benefit.getBenefit() + 1);
   patterns.add<LocalStoreOpConversion>(typeConverter, targetInfo,
                                        benefit.getBenefit() + 1);
   patterns.add<LocalLoadOpConversion>(typeConverter, targetInfo,
-                                      benefit.getBenefit() + 1);
+                                      benefit.getBenefit() + 1, enableTixSwzl);
   patterns.add<LocalAtomicScatterRMWOpConversion>(typeConverter, targetInfo,
                                                   benefit.getBenefit() + 1);
   mlir::triton::populateMemoryOpToLLVMPatterns(

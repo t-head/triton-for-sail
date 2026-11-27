@@ -4,6 +4,7 @@
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
+#include "triton/Dialect/TritonGPU/IR/PPUAIUPlan.h"
 #include "triton/Dialect/TritonGPU/IR/Types.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Tools/LayoutUtils.h"
@@ -412,17 +413,15 @@ struct MemDescIndexOpConversion
     if (auto aiuEnc = dyn_cast<triton::gpu::PPUAIUSharedEncodingAttr>(
             dstTy.getEncoding())) {
       if (aiuEnc.isPPU0015()) {
-        auto aiuLoad = aiuEnc.getAIUStrategy();
-        unsigned cubeC = aiuLoad[0];
-        int elemBytes = dstTy.getElementTypeBitWidth() / 8;
-        if ((elemBytes == 2 && cubeC == 16) ||
-            (elemBytes == 1 && cubeC == 32)) {
-          unsigned swizzledBytes = aiuLoad[4];
-          unsigned swizzledElems = swizzledBytes / elemBytes;
-          unsigned aiuFactor = swizzledElems / cubeC;
-          assert(aiuFactor == 2 && "Unexpected PPU0015 AIU factor");
-          stride *= aiuFactor;
-        }
+        auto plan = PPUAIUPlan::fromLegacy(dstTy, lookupNumWarps(op));
+        if (!plan)
+          llvm::report_fatal_error(
+              llvm::Twine(llvm::toString(plan.takeError())));
+        auto physical = plan->toSharedPhysicalLayout(*op.getContext());
+        if (!physical)
+          llvm::report_fatal_error(
+              llvm::Twine(llvm::toString(physical.takeError())));
+        stride = physical->physicalStageElems;
       }
     }
     Value offset = b.mul(op.getIndex(), b.i32_val(stride));
@@ -485,6 +484,19 @@ struct MemDescSubsliceOpConversion
           encoding, dropPipeliningDim(srcTy.getAllocShape(), encoding));
       if (auto partEnc = dyn_cast<PartitionedSharedEncodingAttr>(encoding))
         stride /= partEnc.getNumPartitions();
+      if (auto aiuEnc = dyn_cast<PPUAIUSharedEncodingAttr>(encoding)) {
+        if (aiuEnc.isPPU0015()) {
+          auto plan = PPUAIUPlan::fromLegacy(srcTy, lookupNumWarps(op));
+          if (!plan)
+            llvm::report_fatal_error(
+                llvm::Twine(llvm::toString(plan.takeError())));
+          auto physical = plan->toSharedPhysicalLayout(*op.getContext());
+          if (!physical)
+            llvm::report_fatal_error(
+                llvm::Twine(llvm::toString(physical.takeError())));
+          stride = physical->physicalStageElems;
+        }
+      }
       Value offset = b.i32_val(opOffsetVals.front() * stride);
       for (Value &base : newBases)
         base = b.gep(base.getType(), llvmElemTy, base, offset);

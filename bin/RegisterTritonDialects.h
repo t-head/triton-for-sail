@@ -157,8 +157,12 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
 
   // TritonPPUGPUTransforms passes
   mlir::registerTritonPPUGPUAccelerateMatmul();
+  mlir::registerTritonPPUAIUStandardizeSharedPass();
   mlir::registerTritonPPUGPUOptimizeNativeFp8DotB();
   mlir::registerTritonPPUGPUReorderInstructions();
+  mlir::triton::registerAllocateSharedMemoryPPU();
+  mlir::triton::registerConvertTritonGPUToLLVMPPU();
+  mlir::triton::registerConvertLibdeviceFuncToPPU();
 
   // Proton passes
   mlir::test::proton::registerTestScopeIdAllocationPass();

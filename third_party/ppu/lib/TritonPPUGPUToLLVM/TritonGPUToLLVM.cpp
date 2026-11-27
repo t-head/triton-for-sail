@@ -23,6 +23,7 @@
 
 #include "Dialect/PPUGPU/IR/Dialect.h"
 #include "Dialect/TritonPPUGPU/IR/Dialect.h"
+#include "TritonPPUGPUToLLVM/AIUUtility.h"
 #include "TritonPPUGPUToLLVM/Passes.h"
 #include "TritonPPUGPUToLLVM/Utility.h"
 #include "Utility.h"
@@ -126,6 +127,9 @@ static void MarkChainedDot(ModuleOp mod) {
         if (!isa<mlir::triton::gpu::LocalLoadOp>(BOp))
           continue;
         auto cvtBOp = cast<mlir::triton::gpu::LocalLoadOp>(BOp);
+        if (cvtBOp->hasAttr(LLVM::PPU::kAIUSourceAttr) ||
+            cvtBOp->hasAttr(LLVM::PPU::kDisableChainedDotAttr))
+          continue;
         Value src = cvtBOp.getSrc();
         auto descTy = cast<mlir::triton::gpu::MemDescType>(src.getType());
         auto encoding = descTy.getEncoding();
@@ -193,8 +197,10 @@ struct ConvertTritonGPUToLLVMPPU
           ConvertTritonGPUToLLVMPPU> {
   using ConvertTritonGPUToLLVMPPUBase::ConvertTritonGPUToLLVMPPUBase;
 
-  ConvertTritonGPUToLLVMPPU(int32_t computeCapability)
-      : ConvertTritonGPUToLLVMPPUBase({computeCapability}) {}
+  ConvertTritonGPUToLLVMPPU(int32_t computeCapability,
+                            bool enableTixLdMatrixSwzl)
+      : ConvertTritonGPUToLLVMPPUBase(
+            {computeCapability, enableTixLdMatrixSwzl}) {}
 
   void runOnOperation() override {
     MLIRContext *context = &getContext();
@@ -203,8 +209,10 @@ struct ConvertTritonGPUToLLVMPPU
 
     // Allocate shared memory and set barrier
     ModuleAllocation allocation(
-        mod, mlir::triton::ppu_gpu::getPPUAllocationAnalysisScratchSizeFn(
-                 targetInfo));
+        mod,
+        mlir::triton::ppu_gpu::getPPUAllocationAnalysisScratchSizeFn(
+            targetInfo),
+        /*sharedMemoryPartitionSize=*/0, enableTixLdMatrixSwzl);
     ModuleMembarAnalysis membarPass(allocation);
     membarPass.run();
     bool hasGlobalScratchAlloc = false;
@@ -279,7 +287,8 @@ struct ConvertTritonGPUToLLVMPPU
     mlir::triton::populateAssertOpToLLVMPattern(typeConverter, patterns,
                                                 targetInfo, benefit);
     mlir::triton::ppu::populateMemoryOpToLLVMPatterns(
-        typeConverter, targetInfo, patterns, axisInfoAnalysis, benefit);
+        typeConverter, targetInfo, patterns, axisInfoAnalysis, benefit,
+        enableTixLdMatrixSwzl);
     mlir::triton::populateMakeRangeOpToLLVMPattern(typeConverter, targetInfo,
                                                    patterns, benefit);
     mlir::triton::ppu::populateFp4ToFpToLLVMPatterns(typeConverter, patterns,
@@ -328,12 +337,23 @@ private:
     // Set array size 0 and external linkage indicates that we use dynamic
     // shared allocation to allow a larger shared memory size for each kernel.
     //
-    // Ask for 16B alignment on global_smem because that's the largest we should
-    // ever need (4xi32).
+    bool needsTixAlignment = false;
+    mod.walk([&](triton::gpu::LocalAllocOp op) {
+      if (op.getAlignmentOrDefault() >= 128)
+        needsTixAlignment = true;
+      if (!enableTixLdMatrixSwzl)
+        return;
+      auto enc = dyn_cast<triton::gpu::SwizzledSharedEncodingAttr>(
+          op.getType().getEncoding());
+      if (enc && ((enc.getMaxPhase() == 8 && enc.getPerPhase() == 1) ||
+                  (enc.getMaxPhase() == 4 && enc.getPerPhase() == 2)))
+        needsTixAlignment = true;
+    });
     auto arrayTy = LLVM::LLVMArrayType::get(elemTy, 0);
     LLVM::GlobalOp::create(
         b, loc, arrayTy, /*isConstant=*/false, LLVM::Linkage::External,
-        "global_smem", /*value=*/Attribute(), /*alignment=*/16,
+        "global_smem", /*value=*/Attribute(),
+        /*alignment=*/needsTixAlignment ? 128 : 16,
         // Add ROCm support.
         static_cast<unsigned>(NVVM::NVVMMemorySpace::Shared));
   }
@@ -348,8 +368,10 @@ std::unique_ptr<OperationPass<ModuleOp>> createConvertTritonGPUToLLVMPPUPass() {
   return std::make_unique<ConvertTritonGPUToLLVMPPU>();
 }
 std::unique_ptr<OperationPass<ModuleOp>>
-createConvertTritonGPUToLLVMPPUPass(int32_t computeCapability) {
-  return std::make_unique<ConvertTritonGPUToLLVMPPU>(computeCapability);
+createConvertTritonGPUToLLVMPPUPass(int32_t computeCapability,
+                                    bool enableTixLdMatrixSwzl) {
+  return std::make_unique<ConvertTritonGPUToLLVMPPU>(computeCapability,
+                                                     enableTixLdMatrixSwzl);
 }
 
 } // namespace triton

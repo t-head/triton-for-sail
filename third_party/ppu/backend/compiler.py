@@ -180,6 +180,7 @@ class HGGCOptions:
     instrumentation_mode: str = ""
     fpsan_homomorphic_casts: bool = False
     ppu_hint: Tuple[str] = ()
+    enable_tix_ldmatrix_swzl: bool = False
 
     def __post_init__(self):
         default_libdir = Path(__file__).parent / 'lib'
@@ -371,14 +372,15 @@ class PPUBackend(BaseBackend):
         passes.ttgpuir.add_allocate_warp_groups(pm)
         passes.convert.add_scf_to_cf(pm)
         passes.gluon.add_inliner(pm)
-        ppu.passes.ttgpuir.add_allocate_shared_memory_ppu(pm, capability)
+        ppu.passes.ttppugpuir.add_standardize_aiu_shared(pm)
+        ppu.passes.ttgpuir.add_allocate_shared_memory_ppu(pm, capability, options.enable_tix_ldmatrix_swzl)
         if is_enabled(options, "consan"):
             # Call ConcurrencySanitizerPass here, before allocating global scratch memory but after allocating tensor and shared
             passes.ttgpuir.add_concurrency_sanitizer(pm)
         passes.ttgpuir.add_allocate_global_scratch_memory(pm)
         # instrumentation point here so we can override IRs above (e.g., ttir and ttgir)
         instrument(pm, point="ttgpuir-to-llvmir", context=mod.context)
-        ppu.passes.ttgpuir.add_to_llvmir(pm, capability)
+        ppu.passes.ttgpuir.add_to_llvmir(pm, capability, options.enable_tix_ldmatrix_swzl)
         ppu.passes.ttgpuir.add_convert_libdevice_func_to_ppu(pm)
         passes.common.add_canonicalizer(pm)
         passes.common.add_cse(pm)

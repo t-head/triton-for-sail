@@ -124,6 +124,8 @@ def test_desc_k_negative_prefetch(num_stages):
     )
     assert kernel.asm["ttir"].count("tt.aiu_load") == 2
     assert "cp.async.aiu" in kernel.asm["llir"]
+    assert "ppu.ldmatrix.sync.aligned" in kernel.asm["llir"]
+    assert "ldmatrix.swzl.sync.bulk.tensor" not in kernel.asm["llir"]
     torch.testing.assert_close(c.cpu().view(torch.int16), ref.view(torch.int16), rtol=0, atol=0)
 
 

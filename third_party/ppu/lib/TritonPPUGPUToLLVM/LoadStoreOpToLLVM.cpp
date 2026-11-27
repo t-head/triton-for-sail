@@ -29,6 +29,7 @@
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/TypeUtilities.h"
 
+#include "TritonPPUGPUToLLVM/AIUUtility.h"
 #include "TritonPPUGPUToLLVM/TIXAsmFormat.h"
 
 #include "Dialect/TritonPPUGPU/IR/Dialect.h"
@@ -41,6 +42,7 @@
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
+#include "triton/Dialect/TritonGPU/IR/PPUAIUPlan.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/LayoutUtils.h"
 
@@ -721,21 +723,39 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
     /* AIU splite strategy
      */
     auto tensorType = op.getResult().getType();
-    auto resSharedLayout =
-        cast<ttg::PPUAIUSharedEncodingAttr>(tensorType.getEncoding());
-    auto aiuLoad = resSharedLayout.getAIUStrategy();
-    unsigned cubeCElems = aiuLoad[0];
-    unsigned cubeWElems = aiuLoad[1];
-    unsigned swizzledBytes = aiuLoad[4];
-    unsigned swizzledElems = swizzledBytes / elementSizeInBytes;
-    unsigned aiuFactor = swizzledElems / cubeCElems;
-    assert((cubeCElems == 32 / elementSizeInBytes && aiuFactor == 2) ||
-           (cubeCElems != 32 / elementSizeInBytes && aiuFactor == 1));
-    unsigned cubeElems = cubeWElems * cubeCElems * aiuFactor;
+    llvm::Expected<ttg::PPUAIUPlan> plan =
+        [&]() -> llvm::Expected<ttg::PPUAIUPlan> {
+      if (isa<ttg::PPUAIUSharedEncodingAttr>(tensorType.getEncoding()))
+        return ttg::PPUAIUPlan::fromLegacy(tensorType, numWarps);
+      if (!isa<ttg::SwizzledSharedEncodingAttr, ttg::SharedLinearEncodingAttr>(
+              tensorType.getEncoding()))
+        return llvm::createStringError(
+            std::make_error_code(std::errc::invalid_argument),
+            "unsupported AIU destination encoding");
+      auto strategyAttr =
+          op->getAttrOfType<ArrayAttr>(LLVM::PPU::kAIUWriterStrategyAttr);
+      if (!strategyAttr)
+        return llvm::createStringError(
+            std::make_error_code(std::errc::invalid_argument),
+            "standard AIU destination is missing its writer strategy");
+      SmallVector<unsigned> strategy;
+      for (Attribute value : strategyAttr.getValue())
+        strategy.push_back(cast<IntegerAttr>(value).getValue().getZExtValue());
+      return ttg::PPUAIUPlan::fromSharedEncoding(tensorType, numWarps,
+                                                 strategy);
+    }();
+    if (!plan)
+      return op.emitError()
+             << "invalid AIU plan: " << llvm::toString(plan.takeError());
+    unsigned cubeCElems = plan->getCubeC();
+    unsigned cubeWElems = plan->getCubeW();
+    unsigned swizzledBytes = plan->getSwizzledBytes();
+    unsigned swizzledElems = plan->getSwizzledElems();
+    unsigned cubeElems = plan->getWriterCubeElems();
 
-    unsigned warpCopyC = aiuLoad[2];
-    unsigned warpCopyW = aiuLoad[3];
-    unsigned copyWarps = warpCopyC * warpCopyW;
+    unsigned warpCopyC = plan->getWarpCopyC();
+    unsigned warpCopyW = plan->getWarpCopyW();
+    unsigned copyWarps = plan->getCopyWarps();
     Value warpIdxM = b.udiv(warpID, b.i32_val(warpCopyC));
     Value warpIdxN = b.urem(warpID, b.i32_val(warpCopyC));
     Value swizzledMode = b.i32_val(0);
@@ -743,7 +763,13 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
       swizzledMode = b.i32_val(1);
     }
 
-    auto order = resSharedLayout.getOrder();
+    SmallVector<unsigned> order;
+    if (auto aiuLayout =
+            dyn_cast<ttg::PPUAIUSharedEncodingAttr>(tensorType.getEncoding())) {
+      order.assign(aiuLayout.getOrder().begin(), aiuLayout.getOrder().end());
+    } else {
+      order = ttg::getOrder(tensorType);
+    }
     auto tileShape = tensorType.getShape();
     size_t tRank = tileShape.size();
     unsigned tileC = tileShape[tRank - 1];
@@ -766,9 +792,9 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
     Value cubeW = b.i32_val(cubeWElems);
     Value cubeC = b.i32_val(cubeCElems);
     Value cubeN = b.i32_val(1);
-    auto CopyElemsPerCTA = cubeElems * copyWarps;
+    auto CopyElemsPerCTA = plan->getWriterCopyElems();
 
-    auto swizzledElemsCTA = swizzledElems * warpCopyC * aiuFactor;
+    auto swizzledElemsCTA = plan->getWriterChannelAdvance();
     unsigned copies = std::max<unsigned>(1, tileC / swizzledElemsCTA);
 
     // two kinds of situation needs pred:
@@ -876,6 +902,11 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
       } else {
         assert(false && "Unsuppored AIU Load");
       }
+    } else if (isa<ttg::SwizzledSharedEncodingAttr,
+                   ttg::SharedLinearEncodingAttr>(tensorType.getEncoding())) {
+      if (getPPUComputeCapability(op->getParentOfType<ModuleOp>()) == 89)
+        return PPUAIUV2Conversion(op, adaptor, rewriter);
+      return op.emitError() << "standard AIU shared encoding requires PPU0015";
     } else {
       assert(false && "Unsupported AIU shared layout");
     }

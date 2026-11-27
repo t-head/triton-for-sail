@@ -39,6 +39,34 @@ add_triton_ut(
 )
 
 add_triton_ut(
+  NAME PPUAIUPlan
+  SRCS PPUAIUPlanTest.cpp
+  LIBS
+    TritonAnalysis
+    TritonGPUIR
+    TritonNvidiaGPUIR
+    TritonGPUTransforms
+    TritonNvidiaGPUTransforms
+    TritonTools
+    LLVMSupport
+    MLIRSupport
+)
+
+add_triton_ut(
+  NAME PPULayoutSpec
+  SRCS PPULayoutSpecTest.cpp
+  LIBS
+    TritonAnalysis
+    TritonGPUIR
+    TritonNvidiaGPUIR
+    TritonGPUTransforms
+    TritonNvidiaGPUTransforms
+    TritonTools
+    LLVMSupport
+    MLIRSupport
+)
+
+add_triton_ut(
   NAME TestPaddedSharedLayout
   SRCS PaddedTest.cpp
   LIBS

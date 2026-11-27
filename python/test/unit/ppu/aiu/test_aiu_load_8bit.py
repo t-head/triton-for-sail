@@ -108,3 +108,32 @@ def test_aiu_load_8bit_rejects_narrow_ppu10_channel(capfd, pipelined):
         )
     captured = capfd.readouterr()
     assert "unsupported AIU load tile for PPU AIU version 1: channel width is 16 bytes" in (captured.out + captured.err)
+
+
+@pytest.mark.parametrize("pipelined", [False, True], ids=["lowering", "pipeliner"])
+def test_aiu_load_8bit_rejects_factor4_ppu15(capfd, pipelined):
+    if torch.cuda.get_device_capability() != (8, 9):
+        pytest.skip("requires PPU 1.5")
+
+    M = BLOCK_M = BLOCK_K = 16
+    K = 32 if pipelined else 16
+    A = torch.empty((M, K), dtype=torch.int8, device="cuda")
+    C = torch.empty((M, BLOCK_K), dtype=torch.int16, device="cuda")
+    kernel = pipelined_load_kernel_aiu_8bit if pipelined else load_kernel_aiu_8bit
+
+    with pytest.raises(RuntimeError, match="PassManager::run failed"):
+        kernel.warmup(
+            A,
+            C,
+            M,
+            K,
+            BLOCK_M,
+            BLOCK_K,
+            DTYPE=tl.int8,
+            OUT_DTYPE=tl.int16,
+            grid=(1, ),
+            num_warps=2,
+            num_stages=2 if pipelined else 1,
+        )
+    captured = capfd.readouterr()
+    assert "AIU storageFactor must be 1 or 2" in captured.out + captured.err
