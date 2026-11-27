@@ -68,6 +68,10 @@ bool supportsI8DotDecomposition(PatternRewriter &rewriter,
       rewriter.getInsertionBlock()->getParentOp()->getParentOfType<ModuleOp>();
   if (getAMDArch(moduleOp))
     return false;
+
+  auto targetAttr = moduleOp->getAttrOfType<StringAttr>(ttg::AttrTargetName);
+  if (targetAttr && targetAttr.getValue().starts_with("ppu:"))
+    return false;
   return llvm::is_contained({16, 32, 64}, accElem.getWidth());
 }
 

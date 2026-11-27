@@ -49,6 +49,7 @@ Notes:
 - FpSan is a compiler feature, so it does not apply in interpreter mode.
 - On AMD, the backend currently enables FpSan only for ``gfx942``, ``gfx950``,
   and ``gfx1250``.
+- On PPU, FpSan is enabled for ``PPU0010`` and ``PPU0015``.
 
 ----------------
 How to Use It
@@ -459,6 +460,7 @@ Supported Gluon operations include:
   ``load_max``, ``store``, ``slice``, ``index``, and ``reinterpret``
 - AMD ``mfma``, ``mfma_scaled``, ``wmma``, ``wmma_scaled``, and
   ``scaled_upcast``
+- PPU ``ppu0010.mma_v1``, ``ppu0015.mma_v2``, and ``ppu0015.mma_scaled``
 
 Rewrite:
 
@@ -479,8 +481,8 @@ Important caveats:
   operands and scales, not exact hardware-format numeric decoding.
 - Tensor-memory operations preserve payload dataflow; they do not make FpSan a
   substitute for race or synchronization checking.
-- Currently fpsan is supported on all NVIDIA hardware, as well as AMD ``gfx942``, ``gfx950``,
-  and ``gfx1250``.
+- Currently fpsan is supported on all NVIDIA hardware, AMD ``gfx942``, ``gfx950``,
+  and ``gfx1250``, and PPU ``PPU0010`` and ``PPU0015``.
 
 ------------------------------
 Practical Guidance for Checks
