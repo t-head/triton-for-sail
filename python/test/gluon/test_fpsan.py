@@ -2003,8 +2003,10 @@ _TCGEN05_MMA_SCALED_CASES = [
 @pytest.mark.parametrize(("type_a", "type_b", "acc_type", "m", "n", "k"), _DOT_FMA_CASES)
 def test_dot_fma(device, type_a, type_b, acc_type, m, n, k, fresh_knobs):
     _require_cuda_backend(device)
-    if (is_cuda() or is_ppu()) and torch.cuda.get_device_capability()[0] < 9 and "e4m3" in (type_a, type_b):
+    if is_cuda() and torch.cuda.get_device_capability()[0] < 9 and "e4m3" in (type_a, type_b):
         pytest.skip("E4M3 requires Hopper or newer")
+    if is_ppu_0010() and "e4m3" in (type_a, type_b):
+        pytest.skip("E4M3 requires PPU0015 or newer")
 
     M = gl.constexpr(m)
     N = gl.constexpr(n)
@@ -2065,8 +2067,10 @@ def test_dot_explicit_and_implicit_upcasts_match(device, src_type, mid_type, m, 
     capability = torch.cuda.get_device_capability()[0]
     if capability < 8:
         pytest.skip("dot acceleration requires Ampere or newer")
-    if src_type == "e4m3" and capability < 9:
+    if src_type == "e4m3" and is_cuda() and capability < 9:
         pytest.skip("E4M3 requires Hopper or newer")
+    if src_type == "e4m3" and is_ppu_0010():
+        pytest.skip("E4M3 requires PPU0015 or newer")
 
     M = m
     N = 16

@@ -32,6 +32,7 @@
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#include "triton/Dialect/TritonInstrument/IR/Dialect.h"
 #include "triton/Tools/GenericSwizzling.h"
 #include "triton/Tools/LayoutUtils.h"
 
@@ -43,6 +44,22 @@ using namespace mlir::triton::gpu;
 using mlir::LLVM::PPU::lowerLdStMatrix;
 
 constexpr int kPtrBitWidth = 64;
+
+// The ChainedDot MMA->DotOperand conversion below uses a real FP MMA, which
+// would corrupt FpSan integer payloads; fall back to the bit-preserving generic
+// path.
+static bool isFpSanInstrumented(Operation *op) {
+  auto module = op->getParentOfType<ModuleOp>();
+  if (!module)
+    return false;
+  bool found = false;
+  module.walk([&](instrument::ExperimentalFPSanEmbedOp) {
+    found = true;
+    return WalkResult::interrupt();
+  });
+  return found;
+}
+
 struct ConvertLayoutOpSwizzlingConversion
     : public ConvertOpToLLVMPattern<triton::gpu::ConvertLayoutOp> {
   const ppu::TargetInfo &targetInfo;
@@ -311,6 +328,8 @@ public:
 
     if (isa<PPUMmaEncodingAttr>(srcLayout) &&
         isa<DotOperandEncodingAttr>(dstLayout)) {
+      if (isFpSanInstrumented(op))
+        return failure();
       return lowerMmaToDotOperand(op, adaptor, rewriter);
     }
     return failure();
