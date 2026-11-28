@@ -644,47 +644,56 @@ public:
   mlir::LogicalResult
   matchAndRewrite(triton::DotScaledOp dotOp,
                   mlir::PatternRewriter &rewriter) const override {
-    // currently only support ppu0015 m16n16k64 mma
+    // The native PPU0015 instruction is m16n16k64 with an f32 accumulator.
     if (computeCapability != 89)
       return failure();
 
-    // TODO: Check data-types and SM compatibility
-    if (!dotOp.getType().getEncoding() ||
-        mlir::isa<PPUMmaEncodingAttr>(dotOp.getType().getEncoding()))
+    auto oldRetType = dotOp.getType();
+    if (!oldRetType.getEncoding() ||
+        mlir::isa<PPUMmaEncodingAttr>(oldRetType.getEncoding()) ||
+        oldRetType.getRank() != 2 || !oldRetType.getElementType().isF32())
       return failure();
 
-    // currently only support lhs&rhs kpack on ppu0015
-    // TODO: support non kpack
-    if (!dotOp.getLhsKPack() || !dotOp.getRhsKPack())
-      return failure();
-
-    // ppu0015 only support fp4 scaled dot
-    if (dotOp.getAElemType() != ScaleDotElemType::E2M1 ||
+    if (!dotOp.getLhsKPack() || !dotOp.getRhsKPack() ||
+        dotOp.getAElemType() != ScaleDotElemType::E2M1 ||
         dotOp.getBElemType() != ScaleDotElemType::E2M1)
       return failure();
-
-    if (!dotOp.getAScale() || !dotOp.getBScale())
-      return failure();
-
-    auto oldRetType = cast<RankedTensorType>(dotOp.getType());
-    auto retShapePerCTA = getShapePerCTA(oldRetType);
-    int numWarps = lookupNumWarps(dotOp);
 
     auto a = dotOp.getA();
     auto b = dotOp.getB();
     auto aScale = dotOp.getAScale();
     auto bScale = dotOp.getBScale();
-    auto oldAType = cast<RankedTensorType>(a.getType());
-    auto oldBType = cast<RankedTensorType>(b.getType());
+    if (!aScale || !bScale)
+      return failure();
 
-    auto aScaleOrder = getOrder(aScale.getType());
-    auto bScaleOrder = getOrder(bScale.getType());
-    // ascale, bscale row major
-    if (aScaleOrder[aScaleOrder.size() - 1] != 0 ||
-        bScaleOrder[bScaleOrder.size() - 1] != 0)
+    auto oldAType = a.getType();
+    auto oldBType = b.getType();
+    auto aScaleType = aScale.getType();
+    auto bScaleType = bScale.getType();
+    // MXFP4 packs two E2M1 values per byte, with one E8M0 scale per 32 values.
+    if (aScaleType.getRank() != 2 || bScaleType.getRank() != 2 ||
+        !oldAType.getElementType().isInteger(8) ||
+        !oldBType.getElementType().isInteger(8) ||
+        !aScaleType.getElementType().isInteger(8) ||
+        !bScaleType.getElementType().isInteger(8) ||
+        dotOp.deduceScaleFactor() != 32)
+      return failure();
+
+    auto aShape = oldAType.getShape();
+    auto bShape = oldBType.getShape();
+    // m16n16k64 consumes 32 packed bytes along K.
+    if (aShape[0] < 16 || bShape[1] < 16 || aShape[1] < 32)
+      return failure();
+
+    // Row-major scales can have one element per thread. In that case their
+    // memory orientation comes from the thread order.
+    if (getOrderForMemory(aScaleType).back() != 0 ||
+        getOrderForMemory(bScaleType).back() != 0)
       return failure();
 
     // get MMA encoding for the given number of warps
+    auto retShapePerCTA = getShapePerCTA(oldRetType);
+    int numWarps = lookupNumWarps(dotOp);
     auto CTALayout = getCGALayout(oldRetType.getEncoding());
     int versionMajor = 2;
     int versionMinor = 0;
@@ -723,15 +732,6 @@ public:
     ScaleDotElemType bElemType = dotOp.getBElemType();
 
     MLIRContext *ctx = dotOp.getContext();
-
-    auto aShape = cast<RankedTensorType>(a.getType()).getShape();
-    auto bShape = cast<RankedTensorType>(b.getType()).getShape();
-
-    int m = aShape[0];
-    int k = aShape[1];
-    int n = aShape[1];
-    if (m < 16 || n < 16 || k < 32)
-      return failure();
 
     auto aEncLL = LinearLayout::empty();
     auto bEncLL = LinearLayout::empty();
